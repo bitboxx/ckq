@@ -29,13 +29,26 @@ use crate::{Embedder, ModelDownloadCallback};
 
 /// Offload every layer. llama.cpp silently keeps on CPU whatever will not fit.
 const GPU_LAYERS: u32 = 1000;
-/// llama.cpp splits `n_ctx` evenly across `n_seq_max` KV slots, so these two are
-/// one decision, not two: each sequence gets `DEFAULT_CTX / MAX_SEQ` tokens and a
-/// chunk larger than that fails with `NoKvCacheSlot`. ck targets 1024-token
-/// chunks, so 2048 per sequence leaves headroom.
+/// How many sequences go into one decode. Four was measured against sixteen on
+/// both models and the difference was nothing, while sixteen slots doubled the
+/// memory, so this stays small.
 const MAX_SEQ: usize = 4;
+/// Ceiling on one sequence, for a model whose own context is longer than
+/// anything ck chunks to. Chunks target 1024 tokens, so 2048 leaves headroom.
 const PER_SEQ: u32 = 2048;
-const DEFAULT_CTX: u32 = PER_SEQ * MAX_SEQ as u32;
+
+/// The context a worker asks for: one slot per sequence, each as long as the
+/// model's own limit.
+///
+/// llama.cpp splits `n_ctx` evenly across `n_seq_max` slots, so the two are one
+/// decision: a chunk longer than `n_ctx / n_seq_max` fails with
+/// `NoKvCacheSlot`. Deriving it from the model rather than fixing it at
+/// `PER_SEQ * MAX_SEQ` matters for a short-context model. Granite trains at 512
+/// tokens, so a fixed 2048 per slot asked for four times the KV cache it can
+/// use and made llama.cpp warn about a training context overflow on every load.
+fn ctx_tokens(max_length: usize) -> u32 {
+    (max_length as u32).clamp(1, PER_SEQ) * MAX_SEQ as u32
+}
 
 /// Talks to the shared daemon so the model is loaded once per machine rather
 /// than once per process. `LlamaCppEmbedder::new_in_process` is the daemon's own
@@ -214,7 +227,9 @@ fn run(
         let mut total = 0usize;
         while end < encoded.len() {
             let len = encoded[end].len().max(1);
-            if end > start && (total + len > DEFAULT_CTX as usize || end - start >= MAX_SEQ) {
+            if end > start
+                && (total + len > ctx_tokens(max_length) as usize || end - start >= MAX_SEQ)
+            {
                 break;
             }
             total += len;
@@ -332,6 +347,12 @@ fn backend() -> Result<&'static LlamaBackend> {
     if let Some(backend) = BACKEND.get() {
         return Ok(backend);
     }
+    // llama.cpp writes its load and teardown chatter straight to stderr. That was
+    // invisible while only the daemon ever loaded a model, and it landed on the
+    // user's terminal the moment `--index` started loading one itself. Routing
+    // it into `tracing` puts it behind RUST_LOG, where the rest of ck's logging
+    // already lives.
+    llama_cpp_2::send_logs_to_tracing(llama_cpp_2::LogOptions::default().with_logs_enabled(true));
     let created = LlamaBackend::init().map_err(|e| anyhow!("llama backend: {e}"))?;
     Ok(BACKEND.get_or_init(|| created))
 }
@@ -374,7 +395,8 @@ fn start_worker(
                 return;
             }
 
-            let n_ctx = NonZeroU32::new(DEFAULT_CTX).expect("non-zero context");
+            let ctx_budget = ctx_tokens(max_length);
+            let n_ctx = NonZeroU32::new(ctx_budget).expect("non-zero context");
             let ctx_params = LlamaContextParams::default()
                 .with_n_ctx(Some(n_ctx))
                 .with_n_threads_batch(num_cpus::get().max(1) as i32)
@@ -383,8 +405,8 @@ fn start_worker(
                 // batch, and adding more sequences aborts inside llama_decode.
                 // Qwen and Granite happened to survive it; EmbeddingGemma did not.
                 .with_n_seq_max(MAX_SEQ as u32)
-                .with_n_batch(DEFAULT_CTX)
-                .with_n_ubatch(DEFAULT_CTX)
+                .with_n_batch(ctx_budget)
+                .with_n_ubatch(ctx_budget)
                 .with_pooling_type(pooling);
             let mut ctx = match model.new_context(backend, ctx_params) {
                 Ok(c) => c,

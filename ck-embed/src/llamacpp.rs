@@ -239,8 +239,13 @@ fn run(
         let mut batch = LlamaBatch::new(total.max(1), (end - start) as i32);
         for (slot, tokens) in encoded[start..end].iter().enumerate() {
             if !tokens.is_empty() {
+                // `true` marks every token as an output. A pooled embedding needs
+                // that, and llama.cpp forces it anyway, warning once per decode
+                // that it had to. Those warnings were filling the daemon's log
+                // unseen, thousands of lines per index run, until indexing moved
+                // in-process and put them on the terminal.
                 batch
-                    .add_sequence(tokens, slot as i32, false)
+                    .add_sequence(tokens, slot as i32, true)
                     .map_err(|e| anyhow!("batch: {e}"))?;
             }
         }

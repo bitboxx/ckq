@@ -13,9 +13,10 @@ use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaModel};
+use std::collections::HashMap;
 use std::num::NonZeroU32;
-use std::sync::OnceLock;
 use std::sync::mpsc::{Sender, channel};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
 use crate::mixedbread::download_assets;
@@ -44,10 +45,14 @@ pub struct LlamaCppEmbedder {
 
 type Job = (Vec<String>, Sender<Result<Vec<Vec<f32>>>>);
 
-/// `LlamaBackend::init()` is once per process, and loading the model twice would
-/// double the VRAM anyway. ck builds one embedder to index and another to embed
-/// the query, so both share this worker.
-static WORKER: OnceLock<Result<(Sender<Job>, usize), String>> = OnceLock::new();
+/// `LlamaBackend::init()` is once per process and loading a model twice would
+/// double the VRAM, so workers are shared. ck builds one embedder to index and
+/// another to embed the query; both land on the same worker.
+///
+/// Keyed by model, because a process may legitimately touch two of them and an
+/// unkeyed cache would hand the second one the first one's weights.
+type Workers = Mutex<HashMap<String, Arc<Result<(Sender<Job>, usize), String>>>>;
+static WORKERS: OnceLock<Workers> = OnceLock::new();
 
 impl LlamaCppEmbedder {
     pub fn new(
@@ -69,11 +74,22 @@ impl LlamaCppEmbedder {
         let max_length = config.max_tokens.min(PER_SEQ as usize);
         let name = config.name.clone();
 
-        let started = WORKER.get_or_init(move || {
-            start_worker(model_path, gguf, name, declared, max_length, pooling)
-                .map_err(|e| e.to_string())
-        });
-        let (tx, dim) = match started {
+        // One worker per (model, file); `LlamaBackend::init()` inside it is
+        // idempotent in llama.cpp once the first has run.
+        let key = format!("{}::{}", config.name, gguf);
+        let started = {
+            let workers = WORKERS.get_or_init(|| Mutex::new(HashMap::new()));
+            let mut guard = workers
+                .lock()
+                .map_err(|_| anyhow!("llama.cpp worker registry is poisoned"))?;
+            Arc::clone(guard.entry(key).or_insert_with(|| {
+                Arc::new(
+                    start_worker(model_path, gguf, name, declared, max_length, pooling)
+                        .map_err(|e| e.to_string()),
+                )
+            }))
+        };
+        let (tx, dim) = match started.as_ref() {
             Ok(pair) => (pair.0.clone(), pair.1),
             Err(e) => return Err(anyhow!("{e}")),
         };

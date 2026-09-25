@@ -118,6 +118,18 @@ impl Default for ModelRegistry {
         );
 
         models.insert(
+            "bge-m3-gguf".to_string(),
+            ModelConfig {
+                name: "gpustack/bge-m3-GGUF".to_string(),
+                provider: "llamacpp".to_string(),
+                dimensions: 1024,
+                max_tokens: 8192,
+                description: "BGE-M3 multilingual via llama.cpp, 8k context".to_string(),
+                gguf_file: "bge-m3-Q8_0.gguf".to_string(),
+            },
+        );
+
+        models.insert(
             "granite-gguf".to_string(),
             ModelConfig {
                 name: "bartowski/granite-embedding-278m-multilingual-GGUF".to_string(),

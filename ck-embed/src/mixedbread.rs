@@ -95,7 +95,9 @@ impl MixedbreadEmbedder {
         #[cfg(target_os = "macos")]
         if pooling == Pooling::FirstToken && std::env::var("CKQ_COREML").is_ok() {
             use ort::execution_providers::CoreMLExecutionProvider;
-            use ort::execution_providers::coreml::{ComputeUnits, ModelFormat, SpecializationStrategy};
+            use ort::execution_providers::coreml::{
+                ComputeUnits, ModelFormat, SpecializationStrategy,
+            };
             // The defaults are close to useless here. ModelFormat::NeuralNetwork is
             // the default and supports fewer operators than MLProgram, so most of
             // the graph falls back to CPU node by node; that is why the untuned EP
@@ -132,8 +134,9 @@ impl MixedbreadEmbedder {
         let kv_layers = session
             .inputs()
             .iter()
-            .filter(|input| input.name().starts_with("past_key_values.")
-                && input.name().ends_with(".key"))
+            .filter(|input| {
+                input.name().starts_with("past_key_values.") && input.name().ends_with(".key")
+            })
             .count();
         let kv_cache_shape = if kv_layers > 0 {
             // EXPERIMENT: Qwen3-Embedding-0.6B's shape, from its config.json

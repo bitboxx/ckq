@@ -90,8 +90,7 @@ pub fn create_embedder_for_config(
             // metadata. Qwen is causal and wants last-token; Granite and
             // EmbeddingGemma are encoders and want CLS or mean. Hardcoding one
             // would silently corrupt the others, so let the model declare it.
-            let gguf = std::env::var("CKQ_GGUF_FILE")
-                .unwrap_or_else(|_| config.gguf_file.clone());
+            let gguf = std::env::var("CKQ_GGUF_FILE").unwrap_or_else(|_| config.gguf_file.clone());
             let embedder = llamacpp::LlamaCppEmbedder::new(
                 config,
                 progress_callback,

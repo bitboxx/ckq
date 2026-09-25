@@ -280,9 +280,44 @@ LEANN's measured 8.
   512 tokens per sequence and Qwen's 1285-token chunks failed with `NoKvCacheSlot`. The
   two constants are one decision: `MAX_SEQ = 4` and `PER_SEQ = 2048` give `n_ctx = 8192`.
 
+## Search is half a second; the numbers above are indexing
+
+Worth separating, because the indexing figures read alarmingly. Indexing embeds every
+chunk in the corpus. A search embeds one query string, then scans the index. Measured on
+the trilingual fixture, warm:
+
+| model | search |
+|---|---:|
+| `gemma-gguf` | **0.38 s** |
+| `granite-gguf` | 0.47 s |
+| `bge-m3-gguf` | 0.57 s |
+| `qwen3-gguf` | 0.70 s |
+| *stock ck, bge-small* | *0.30-0.54 s* |
+
+So ckq searches at roughly stock ck's speed. Most of that half second is loading the model
+into a fresh process, which is the cost of ck being a CLI rather than a daemon; it does not
+grow with corpus size.
+
+## Final model line-up
+
+| alias | model | params | index 347 KB | search | fixture |
+|---|---|---:|---:|---:|---|
+| `gemma-gguf` | ggml-org/embeddinggemma-300M | 300M | **9.15 s** | **0.38 s** | **4/4** |
+| `granite-gguf` | granite-embedding-278m-multilingual | 278M | 10.21 s | 0.47 s | **4/4** |
+| `bge-m3-gguf` | gpustack/bge-m3 | 568M | 15.51 s | 0.57 s | **4/4** |
+| `qwen3-gguf` | Qwen3-Embedding-0.6B | 600M | 28.43 s | 0.70 s | **4/4** |
+| *stock ck* | *bge-small-en-v1.5* | *33M* | - | *0.30-0.54 s* | *2/4* |
+
+Four of the five multilingual models tie on accuracy, so pick on cost: **`gemma-gguf` or
+`granite-gguf`**, both around 300M, both roughly 3x faster to index than Qwen.
+
+**`paraphrase-multilingual` was dropped.** `cstr/paraphrase-multilingual-MiniLM-L12-v2-GGUF`
+fails to load: `error loading model hyperparameters: key not found in model:
+bert.context_length`, a malformed conversion. It was also the weakest model in the earlier
+LEANN comparison, so a working GGUF was not worth hunting for. Note the failure mode: ck
+reports the file as indexed in 0.16 s while nothing was embedded, so an implausibly fast
+index run means the model never loaded.
+
 ### Still to do
 
-- `bge-m3` and the paraphrase models through llama.cpp; GGUFs exist.
-- The `OnceLock` keys nothing, so a second model in one process gets the first one's
-  worker. Fine for one index per invocation, wrong in general.
-- No CUDA machine to test on.
+- No CUDA machine to test on. Vulkan is verified on nara's AMD card.

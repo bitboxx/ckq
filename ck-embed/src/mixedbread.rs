@@ -538,7 +538,7 @@ fn normalize_row(row: ArrayView<'_, f32, Ix1>, dim: usize) -> Vec<f32> {
     values
 }
 
-fn download_assets(
+pub(crate) fn download_assets(
     model_id: &str,
     model_path: &str,
     tokenizer_path: &str,

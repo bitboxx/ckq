@@ -127,7 +127,7 @@ GPU story:
 Upgrading ort would not help. The gap is that ONNX Runtime has no path to the Apple GPU
 that MLX uses, and that has not changed.
 
-## Next: replace ort with llama-cpp-2
+## Done: llama-cpp-2 backend
 
 ONNX Runtime is the wrong backend for this on a Mac, and no amount of configuration fixes
 that. The replacement candidates, checked 25 Sep 2026:
@@ -185,3 +185,56 @@ no Rust bindings, so using it means writing and maintaining the FFI. Its optimis
 target is CPU quantisation performance, which is the thing this swap is trying to leave.
 Forks also lag upstream on new architectures, and prompt Qwen3-Embedding support is what
 makes this plan work. Worth revisiting only if CPU inference ever becomes the goal.
+
+## llama.cpp backend, built 25 Sep 2026
+
+`--features llamacpp`, model alias `qwen3-gguf` (`Qwen/Qwen3-Embedding-0.6B-GGUF`, the
+first-party GGUF). It works, and it is both faster and more accurate than the ONNX path.
+
+Same 92 KB of real notes, same machine:
+
+| backend | device | wall | user CPU | sys |
+|---|---|---:|---:|---:|
+| ort, `qwen3-embed` | CPU | 45.6 s | ~520 s | - |
+| llama.cpp, per-call context | Metal | 23.2 s | 3.8 s | 13.9 s |
+| **llama.cpp, one persistent context** | **Metal** | **8.26 s** | **1.6 s** | **1.8 s** |
+
+`MTL0 compute buffer size = 306.24 MiB` and `graph splits = 2` confirm it really is on the
+GPU, against CoreML which split the graph apart and stayed on the CPU.
+
+Extrapolated to the 9.7 MB vault: **~14 min** against ort's ~80 min and LEANN's measured
+8 min. Within 1.8x of LEANN rather than 10x, and the sample includes model load, so the
+real figure is better than the extrapolation.
+
+Quality improved too. On the trilingual fixture, correct note at rank 1:
+
+| | score |
+|---|---|
+| stock ck, bge-small | 1 of 3 |
+| ckq, qwen3-embed (ONNX) | 2 of 3 |
+| **ckq, qwen3-gguf (llama.cpp)** | **3 of 3** |
+
+It is the only configuration that gets "landlord has not returned the deposit" right.
+That is expected: llama.cpp applies the architecture's real pooling rather than the
+hand-rolled last-token arithmetic the ONNX path needs.
+
+### Three traps worth recording
+
+1. **`LlamaContext` is neither `Send` nor `Sync`,** and ck embeds from rayon workers. One
+   dedicated thread owns the model and context and takes jobs over a channel. Same shape
+   as the MLX thread-locality problem in `Local TTS on Apple Silicon`.
+2. **Rebuilding the context per call costs a 306 MiB allocation each time.** That was 59%
+   of wall time in the kernel, and fixing it took 23.2 s to 8.26 s. Batching sequences
+   into one decode, which looked like the obvious win, changed nothing by comparison.
+3. **`LlamaBackend::init()` is once per process.** ck builds one embedder to index and
+   another to embed the query, so the second call returned `BackendAlreadyInitialized` and
+   then tripped `GGML_ASSERT([rsets->data count] == 0)` in the Metal device teardown. The
+   worker is a `OnceLock` singleton, and it leaks the context, model and backend on exit
+   rather than racing Metal's resource sets.
+
+### Still to do
+
+- `bge-m3` and the paraphrase models through llama.cpp too; GGUFs exist.
+- The `OnceLock` keys nothing, so a second model in the same process gets the first one's
+  worker. Fine for one index per invocation, wrong in general.
+- Nothing has been benchmarked on Linux or with CUDA.

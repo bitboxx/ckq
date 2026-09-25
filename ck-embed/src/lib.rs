@@ -15,6 +15,8 @@ pub use reranker::{
 pub use tokenizer::TokenEstimator;
 
 #[cfg(feature = "mixedbread")]
+#[cfg(feature = "llamacpp")]
+mod llamacpp;
 mod mixedbread;
 #[cfg(feature = "mixedbread")]
 use mixedbread::MixedbreadEmbedder;
@@ -80,6 +82,21 @@ pub fn create_embedder_for_config(
                     config.name.as_str(),
                 )));
             }
+        }
+        #[cfg(feature = "llamacpp")]
+        "llamacpp" => {
+            use llama_cpp_2::context::params::LlamaPoolingType;
+            // Qwen3-Embedding is causal, so the vector is at the last token.
+            // llama.cpp applies this itself; nothing to hand-roll.
+            let gguf = std::env::var("CKQ_GGUF_FILE")
+                .unwrap_or_else(|_| "Qwen3-Embedding-0.6B-Q8_0.gguf".to_string());
+            let embedder = llamacpp::LlamaCppEmbedder::new(
+                config,
+                progress_callback,
+                &gguf,
+                LlamaPoolingType::Last,
+            )?;
+            Ok(Box::new(embedder))
         }
         "qwen" => {
             // Same ONNX path as mixedbread, but Qwen3-Embedding is causal: the

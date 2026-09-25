@@ -36,7 +36,9 @@ pub fn get_model_chunk_config(model_name: Option<&str>) -> (usize, usize) {
 
         // Multilingual models. The paraphrase pair truncates at 512, so chunks
         // must stay well under it or the tail of every chunk is silently dropped.
-        "BAAI/bge-m3" | "onnx-community/Qwen3-Embedding-0.6B-ONNX" => (1024, 200),
+        "BAAI/bge-m3"
+        | "onnx-community/Qwen3-Embedding-0.6B-ONNX"
+        | "Qwen/Qwen3-Embedding-0.6B-GGUF" => (1024, 200),
         "Xenova/paraphrase-multilingual-MiniLM-L12-v2"
         | "Xenova/paraphrase-multilingual-mpnet-base-v2" => (400, 80),
 

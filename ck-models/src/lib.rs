@@ -107,6 +107,17 @@ impl Default for ModelRegistry {
         );
 
         models.insert(
+            "qwen3-gguf".to_string(),
+            ModelConfig {
+                name: "Qwen/Qwen3-Embedding-0.6B-GGUF".to_string(),
+                provider: "llamacpp".to_string(),
+                dimensions: 1024,
+                max_tokens: 8192,
+                description: "Qwen3-Embedding 0.6B via llama.cpp, GPU-accelerated".to_string(),
+            },
+        );
+
+        models.insert(
             "qwen3-embed".to_string(),
             ModelConfig {
                 name: "onnx-community/Qwen3-Embedding-0.6B-ONNX".to_string(),

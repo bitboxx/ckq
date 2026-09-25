@@ -11,6 +11,7 @@ keywords = ["embedding", "nlp", "semantic"]
 categories = ["science"]
 
 [dependencies]
+llama-cpp-2 = { workspace = true, optional = true }
 ck-core = { workspace = true }
 ck-models = { workspace = true }
 
@@ -27,6 +28,7 @@ ndarray = { workspace = true, optional = true }
 num_cpus = { workspace = true, optional = true }
 
 [features]
+llamacpp = ["dep:llama-cpp-2"]
 default = ["fastembed", "mixedbread"]
 fastembed = ["dep:fastembed"]
 mixedbread = [

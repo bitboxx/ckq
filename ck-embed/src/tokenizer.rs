@@ -55,6 +55,7 @@ impl TokenEstimator {
             "BAAI/bge-large-en-v1.5" => 512,
             "BAAI/bge-m3" => 8192,
             "onnx-community/Qwen3-Embedding-0.6B-ONNX" => 8192,
+            "Qwen/Qwen3-Embedding-0.6B-GGUF" => 8192,
             "Xenova/paraphrase-multilingual-MiniLM-L12-v2" => 512,
             "Xenova/paraphrase-multilingual-mpnet-base-v2" => 512,
             _ => 8192, // Default to Nomic limit

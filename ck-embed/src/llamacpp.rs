@@ -32,6 +32,51 @@ const MAX_SEQ: usize = 4;
 const PER_SEQ: u32 = 2048;
 const DEFAULT_CTX: u32 = PER_SEQ * MAX_SEQ as u32;
 
+/// Talks to the shared daemon so the model is loaded once per machine rather
+/// than once per process. `LlamaCppEmbedder::new_in_process` is the daemon's own
+/// path, and the escape hatch if the socket cannot be used.
+pub struct LlamaCppDaemonClient {
+    socket: std::path::PathBuf,
+    alias: String,
+    dim: usize,
+    model_name: String,
+    pin: bool,
+}
+
+impl LlamaCppDaemonClient {
+    pub fn new(config: &ModelConfig, alias: &str, gguf: &str, dim: usize, pin: bool) -> Self {
+        Self {
+            socket: crate::embed_daemon::socket_path(&config.name, gguf),
+            alias: alias.to_string(),
+            dim,
+            model_name: config.name.clone(),
+            pin,
+        }
+    }
+}
+
+impl Embedder for LlamaCppDaemonClient {
+    fn id(&self) -> &'static str {
+        "llamacpp-daemon"
+    }
+    fn dim(&self) -> usize {
+        self.dim
+    }
+    fn model_name(&self) -> &str {
+        &self.model_name
+    }
+    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut stream = match crate::embed_daemon::try_connect(&self.socket) {
+            Some(s) => s,
+            None => crate::embed_daemon::spawn(&self.alias, &self.socket)?,
+        };
+        crate::embed_daemon::request(&mut stream, texts, self.pin)
+    }
+}
+
 pub struct LlamaCppEmbedder {
     /// `LlamaContext` is neither `Send` nor `Sync`, and ck embeds from rayon
     /// worker threads. So one dedicated thread owns the model and the context
@@ -55,7 +100,7 @@ type Workers = Mutex<HashMap<String, Arc<Result<(Sender<Job>, usize), String>>>>
 static WORKERS: OnceLock<Workers> = OnceLock::new();
 
 impl LlamaCppEmbedder {
-    pub fn new(
+    pub fn new_in_process(
         config: &ModelConfig,
         progress_callback: Option<ModelDownloadCallback>,
         gguf_file: &str,

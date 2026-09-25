@@ -337,7 +337,7 @@ struct Cli {
     #[arg(
         long = "model",
         value_name = "MODEL",
-        help = "Embedding model to use for indexing (bge-small, nomic-v1.5, jina-code, mxbai-xsmall, bge-m3, paraphrase-multilingual, paraphrase-multilingual-base) [default: bge-small]. Only used with --index."
+        help = "Embedding model for indexing: gemma-q4 (default), gemma-gguf, granite-gguf, bge-m3-gguf, qwen3-gguf. All multilingual, all served by a shared llama.cpp daemon. Only used with --index."
     )]
     model: Option<String>,
 
@@ -370,6 +370,11 @@ struct Cli {
         ]
     )]
     serve: bool,
+
+    /// Run as the shared embedding daemon for one model. Started automatically
+    /// by the first invocation; not meant to be typed.
+    #[arg(long, hide = true, value_name = "MODEL")]
+    embed_daemon: Option<String>,
 
     // TUI mode
     #[arg(
@@ -902,6 +907,20 @@ fn reset_sigpipe() {
 #[cfg(not(unix))]
 fn reset_sigpipe() {}
 
+/// Load the model in this process and serve embeddings over the socket until
+/// idle. Exits on its own; nothing supervises it.
+#[cfg(feature = "llamacpp")]
+fn run_embed_daemon(alias: &str) -> anyhow::Result<()> {
+    let registry = ck_models::ModelRegistry::default();
+    let (_, config) = registry.resolve(Some(alias))?;
+    let socket = ck_embed::embed_daemon::socket_path(&config.name, &config.gguf_file);
+
+    unsafe { std::env::set_var("CKQ_IN_PROCESS", "1") };
+    let mut embedder = ck_embed::create_embedder_for_config(&config, None)?;
+
+    ck_embed::embed_daemon::serve(socket, move |texts| embedder.embed(texts))
+}
+
 #[tokio::main]
 async fn main() {
     reset_sigpipe();
@@ -929,8 +948,17 @@ async fn run_main() -> Result<()> {
         return Ok(());
     }
 
+    // The daemon loads the model in-process; everything else talks to it.
+    #[cfg(feature = "llamacpp")]
+    if let Some(ref model) = cli.embed_daemon {
+        return run_embed_daemon(model);
+    }
+
     // Handle MCP server mode first
     if cli.serve {
+        // An MCP server is long-lived and its next query may be hours away, so
+        // keep the daemon past the idle timeout rather than paying a reload.
+        unsafe { std::env::set_var("CKQ_PIN", "1") };
         return run_mcp_server().await;
     }
 

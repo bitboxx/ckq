@@ -477,6 +477,7 @@ dependencies = [
  "once_cell",
  "ort",
  "serde",
+ "serde_json",
  "tokenizers 0.20.4",
  "tokio",
 ]

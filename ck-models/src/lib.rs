@@ -26,97 +26,9 @@ impl Default for ModelRegistry {
     fn default() -> Self {
         let mut models = HashMap::new();
 
-        models.insert(
-            "bge-small".to_string(),
-            ModelConfig {
-                name: "BAAI/bge-small-en-v1.5".to_string(),
-                provider: "fastembed".to_string(),
-                dimensions: 384,
-                max_tokens: 512,
-                description: "Small, fast English embedding model".to_string(),
-                gguf_file: String::new(),
-            },
-        );
-
-        models.insert(
-            "minilm".to_string(),
-            ModelConfig {
-                name: "sentence-transformers/all-MiniLM-L6-v2".to_string(),
-                provider: "fastembed".to_string(),
-                dimensions: 384,
-                max_tokens: 256,
-                description: "Lightweight English embedding model".to_string(),
-                gguf_file: String::new(),
-            },
-        );
-
         // Add enhanced models
-        models.insert(
-            "nomic-v1.5".to_string(),
-            ModelConfig {
-                name: "nomic-embed-text-v1.5".to_string(),
-                provider: "fastembed".to_string(),
-                dimensions: 768,
-                max_tokens: 8192,
-                description: "High-quality English embedding model with large context window"
-                    .to_string(),
-                gguf_file: String::new(),
-            },
-        );
-
-        models.insert(
-            "jina-code".to_string(),
-            ModelConfig {
-                name: "jina-embeddings-v2-base-code".to_string(),
-                provider: "fastembed".to_string(),
-                dimensions: 768,
-                max_tokens: 8192,
-                description: "Code-specific embedding model optimized for programming tasks"
-                    .to_string(),
-                gguf_file: String::new(),
-            },
-        );
-
         // Multilingual models. These three need no instruction prefix, which
         // matters because fastembed does not prepend one (see bge-m3 vs e5 below).
-        models.insert(
-            "bge-m3".to_string(),
-            ModelConfig {
-                name: "BAAI/bge-m3".to_string(),
-                provider: "fastembed".to_string(),
-                dimensions: 1024,
-                max_tokens: 8192,
-                description: "Multilingual embedding model (100+ languages, 8k context, 1024 dims)"
-                    .to_string(),
-                gguf_file: String::new(),
-            },
-        );
-
-        models.insert(
-            "paraphrase-multilingual".to_string(),
-            ModelConfig {
-                name: "Xenova/paraphrase-multilingual-MiniLM-L12-v2".to_string(),
-                provider: "fastembed".to_string(),
-                dimensions: 384,
-                max_tokens: 512,
-                description: "Small multilingual embedding model (50+ languages, 384 dims)"
-                    .to_string(),
-                gguf_file: String::new(),
-            },
-        );
-
-        models.insert(
-            "paraphrase-multilingual-base".to_string(),
-            ModelConfig {
-                name: "Xenova/paraphrase-multilingual-mpnet-base-v2".to_string(),
-                provider: "fastembed".to_string(),
-                dimensions: 768,
-                max_tokens: 512,
-                description: "Multilingual embedding model (50+ languages, 768 dims)".to_string(),
-                gguf_file: String::new(),
-            },
-        );
-
         models.insert(
             "bge-m3-gguf".to_string(),
             ModelConfig {
@@ -126,6 +38,18 @@ impl Default for ModelRegistry {
                 max_tokens: 8192,
                 description: "BGE-M3 multilingual via llama.cpp, 8k context".to_string(),
                 gguf_file: "bge-m3-Q8_0.gguf".to_string(),
+            },
+        );
+
+        models.insert(
+            "gemma-q4".to_string(),
+            ModelConfig {
+                name: "ggml-org/embeddinggemma-300M-qat-q4_0-GGUF".to_string(),
+                provider: "llamacpp".to_string(),
+                dimensions: 768,
+                max_tokens: 2048,
+                description: "EmbeddingGemma 300M, quantization-aware trained Q4_0".to_string(),
+                gguf_file: "embeddinggemma-300M-qat-Q4_0.gguf".to_string(),
             },
         );
 
@@ -167,37 +91,12 @@ impl Default for ModelRegistry {
             },
         );
 
-        models.insert(
-            "qwen3-embed".to_string(),
-            ModelConfig {
-                name: "onnx-community/Qwen3-Embedding-0.6B-ONNX".to_string(),
-                provider: "qwen".to_string(),
-                dimensions: 1024,
-                max_tokens: 8192,
-                description: "Qwen3-Embedding 0.6B, multilingual, 1024 dims, last-token pooling"
-                    .to_string(),
-                gguf_file: String::new(),
-            },
-        );
-
-        models.insert(
-            "mxbai-xsmall".to_string(),
-            ModelConfig {
-                name: "mixedbread-ai/mxbai-embed-xsmall-v1".to_string(),
-                provider: "mixedbread".to_string(),
-                dimensions: 384,
-                max_tokens: 4096,
-                description: "Mixedbread xsmall embedding model (4k context, 384 dims) optimized for local semantic search".to_string(),
-                gguf_file: String::new(),
-            },
-        );
-
         Self {
             models,
             // ckq defaults to a multilingual model. bge-small is English-only and
             // scored 2/4 on the trilingual fixture where this scores 4/4, at
             // roughly stock ck's search latency.
-            default_model: "gemma-gguf".to_string(),
+            default_model: "gemma-q4".to_string(),
         }
     }
 }
@@ -413,16 +312,16 @@ mod tests {
     use super::*;
 
     const MULTILINGUAL: [(&str, &str, usize, usize); 3] = [
-        ("bge-m3", "BAAI/bge-m3", 1024, 8192),
         (
-            "paraphrase-multilingual",
-            "Xenova/paraphrase-multilingual-MiniLM-L12-v2",
-            384,
-            512,
+            "gemma-q4",
+            "ggml-org/embeddinggemma-300M-qat-q4_0-GGUF",
+            768,
+            2048,
         ),
+        ("gemma-gguf", "ggml-org/embeddinggemma-300M-GGUF", 768, 2048),
         (
-            "paraphrase-multilingual-base",
-            "Xenova/paraphrase-multilingual-mpnet-base-v2",
+            "granite-gguf",
+            "bartowski/granite-embedding-278m-multilingual-GGUF",
             768,
             512,
         ),
@@ -444,7 +343,7 @@ mod tests {
                 config.max_tokens, max_tokens,
                 "wrong max_tokens for '{alias}'"
             );
-            assert_eq!(config.provider, "fastembed", "wrong provider for '{alias}'");
+            assert_eq!(config.provider, "llamacpp", "wrong provider for '{alias}'");
         }
     }
 
@@ -468,8 +367,8 @@ mod tests {
         let registry = ModelRegistry::default();
 
         let (alias, config) = registry.resolve(None).expect("default should resolve");
-        assert_eq!(alias, "gemma-gguf");
-        assert_eq!(config.name, "ggml-org/embeddinggemma-300M-GGUF");
+        assert_eq!(alias, "gemma-q4");
+        assert_eq!(config.name, "ggml-org/embeddinggemma-300M-qat-q4_0-GGUF");
         assert_eq!(config.provider, "llamacpp");
     }
 

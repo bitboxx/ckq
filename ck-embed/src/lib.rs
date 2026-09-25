@@ -16,6 +16,8 @@ pub use tokenizer::TokenEstimator;
 
 #[cfg(feature = "mixedbread")]
 #[cfg(feature = "llamacpp")]
+pub mod embed_daemon;
+#[cfg(feature = "llamacpp")]
 mod llamacpp;
 mod mixedbread;
 #[cfg(feature = "mixedbread")]
@@ -91,13 +93,28 @@ pub fn create_embedder_for_config(
             // EmbeddingGemma are encoders and want CLS or mean. Hardcoding one
             // would silently corrupt the others, so let the model declare it.
             let gguf = std::env::var("CKQ_GGUF_FILE").unwrap_or_else(|_| config.gguf_file.clone());
-            let embedder = llamacpp::LlamaCppEmbedder::new(
+            // CKQ_IN_PROCESS is the daemon's own path, and the escape hatch.
+            if std::env::var("CKQ_IN_PROCESS").is_ok() {
+                let embedder = llamacpp::LlamaCppEmbedder::new_in_process(
+                    config,
+                    progress_callback,
+                    &gguf,
+                    LlamaPoolingType::Unspecified,
+                )?;
+                return Ok(Box::new(embedder));
+            }
+            // Otherwise talk to the shared daemon: one model per machine, not
+            // one per process. CKQ_PIN keeps it alive past the idle timeout,
+            // which is what `--serve` wants.
+            let alias = std::env::var("CKQ_MODEL_ALIAS").unwrap_or_else(|_| config.name.clone());
+            let pin = std::env::var("CKQ_PIN").is_ok();
+            Ok(Box::new(llamacpp::LlamaCppDaemonClient::new(
                 config,
-                progress_callback,
+                &alias,
                 &gguf,
-                LlamaPoolingType::Unspecified,
-            )?;
-            Ok(Box::new(embedder))
+                config.dimensions,
+                pin,
+            )))
         }
         "qwen" => {
             // Same ONNX path as mixedbread, but Qwen3-Embedding is causal: the

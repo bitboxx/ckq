@@ -39,7 +39,9 @@ pub fn get_model_chunk_config(model_name: Option<&str>) -> (usize, usize) {
         "BAAI/bge-m3"
         | "onnx-community/Qwen3-Embedding-0.6B-ONNX"
         | "Qwen/Qwen3-Embedding-0.6B-GGUF" => (1024, 200),
-        "ggml-org/embeddinggemma-300M-GGUF" | "gpustack/bge-m3-GGUF" => (1024, 200),
+        "ggml-org/embeddinggemma-300M-GGUF"
+        | "ggml-org/embeddinggemma-300M-qat-q4_0-GGUF"
+        | "gpustack/bge-m3-GGUF" => (1024, 200),
         "bartowski/granite-embedding-278m-multilingual-GGUF" => (400, 80),
         "Xenova/paraphrase-multilingual-MiniLM-L12-v2"
         | "Xenova/paraphrase-multilingual-mpnet-base-v2" => (400, 80),

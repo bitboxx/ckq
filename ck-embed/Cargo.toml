@@ -11,6 +11,7 @@ keywords = ["embedding", "nlp", "semantic"]
 categories = ["science"]
 
 [dependencies]
+serde_json = { workspace = true }
 ck-core = { workspace = true }
 ck-models = { workspace = true }
 

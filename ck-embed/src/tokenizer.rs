@@ -57,7 +57,9 @@ impl TokenEstimator {
             "onnx-community/Qwen3-Embedding-0.6B-ONNX" => 8192,
             "Qwen/Qwen3-Embedding-0.6B-GGUF" => 8192,
             "bartowski/granite-embedding-278m-multilingual-GGUF" => 512,
-            "ggml-org/embeddinggemma-300M-GGUF" => 2048,
+            "ggml-org/embeddinggemma-300M-GGUF" | "ggml-org/embeddinggemma-300M-qat-q4_0-GGUF" => {
+                2048
+            }
             "gpustack/bge-m3-GGUF" => 8192,
             "Xenova/paraphrase-multilingual-MiniLM-L12-v2" => 512,
             "Xenova/paraphrase-multilingual-mpnet-base-v2" => 512,

@@ -165,7 +165,7 @@ fn test_switch_model_skips_when_same_model() {
     let updated_before = read_manifest_updated(temp_dir.path());
 
     let output = ck_command()
-        .args(["--switch-model", "gemma-q4"])
+        .args(["--switch-model", "granite-gguf"])
         .current_dir(temp_dir.path())
         .output()
         .expect("ck --switch-model should run");
@@ -183,7 +183,8 @@ fn test_switch_model_skips_when_same_model() {
 
 /// Switches to the model the index already uses, on purpose: `--force` must
 /// rebuild anyway. Any other alias would download a second model for a test
-/// that is about the force flag, not about the model.
+/// that is about the force flag, not about the model. Keep this alias equal to
+/// the registry default.
 #[test]
 #[serial]
 fn test_switch_model_force_rebuild() {
@@ -206,7 +207,7 @@ fn test_switch_model_force_rebuild() {
     std::thread::sleep(std::time::Duration::from_secs(1));
 
     let output = ck_command()
-        .args(["--switch-model", "gemma-q4", "--force"])
+        .args(["--switch-model", "granite-gguf", "--force"])
         .current_dir(temp_dir.path())
         .output()
         .expect("ck --switch-model --force should run");

@@ -60,8 +60,9 @@ impl Default for ModelRegistry {
                 provider: "llamacpp".to_string(),
                 dimensions: 768,
                 max_tokens: 512,
-                description: "IBM Granite 278M multilingual, no instruction prefix needed"
-                    .to_string(),
+                description:
+                    "IBM Granite 278M multilingual, Apache-2.0, no instruction prefix needed"
+                        .to_string(),
                 gguf_file: "granite-embedding-278m-multilingual-Q8_0.gguf".to_string(),
             },
         );
@@ -96,7 +97,7 @@ impl Default for ModelRegistry {
             // ckq defaults to a multilingual model. bge-small is English-only and
             // scored 2/4 on the trilingual fixture where this scores 4/4, at
             // roughly stock ck's search latency.
-            default_model: "gemma-q4".to_string(),
+            default_model: "granite-gguf".to_string(),
         }
     }
 }
@@ -367,8 +368,11 @@ mod tests {
         let registry = ModelRegistry::default();
 
         let (alias, config) = registry.resolve(None).expect("default should resolve");
-        assert_eq!(alias, "gemma-q4");
-        assert_eq!(config.name, "ggml-org/embeddinggemma-300M-qat-q4_0-GGUF");
+        assert_eq!(alias, "granite-gguf");
+        assert_eq!(
+            config.name,
+            "bartowski/granite-embedding-278m-multilingual-GGUF"
+        );
         assert_eq!(config.provider, "llamacpp");
     }
 

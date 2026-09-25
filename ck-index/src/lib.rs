@@ -34,6 +34,49 @@ fn legacy_model_config(name: &str, dimensions: Option<usize>) -> ck_models::Mode
 /// in a single call while a long file still reports progress several times.
 const EMBED_BATCH: usize = 32;
 
+/// Where an index run spends its time, for `CKQ_TIMING=1`.
+///
+/// Wall time alone cannot say whether a slow index is the model, the chunker or
+/// the disk, and guessing at it wasted an afternoon once. Nanoseconds, summed
+/// across the run, printed at the end.
+pub mod timing {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Instant;
+
+    pub static READ_NS: AtomicU64 = AtomicU64::new(0);
+    pub static CHUNK_NS: AtomicU64 = AtomicU64::new(0);
+    pub static EMBED_NS: AtomicU64 = AtomicU64::new(0);
+    pub static WRITE_NS: AtomicU64 = AtomicU64::new(0);
+
+    pub fn enabled() -> bool {
+        std::env::var_os("CKQ_TIMING").is_some()
+    }
+
+    pub fn record<T>(counter: &AtomicU64, f: impl FnOnce() -> T) -> T {
+        if !enabled() {
+            return f();
+        }
+        let start = Instant::now();
+        let out = f();
+        counter.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        out
+    }
+
+    pub fn report() {
+        if !enabled() {
+            return;
+        }
+        let ms = |c: &AtomicU64| c.load(Ordering::Relaxed) as f64 / 1e6;
+        eprintln!(
+            "ckq timing: read {:.0} ms, chunk {:.0} ms, embed {:.0} ms, write {:.0} ms",
+            ms(&READ_NS),
+            ms(&CHUNK_NS),
+            ms(&EMBED_NS),
+            ms(&WRITE_NS)
+        );
+    }
+}
+
 pub type ProgressCallback = Box<dyn Fn(&str) + Send + Sync>;
 
 /// Detailed progress information for embedding operations
@@ -377,7 +420,9 @@ async fn index_directory_inner(
                 Ok(entry) => {
                     // Write sidecar immediately
                     let sidecar_path = get_sidecar_path(path, file_path);
-                    save_index_entry(&sidecar_path, &entry)?;
+                    timing::record(&timing::WRITE_NS, || {
+                        save_index_entry(&sidecar_path, &entry)
+                    })?;
 
                     // Update and save manifest immediately
                     let manifest_key = entry.metadata.path.clone();
@@ -1046,7 +1091,9 @@ pub async fn smart_update_index_with_detailed_progress(
 
                     // Write sidecar immediately
                     let sidecar_path = get_sidecar_path(path, file_path);
-                    save_index_entry(&sidecar_path, &entry)?;
+                    timing::record(&timing::WRITE_NS, || {
+                        save_index_entry(&sidecar_path, &entry)
+                    })?;
 
                     // Update and save manifest immediately
                     let manifest_key = entry.metadata.path.clone();
@@ -1174,6 +1221,7 @@ pub async fn smart_update_index_with_detailed_progress(
         save_manifest(&manifest_path, &manifest)?;
     }
 
+    timing::report();
     Ok(stats)
 }
 
@@ -1227,7 +1275,7 @@ fn index_single_file_with_progress(
 
     // Preprocess file (extracts PDFs to cache, returns path to readable content)
     let content_path = preprocess_file(file_path, repo_root)?;
-    let content = fs::read_to_string(&content_path)?;
+    let content = timing::record(&timing::READ_NS, || fs::read_to_string(&content_path))?;
 
     // Always use the ORIGINAL file for hash and metadata
     let hash = compute_file_hash(file_path)?;
@@ -1254,7 +1302,9 @@ fn index_single_file_with_progress(
     };
 
     let model_name = embedder.as_ref().map(|e| e.model_name());
-    let chunks = ck_chunk::chunk_text_with_model(&content, lang, model_name)?;
+    let chunks = timing::record(&timing::CHUNK_NS, || {
+        ck_chunk::chunk_text_with_model(&content, lang, model_name)
+    })?;
 
     // Track chunk reuse statistics
     let mut chunks_reused = 0;
@@ -1333,7 +1383,7 @@ fn index_single_file_with_progress(
                 }
 
                 let texts: Vec<String> = batch.iter().map(|(text, _)| text.clone()).collect();
-                let embeddings = embedder.embed(&texts)?;
+                let embeddings = timing::record(&timing::EMBED_NS, || embedder.embed(&texts))?;
                 if embeddings.len() != batch.len() {
                     return Err(anyhow::anyhow!(
                         "Embedder returned {} embeddings for {} chunks in file {:?}. Expected equal counts.",

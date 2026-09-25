@@ -75,9 +75,9 @@ QUICK START EXAMPLES:
     ckq -w "test" .                    # Match whole words only
     ckq -F "log.Error()" .             # Fixed string (no regex)
 
-  Embedding models (all multilingual GGUF, default gemma-q4):
-    ckq --index --model gemma-q4       # EmbeddingGemma-300M, QAT Q4_0. The default
-    ckq --index --model granite-gguf   # granite-embedding-278m-multilingual, Apache-2.0
+  Embedding models (all multilingual GGUF, default granite-gguf):
+    ckq --index --model granite-gguf   # granite-embedding-278m-multilingual. The default
+    ckq --index --model gemma-q4       # EmbeddingGemma-300M, QAT Q4_0
     ckq --index --model bge-m3-gguf    # BGE-M3, 1024 dims
     ckq --index --model qwen3-gguf     # Qwen3-Embedding-0.6B, last-token pooling
     ckq --sem "auth" --rerank          # Enable reranking for better relevance
@@ -346,7 +346,7 @@ struct Cli {
     #[arg(
         long = "model",
         value_name = "MODEL",
-        help = "Embedding model for indexing: gemma-q4 (default), gemma-gguf, granite-gguf, bge-m3-gguf, qwen3-gguf. All multilingual, all served by a shared llama.cpp daemon. Only used with --index."
+        help = "Embedding model for indexing: granite-gguf (default), gemma-q4, gemma-gguf, bge-m3-gguf, qwen3-gguf. All multilingual, all run on llama.cpp. Only used with --index."
     )]
     model: Option<String>,
 
@@ -977,6 +977,15 @@ fn main() {
     // the snapshot is passed down explicitly.
     let cli = Cli::parse();
     let mut embed_options = ck_embed::EmbedderOptions::from_env();
+    // An index run is one long-lived process that uses the model from start to
+    // finish, which is the one case the daemon does not help: it exists so that
+    // many short searches share one copy. Going through it costs a measured 26%
+    // on a full index (20.7 s against 15.3 s on the same corpus, three runs
+    // each, and the in-process figure includes loading the model). The cost is
+    // that an index run holds its own copy while a daemon may also be resident.
+    if cli.index || cli.switch_model.is_some() {
+        embed_options.in_process = true;
+    }
     if cli.serve {
         embed_options.pin = true;
         // Take a pin connection and hold it for the life of the server. Without

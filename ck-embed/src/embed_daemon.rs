@@ -13,7 +13,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use parking_lot::Mutex;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -133,13 +133,23 @@ pub fn bind(path: &Path) -> Result<Option<UnixListener>> {
 /// Ask a running daemon to embed. One JSON line out, one JSON line back.
 /// There is deliberately no read timeout: the daemon binds before it loads
 /// the model, so the first request may legitimately block for the whole load.
+/// Ask the daemon for embeddings.
+///
+/// The request is a JSON line, because it is small and readable. The reply is a
+/// JSON header line followed by the vectors as raw little-endian f32. JSON both
+/// ways cost 5.2 s of a 20.7 s index run, a quarter of the whole thing, because
+/// a 768-float vector is about 9 KB of decimal text that both sides format and
+/// parse for every chunk. Nothing else changes: the socket key already carries
+/// the binary's own stamp, so a daemon and a client of different vintages never
+/// meet.
 pub fn request(stream: &mut UnixStream, texts: &[String], pin: bool) -> Result<Vec<Vec<f32>>> {
     let payload = serde_json::json!({ "texts": texts, "pin": pin });
     writeln!(stream, "{payload}").context("writing to embed daemon")?;
     stream.flush()?;
 
+    let mut reader = BufReader::new(stream.try_clone()?);
     let mut line = String::new();
-    BufReader::new(stream.try_clone()?)
+    reader
         .read_line(&mut line)
         .context("reading from embed daemon")?;
     if line.trim().is_empty() {
@@ -149,7 +159,21 @@ pub fn request(stream: &mut UnixStream, texts: &[String], pin: bool) -> Result<V
     if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
         return Err(anyhow!("embed daemon: {err}"));
     }
-    serde_json::from_value(v["embeddings"].clone()).context("decoding embeddings")
+    let n = v["n"].as_u64().context("reply has no vector count")? as usize;
+    let dim = v["dim"].as_u64().context("reply has no dimension")? as usize;
+    let mut buf = vec![0u8; n * dim * 4];
+    reader
+        .read_exact(&mut buf)
+        .context("reading vectors from embed daemon")?;
+    let mut out = Vec::with_capacity(n);
+    for row in buf.chunks_exact(dim * 4) {
+        out.push(
+            row.chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect(),
+        );
+    }
+    Ok(out)
 }
 
 /// Where a daemon's stderr goes. One per socket, so two models do not share.
@@ -312,6 +336,20 @@ where
 }
 
 /// Serve every request line on one connection until it closes or times out.
+/// A header line then the vectors as raw little-endian f32, row by row.
+fn write_vectors(writer: &mut UnixStream, vectors: &[Vec<f32>]) -> std::io::Result<()> {
+    let dim = vectors.first().map(|v| v.len()).unwrap_or(0);
+    let header = serde_json::json!({ "n": vectors.len(), "dim": dim });
+    writeln!(writer, "{header}")?;
+    let mut buf = Vec::with_capacity(vectors.len() * dim * 4);
+    for v in vectors {
+        for x in v {
+            buf.extend_from_slice(&x.to_le_bytes());
+        }
+    }
+    writer.write_all(&buf)
+}
+
 fn handle_conn<F>(stream: UnixStream, embed: &Mutex<F>, last: &Mutex<Instant>, pinned: &AtomicUsize)
 where
     F: FnMut(&[String]) -> Result<Vec<Vec<f32>>>,
@@ -342,13 +380,20 @@ where
                     serde_json::from_value(v["texts"].clone()).unwrap_or_default();
                 let mut embed = embed.lock();
                 match embed(&texts) {
-                    Ok(e) => serde_json::json!({ "embeddings": e }),
-                    Err(e) => serde_json::json!({ "error": e.to_string() }),
+                    Ok(e) => Ok(e),
+                    Err(e) => Err(e.to_string()),
                 }
             }
-            Err(e) => serde_json::json!({ "error": e.to_string() }),
+            Err(e) => Err(e.to_string()),
         };
-        if writeln!(writer, "{reply}").is_err() {
+        let wrote = match reply {
+            Ok(vectors) => write_vectors(&mut writer, &vectors),
+            Err(message) => {
+                let body = serde_json::json!({ "error": message });
+                writeln!(writer, "{body}")
+            }
+        };
+        if wrote.is_err() {
             break;
         }
         let _ = writer.flush();

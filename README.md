@@ -232,9 +232,57 @@ hand-rolled last-token arithmetic the ONNX path needs.
    worker is a `OnceLock` singleton, and it leaks the context, model and backend on exit
    rather than racing Metal's resource sets.
 
+## Smaller models, and Linux
+
+Two smaller multilingual embedders were added, both through llama.cpp, both with a GGUF:
+
+| alias | model | params | dims |
+|---|---|---:|---:|
+| `qwen3-gguf` | Qwen3-Embedding-0.6B | 600M | 1024 |
+| `granite-gguf` | IBM granite-embedding-278m-multilingual | 278M | 768 |
+| `gemma-gguf` | ggml-org/embeddinggemma-300M | 300M | 768 |
+
+**All three score 4 of 4** at rank 1 on the trilingual fixture, where stock ck's
+`bge-small` scores 2 of 4. Granite separates best: 0.65-0.77 for the right note against
+Qwen's 0.50-0.52.
+
+Pooling is no longer hardcoded. `LlamaPoolingType::Unspecified` makes llama.cpp read it
+from GGUF metadata, which matters because Qwen is causal and wants last-token while
+Granite and EmbeddingGemma are encoders wanting CLS or mean.
+
+### Benchmarks, 347 KB of identical synthetic multilingual text
+
+| model | Mac Studio, Metal | nara, AMD RX 7600 XT, Vulkan |
+|---|---:|---:|
+| `granite-gguf` | 10.28 s | **8.63 s** |
+| `gemma-gguf` | **9.22 s** | 14.21 s |
+| `qwen3-gguf` | **28.40 s** | 53.08 s |
+
+Linux works, with the GPU: `ggml_vulkan: Found 1 Vulkan devices ... AMD Radeon RX 7600 XT
+(RADV NAVI33)` and every layer assigned to `Vulkan0`. The backend is selected per platform
+in `ck-embed/Cargo.toml`, Metal on macOS and Vulkan elsewhere, so nothing needed changing
+to build there. The build took 5m38s from cold.
+
+The Mac wins on two of three; nara wins on Granite. Neither machine is dramatically ahead,
+which is a reasonable result for a 7600 XT against an M-series GPU.
+
+**Granite is the pick.** Roughly 2.7x faster than Qwen on both machines, less than half the
+parameters, same accuracy on the fixture, better score separation. Extrapolating the
+92 KB-of-real-notes measurement, it puts a full vault index near 6 minutes, which is under
+LEANN's measured 8.
+
+### Two bugs the smaller models exposed
+
+- **`n_seq_max` was never set,** so the context defaulted to one sequence while up to 16
+  were added per batch. Qwen and Granite happened to survive it; EmbeddingGemma aborted
+  inside `llama_decode`. It was a correctness risk for all three, not a Gemma bug.
+- **`n_ctx` is split evenly across `n_seq_max` KV slots.** Setting `n_seq_max` to 16 left
+  512 tokens per sequence and Qwen's 1285-token chunks failed with `NoKvCacheSlot`. The
+  two constants are one decision: `MAX_SEQ = 4` and `PER_SEQ = 2048` give `n_ctx = 8192`.
+
 ### Still to do
 
-- `bge-m3` and the paraphrase models through llama.cpp too; GGUFs exist.
-- The `OnceLock` keys nothing, so a second model in the same process gets the first one's
+- `bge-m3` and the paraphrase models through llama.cpp; GGUFs exist.
+- The `OnceLock` keys nothing, so a second model in one process gets the first one's
   worker. Fine for one index per invocation, wrong in general.
-- Nothing has been benchmarked on Linux or with CUDA.
+- No CUDA machine to test on.

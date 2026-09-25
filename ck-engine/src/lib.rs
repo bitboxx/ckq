@@ -222,6 +222,7 @@ fn legacy_model_config(name: &str, dimensions: usize) -> ck_models::ModelConfig 
         dimensions,
         max_tokens: 8192,
         description: "Legacy ck embedding model preserved for backwards compatibility".to_string(),
+        gguf_file: String::new(),
     }
 }
 

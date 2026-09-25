@@ -22,6 +22,7 @@ fn legacy_model_config(name: &str, dimensions: Option<usize>) -> ck_models::Mode
         dimensions: dimensions.unwrap_or(384),
         max_tokens: 8192,
         description: "Legacy ck embedding model (inferred from manifest)".to_string(),
+        gguf_file: String::new(),
     }
 }
 

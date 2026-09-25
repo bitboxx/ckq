@@ -11,7 +11,6 @@ keywords = ["embedding", "nlp", "semantic"]
 categories = ["science"]
 
 [dependencies]
-llama-cpp-2 = { workspace = true, optional = true }
 ck-core = { workspace = true }
 ck-models = { workspace = true }
 
@@ -26,6 +25,15 @@ ort = { workspace = true, optional = true }
 once_cell = { workspace = true, optional = true }
 ndarray = { workspace = true, optional = true }
 num_cpus = { workspace = true, optional = true }
+
+
+# GPU backend per platform: Metal on Apple Silicon, Vulkan elsewhere (covers AMD,
+# Intel and NVIDIA without vendor-specific builds, unlike DirectML or CUDA).
+[target.'cfg(target_os = "macos")'.dependencies]
+llama-cpp-2 = { workspace = true, optional = true, features = ["metal"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+llama-cpp-2 = { workspace = true, optional = true, features = ["vulkan"] }
 
 [features]
 llamacpp = ["dep:llama-cpp-2"]

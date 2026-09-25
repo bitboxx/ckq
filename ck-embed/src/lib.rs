@@ -86,15 +86,17 @@ pub fn create_embedder_for_config(
         #[cfg(feature = "llamacpp")]
         "llamacpp" => {
             use llama_cpp_2::context::params::LlamaPoolingType;
-            // Qwen3-Embedding is causal, so the vector is at the last token.
-            // llama.cpp applies this itself; nothing to hand-roll.
+            // Unspecified means llama.cpp reads the pooling type out of the GGUF
+            // metadata. Qwen is causal and wants last-token; Granite and
+            // EmbeddingGemma are encoders and want CLS or mean. Hardcoding one
+            // would silently corrupt the others, so let the model declare it.
             let gguf = std::env::var("CKQ_GGUF_FILE")
-                .unwrap_or_else(|_| "Qwen3-Embedding-0.6B-Q8_0.gguf".to_string());
+                .unwrap_or_else(|_| config.gguf_file.clone());
             let embedder = llamacpp::LlamaCppEmbedder::new(
                 config,
                 progress_callback,
                 &gguf,
-                LlamaPoolingType::Last,
+                LlamaPoolingType::Unspecified,
             )?;
             Ok(Box::new(embedder))
         }

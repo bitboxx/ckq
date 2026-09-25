@@ -10,6 +10,10 @@ pub struct ModelConfig {
     pub dimensions: usize,
     pub max_tokens: usize,
     pub description: String,
+    /// Which file to pull from the repo. Only meaningful for the llamacpp
+    /// provider, where one GGUF repo holds several quantizations.
+    #[serde(default)]
+    pub gguf_file: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +34,7 @@ impl Default for ModelRegistry {
                 dimensions: 384,
                 max_tokens: 512,
                 description: "Small, fast English embedding model".to_string(),
+                gguf_file: String::new(),
             },
         );
 
@@ -41,6 +46,7 @@ impl Default for ModelRegistry {
                 dimensions: 384,
                 max_tokens: 256,
                 description: "Lightweight English embedding model".to_string(),
+                gguf_file: String::new(),
             },
         );
 
@@ -54,6 +60,7 @@ impl Default for ModelRegistry {
                 max_tokens: 8192,
                 description: "High-quality English embedding model with large context window"
                     .to_string(),
+                gguf_file: String::new(),
             },
         );
 
@@ -66,6 +73,7 @@ impl Default for ModelRegistry {
                 max_tokens: 8192,
                 description: "Code-specific embedding model optimized for programming tasks"
                     .to_string(),
+                gguf_file: String::new(),
             },
         );
 
@@ -80,6 +88,7 @@ impl Default for ModelRegistry {
                 max_tokens: 8192,
                 description: "Multilingual embedding model (100+ languages, 8k context, 1024 dims)"
                     .to_string(),
+                gguf_file: String::new(),
             },
         );
 
@@ -92,6 +101,7 @@ impl Default for ModelRegistry {
                 max_tokens: 512,
                 description: "Small multilingual embedding model (50+ languages, 384 dims)"
                     .to_string(),
+                gguf_file: String::new(),
             },
         );
 
@@ -103,6 +113,33 @@ impl Default for ModelRegistry {
                 dimensions: 768,
                 max_tokens: 512,
                 description: "Multilingual embedding model (50+ languages, 768 dims)".to_string(),
+                gguf_file: String::new(),
+            },
+        );
+
+        models.insert(
+            "granite-gguf".to_string(),
+            ModelConfig {
+                name: "bartowski/granite-embedding-278m-multilingual-GGUF".to_string(),
+                provider: "llamacpp".to_string(),
+                dimensions: 768,
+                max_tokens: 512,
+                description: "IBM Granite 278M multilingual, no instruction prefix needed"
+                    .to_string(),
+                gguf_file: "granite-embedding-278m-multilingual-Q8_0.gguf".to_string(),
+            },
+        );
+
+        models.insert(
+            "gemma-gguf".to_string(),
+            ModelConfig {
+                name: "ggml-org/embeddinggemma-300M-GGUF".to_string(),
+                provider: "llamacpp".to_string(),
+                dimensions: 768,
+                max_tokens: 2048,
+                description: "EmbeddingGemma 300M, 100+ languages (wants a task prefix)"
+                    .to_string(),
+                gguf_file: "embeddinggemma-300M-Q8_0.gguf".to_string(),
             },
         );
 
@@ -114,6 +151,7 @@ impl Default for ModelRegistry {
                 dimensions: 1024,
                 max_tokens: 8192,
                 description: "Qwen3-Embedding 0.6B via llama.cpp, GPU-accelerated".to_string(),
+                gguf_file: "Qwen3-Embedding-0.6B-Q8_0.gguf".to_string(),
             },
         );
 
@@ -126,6 +164,7 @@ impl Default for ModelRegistry {
                 max_tokens: 8192,
                 description: "Qwen3-Embedding 0.6B, multilingual, 1024 dims, last-token pooling"
                     .to_string(),
+                gguf_file: String::new(),
             },
         );
 
@@ -137,6 +176,7 @@ impl Default for ModelRegistry {
                 dimensions: 384,
                 max_tokens: 4096,
                 description: "Mixedbread xsmall embedding model (4k context, 384 dims) optimized for local semantic search".to_string(),
+                gguf_file: String::new(),
             },
         );
 

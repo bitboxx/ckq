@@ -82,7 +82,7 @@ tokenizers = "0.20.1"
 # https://github.com/BeaconBay/ck/pull/<TODO> for follow-up to evaluate rc.12.
 # llama.cpp backend: the only path to the Apple GPU from Rust, and it knows the
 # model architectures so pooling, position ids and the KV cache are its problem.
-llama-cpp-2 = { version = "0.1.157", features = ["metal"] }
+llama-cpp-2 = { version = "0.1.157" }
 ort = { version = "=2.0.0-rc.11", default-features = false, features = ["download-binaries", "tls-native", "ndarray", "std", "coreml"] }   # coreml: ckq runs embedders on the ANE/GPU, not just CPU
 once_cell = "1.21"
 ndarray = { version = "0.17", default-features = false, features = ["std"] }

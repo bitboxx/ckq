@@ -23,9 +23,13 @@ use crate::{Embedder, ModelDownloadCallback};
 
 /// Offload every layer. llama.cpp silently keeps on CPU whatever will not fit.
 const GPU_LAYERS: u32 = 1000;
-const DEFAULT_CTX: u32 = 8192;
-/// llama.cpp allocates per-sequence state, so keep the batch width sane.
-const MAX_SEQ: usize = 16;
+/// llama.cpp splits `n_ctx` evenly across `n_seq_max` KV slots, so these two are
+/// one decision, not two: each sequence gets `DEFAULT_CTX / MAX_SEQ` tokens and a
+/// chunk larger than that fails with `NoKvCacheSlot`. ck targets 1024-token
+/// chunks, so 2048 per sequence leaves headroom.
+const MAX_SEQ: usize = 4;
+const PER_SEQ: u32 = 2048;
+const DEFAULT_CTX: u32 = PER_SEQ * MAX_SEQ as u32;
 
 pub struct LlamaCppEmbedder {
     /// `LlamaContext` is neither `Send` nor `Sync`, and ck embeds from rayon
@@ -62,7 +66,7 @@ impl LlamaCppEmbedder {
 
         let gguf = gguf_file.to_string();
         let declared = config.dimensions;
-        let max_length = config.max_tokens.min(DEFAULT_CTX as usize);
+        let max_length = config.max_tokens.min(PER_SEQ as usize);
         let name = config.name.clone();
 
         let started = WORKER.get_or_init(move || {
@@ -186,6 +190,12 @@ fn start_worker(
                 .with_n_ctx(Some(n_ctx))
                 .with_n_threads_batch(num_cpus::get().max(1) as i32)
                 .with_embeddings(true)
+                // Without these the context defaults to one sequence and a small
+                // batch, and adding more sequences aborts inside llama_decode.
+                // Qwen and Granite happened to survive it; EmbeddingGemma did not.
+                .with_n_seq_max(MAX_SEQ as u32)
+                .with_n_batch(DEFAULT_CTX)
+                .with_n_ubatch(DEFAULT_CTX)
                 .with_pooling_type(pooling);
             let mut ctx = match model.new_context(&backend, ctx_params) {
                 Ok(c) => c,

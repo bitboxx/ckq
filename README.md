@@ -355,3 +355,24 @@ which is an agent issuing many searches.
 Cost either way: `gemma-gguf` at Q8 is about 320 MB resident, against LEANN's 1.2 GB
 for Qwen. The worker cache is keyed by model, so a server touching two models runs two
 workers rather than silently reusing the first one's weights.
+
+### Concurrent CLI invocations do not share anything
+
+The worker cache is a `Mutex<HashMap>` in process memory. It shares the model between the
+indexer and the query embedder within one invocation; it cannot reach across processes.
+Two agents running `ckq` at once means two model loads. Measured on the fixture:
+
+| | |
+|---|---:|
+| one search process, peak RSS | ~235 MB |
+| two concurrent, combined peak | **470 MB** |
+| two searches serially | 0.83 s |
+| two searches concurrently | **0.89 s** |
+
+Concurrent is *slower* than serial: they contend on the GPU and gain nothing from
+overlapping. So parallel CLI searches cost double the memory for negative speedup.
+
+`ckq --serve` is one process, one worker thread, one model, roughly 320 MB no matter how
+many clients, with requests queued through the channel instead of fighting for the GPU.
+With more than one consumer this stops being a latency optimisation and becomes the
+correct deployment.

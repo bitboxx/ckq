@@ -29,7 +29,7 @@ fn resolve_content_path(file_path: &Path, repo_root: &Path) -> Result<PathBuf> {
         let cache_path = ck_core::pdf::get_content_cache_path(repo_root, file_path);
         if !cache_path.exists() {
             return Err(anyhow::anyhow!(
-                "PDF not preprocessed. Run 'ck --index' first."
+                "PDF not preprocessed. Run 'ckq --index' first."
             ));
         }
         Ok(cache_path)
@@ -258,7 +258,7 @@ pub(crate) fn resolve_model_from_root(
                 if requested_config.name != resolved_existing.config.name {
                     let suggested_alias = resolved_existing.alias.clone();
                     return Err(CkError::Embedding(format!(
-                        "Index was built with embedding model '{}' (alias '{}'), but '--model {}' was requested. To switch models run `ck --clean .` then `ck --index --model {}`. To keep using this index rerun your command with '--model {}'.",
+                        "Index was built with embedding model '{}' (alias '{}'), but '--model {}' was requested. To switch models run `ckq --clean .` then `ckq --index --model {}`. To keep using this index rerun your command with '--model {}'.",
                         resolved_existing.config.name,
                         suggested_alias,
                         requested,
@@ -929,7 +929,7 @@ async fn lexical_search(options: &SearchOptions) -> Result<Vec<SearchResult>> {
 
     let index_dir = ck_core::index_dir(&index_root);
     if !index_dir.exists() {
-        return Err(CkError::Index("No index found. Run 'ck index' first.".to_string()).into());
+        return Err(CkError::Index("No index found. Run 'ckq --index' first.".to_string()).into());
     }
     // Refuse to serve results from an index dir that a different root claimed
     // via a CK_INDEX_DIR basename-hash collision. No-op in-tree.
@@ -1645,7 +1645,7 @@ mod tests {
         assert_eq!(fused.len(), 2);
         let chunk = fused
             .iter()
-            .find(|r| r.file == PathBuf::from("src/a.rs"))
+            .find(|r| r.file.as_path() == Path::new("src/a.rs"))
             .unwrap();
         // Chunk-level span retained, score = both lists at rank 1
         assert_eq!((chunk.span.line_start, chunk.span.line_end), (10, 50));
@@ -1655,7 +1655,7 @@ mod tests {
         // The fused result must outrank the semantic-only one
         let other = fused
             .iter()
-            .find(|r| r.file == PathBuf::from("src/b.rs"))
+            .find(|r| r.file.as_path() == Path::new("src/b.rs"))
             .unwrap();
         assert!(chunk.score > other.score);
     }
@@ -1669,7 +1669,7 @@ mod tests {
         assert_eq!(fused.len(), 2);
         let standalone = fused
             .iter()
-            .find(|r| r.file == PathBuf::from("src/z.rs"))
+            .find(|r| r.file.as_path() == Path::new("src/z.rs"))
             .unwrap();
         assert!((standalone.score - 1.0 / 61.0).abs() < 1e-6);
     }

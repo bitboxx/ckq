@@ -20,6 +20,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::thread;
+use std::time::Duration;
 
 use parking_lot::Mutex;
 
@@ -107,7 +108,14 @@ pub struct LlamaCppEmbedder {
     model_name: String,
 }
 
-type Job = (Vec<String>, Sender<Result<Vec<Vec<f32>>>>);
+enum Job {
+    Embed(Vec<String>, Sender<Result<Vec<Vec<f32>>>>),
+    /// Drop the context and the model on the worker's own thread, then stop.
+    ///
+    /// Nothing else can do it: `LlamaContext` is not `Send`, so the thread that
+    /// built it is the only one allowed to destroy it. See `shutdown`.
+    Quit(Sender<()>),
+}
 
 /// `LlamaBackend::init()` is once per process and loading a model twice would
 /// double the VRAM, so workers are shared. ck builds one embedder to index and
@@ -262,6 +270,72 @@ fn warn_truncation(count: usize, total: usize, max_length: usize, pooling: Llama
     );
 }
 
+/// Stop every in-process model and wait for it to let go of the GPU.
+///
+/// Call it once, last thing, before the process exits. It is a no-op when no
+/// model was loaded here, which is the normal case: the CLI talks to the shared
+/// daemon and never holds one.
+pub fn shutdown() {
+    let Some(workers) = WORKERS.get() else {
+        return;
+    };
+    let draining: Vec<_> = workers.lock().drain().map(|(_, w)| w).collect();
+    for worker in draining {
+        let (done_tx, done_rx) = channel();
+        if worker.0.send(Job::Quit(done_tx)).is_ok() {
+            // Bounded: a worker wedged in a decode must not hang the exit.
+            let _ = done_rx.recv_timeout(Duration::from_secs(10));
+        }
+    }
+}
+
+/// Run `shutdown` when the process exits, however it exits.
+///
+/// The explicit call in `main` covers the CLI. This covers everybody else: a
+/// test binary, or any program that links ck-embed, has no such place to put
+/// it, and without it ggml aborts from a static destructor once the process is
+/// already past its last line. Registering after the model is loaded is what
+/// makes this work: exit handlers run in reverse order of registration, so this
+/// one runs before ggml tears its device down.
+#[cfg(unix)]
+fn register_exit_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    extern "C" fn on_exit() {
+        shutdown();
+    }
+    ONCE.call_once(|| unsafe {
+        libc::atexit(on_exit);
+    });
+}
+
+#[cfg(not(unix))]
+fn register_exit_hook() {}
+
+/// The llama.cpp backend, initialised once for the whole process.
+///
+/// `LlamaBackend::init()` returns `BackendAlreadyInitialized` on the second
+/// call. Each worker used to init its own, so a process that loaded two models,
+/// or a test binary that ran two searches, failed on the second one with an
+/// error that named the backend rather than the cause. It is a zero-sized
+/// guard, so a static costs nothing and every worker borrows the same one.
+static BACKEND: OnceLock<LlamaBackend> = OnceLock::new();
+static BACKEND_INIT: Mutex<()> = Mutex::new(());
+
+fn backend() -> Result<&'static LlamaBackend> {
+    if let Some(backend) = BACKEND.get() {
+        return Ok(backend);
+    }
+    // `OnceLock::get_or_init` cannot carry a failure, so hold a lock across the
+    // fallible part: without it two threads race and the loser sees exactly the
+    // BackendAlreadyInitialized this function exists to prevent.
+    let _guard = BACKEND_INIT.lock();
+    if let Some(backend) = BACKEND.get() {
+        return Ok(backend);
+    }
+    let created = LlamaBackend::init().map_err(|e| anyhow!("llama backend: {e}"))?;
+    Ok(BACKEND.get_or_init(|| created))
+}
+
 fn start_worker(
     model_path: std::path::PathBuf,
     _gguf: String,
@@ -277,10 +351,10 @@ fn start_worker(
     thread::Builder::new()
         .name("ckq-llamacpp".into())
         .spawn(move || {
-            let built = (|| -> Result<(LlamaBackend, LlamaModel)> {
-                let backend = LlamaBackend::init().map_err(|e| anyhow!("llama backend: {e}"))?;
+            let built = (|| -> Result<(&'static LlamaBackend, LlamaModel)> {
+                let backend = backend()?;
                 let params = LlamaModelParams::default().with_n_gpu_layers(GPU_LAYERS);
-                let model = LlamaModel::load_from_file(&backend, &model_path, &params)
+                let model = LlamaModel::load_from_file(backend, &model_path, &params)
                     .with_context(|| format!("loading GGUF {}", model_path.display()))?;
                 Ok((backend, model))
             })();
@@ -312,23 +386,39 @@ fn start_worker(
                 .with_n_batch(DEFAULT_CTX)
                 .with_n_ubatch(DEFAULT_CTX)
                 .with_pooling_type(pooling);
-            let mut ctx = match model.new_context(&backend, ctx_params) {
+            let mut ctx = match model.new_context(backend, ctx_params) {
                 Ok(c) => c,
                 Err(e) => {
                     let _ = ready_tx.send(Err(anyhow!("llama context: {e}")));
                     return;
                 }
             };
+            register_exit_hook();
             let _ = ready_tx.send(Ok(dim));
 
-            while let Ok((texts, reply)) = rx.recv() {
-                let _ = reply.send(run(&model, &mut ctx, &texts, max_length, dim, pooling));
+            let mut stopping = None;
+            while let Ok(job) = rx.recv() {
+                match job {
+                    Job::Embed(texts, reply) => {
+                        let _ = reply.send(run(&model, &mut ctx, &texts, max_length, dim, pooling));
+                    }
+                    Job::Quit(done) => {
+                        stopping = Some(done);
+                        break;
+                    }
+                }
             }
-            // Leak the context and model rather than dropping them: teardown
-            // races Metal's resource sets and trips a GGML_ASSERT on exit.
-            std::mem::forget(ctx);
-            std::mem::forget(model);
-            std::mem::forget(backend);
+            // Order matters: the context holds the Metal resource sets and the
+            // model holds the buffers they point at. Dropping them here, on the
+            // thread that made them and while the backend is still alive,
+            // leaves ggml's device with nothing outstanding. Skipping it is
+            // what used to abort the process at exit, in a static destructor
+            // asserting that the resource set count was zero.
+            drop(ctx);
+            drop(model);
+            if let Some(done) = stopping {
+                let _ = done.send(());
+            }
         })
         .map_err(|e| anyhow!("spawning llama.cpp thread: {e}"))?;
 
@@ -357,7 +447,7 @@ impl Embedder for LlamaCppEmbedder {
         }
         let (reply_tx, reply_rx) = channel();
         self.tx
-            .send((texts.to_vec(), reply_tx))
+            .send(Job::Embed(texts.to_vec(), reply_tx))
             .map_err(|_| anyhow!("llama.cpp thread is gone"))?;
         reply_rx
             .recv()

@@ -152,6 +152,32 @@ pub fn request(stream: &mut UnixStream, texts: &[String], pin: bool) -> Result<V
     serde_json::from_value(v["embeddings"].clone()).context("decoding embeddings")
 }
 
+/// Where a daemon's stderr goes. One per socket, so two models do not share.
+fn log_path(socket: &Path) -> PathBuf {
+    let mut name = socket.as_os_str().to_os_string();
+    name.push(".log");
+    PathBuf::from(name)
+}
+
+/// The tail of a daemon log, for an error message. Empty when there is nothing
+/// to say, so the caller can append it unconditionally.
+fn last_log_lines(path: &Path) -> String {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return String::new();
+    };
+    let tail: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .rev()
+        .take(5)
+        .collect();
+    if tail.is_empty() {
+        return String::new();
+    }
+    let body: Vec<&str> = tail.into_iter().rev().collect();
+    format!("\n{}", body.join("\n"))
+}
+
 /// Re-exec ourselves as a detached daemon and wait for it to listen.
 pub fn spawn(model_alias: &str, path: &Path) -> Result<UnixStream> {
     // A socket file with nothing behind it blocks bind(); the previous daemon
@@ -160,14 +186,21 @@ pub fn spawn(model_alias: &str, path: &Path) -> Result<UnixStream> {
         let _ = std::fs::remove_file(path);
     }
     let exe = std::env::current_exe().context("locating the ckq binary")?;
+    // The daemon outlives the process that starts it, so it must not hold that
+    // process's pipes. Inheriting stderr kept the pipe open for the daemon's
+    // whole life, and anything capturing ckq's output, a script or a test
+    // harness, then waited for it and read as a hang. Its stderr goes to a log
+    // beside the socket instead, and a failed start is read back out of there
+    // rather than lost, which is what inheriting was for.
+    let log_path = log_path(path);
+    let log = std::fs::File::create(&log_path)
+        .with_context(|| format!("creating the daemon log {}", log_path.display()))?;
     let mut child = std::process::Command::new(exe)
         .arg("--embed-daemon")
         .arg(model_alias)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        // stderr stays inherited: a failed start (bad alias, failed download,
-        // model load error) must be visible in the terminal that triggered it,
-        // not vanish into null and surface as a bare timeout.
+        .stderr(std::process::Stdio::from(log))
         .spawn()
         .context("spawning the embed daemon")?;
 
@@ -182,7 +215,10 @@ pub fn spawn(model_alias: &str, path: &Path) -> Result<UnixStream> {
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                return Err(anyhow!("embed daemon exited during startup: {status}"));
+                let detail = last_log_lines(&log_path);
+                return Err(anyhow!(
+                    "embed daemon exited during startup: {status}{detail}"
+                ));
             }
             Ok(None) => std::thread::sleep(CONNECT_POLL),
             Err(e) => return Err(anyhow!("waiting on the embed daemon: {e}")),
@@ -197,6 +233,31 @@ pub fn spawn(model_alias: &str, path: &Path) -> Result<UnixStream> {
 /// every other ckq on the machine; the model itself is not thread-safe, so
 /// generation is serialised on a mutex around `embed` instead of on the
 /// accept loop.
+/// Whether the shared daemon can be reached, starting it if it is not running.
+///
+/// The daemon is this same executable re-run with `--embed-daemon`, which only
+/// works when the executable is ckq. A test harness is not, and neither is any
+/// other program that links ck-embed, so the re-exec fails there and every
+/// embedding call with it. Probe once at construction and let the caller load
+/// the model in-process when the answer is no.
+///
+/// The returned connection is dropped straight away: it exists to prove the
+/// daemon answers, and holding it would pin the daemon open.
+pub fn reachable(model_alias: &str, path: &Path) -> bool {
+    if try_connect(path).is_some() {
+        return true;
+    }
+    match spawn(model_alias, path) {
+        Ok(_stream) => true,
+        Err(e) => {
+            eprintln!(
+                "ckq: warning: no shared embed daemon ({e}); loading the model in this process instead"
+            );
+            false
+        }
+    }
+}
+
 /// Hold a connection open purely to pin the daemon, for the life of this process.
 ///
 /// The pin counts live pinned connections, and an ordinary client opens one per

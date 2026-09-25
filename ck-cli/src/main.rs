@@ -19,75 +19,84 @@ use path_utils::{build_include_patterns, expand_glob_patterns};
 use progress::StatusReporter;
 
 #[derive(Parser)]
-#[command(name = "ck")]
-#[command(about = "Semantic grep by embedding - seek code, semantically")]
+#[command(name = "ckq")]
+#[command(about = "Multilingual semantic grep by embedding - seek text, semantically")]
 #[command(long_about = r#"
-ck (seek) - A drop-in replacement for grep with semantic search capabilities
+ckq - grep with multilingual semantic search. A fork of ck (seek) by BeaconBay
+whose embedding models run on llama.cpp, so a query and a document need not be
+in the same language.
 
 QUICK START EXAMPLES:
 
   Basic grep-style search (no indexing required):
-    ck "error" src/                    # Find text matches
-    ck -i "TODO" .                     # Case-insensitive search  
-    ck -r "fn main" .                  # Recursive search
-    ck -n "import" lib.py              # Show line numbers
+    ckq "error" src/                   # Find text matches
+    ckq -i "TODO" .                    # Case-insensitive search
+    ckq -r "fn main" .                 # Recursive search
+    ckq -n "import" lib.py             # Show line numbers
 
-  Semantic search (finds conceptually similar code):
-    ck --sem "error handling" src/     # Builds/updates the index automatically (top 10, threshold ≥0.6)
-    ck --sem "database connection"     # Find DB-related code  
-    ck --sem --limit 5 "authentication"    # Limit to top 5 results
-    ck --sem --threshold 0.8 "auth"   # Higher precision filtering
+  Semantic search (finds conceptually similar text):
+    ckq --sem "error handling" src/    # Builds/updates the index automatically (top 10, threshold >=0.6)
+    ckq --sem "wanneer is de APK"      # Query in any language the model covers
+    ckq --sem --limit 5 "authentication"   # Limit to top 5 results
+    ckq --sem --threshold 0.8 "auth"   # Higher precision filtering
 
   Lexical search (BM25 full-text search):
-    ck --lex "user authentication"    # Full-text search with ranking
-    ck --lex "http client request"    # Better than regex for phrases
+    ckq --lex "user authentication"    # Full-text search with ranking
+    ckq --lex "http client request"    # Better than regex for phrases
 
-  Hybrid search (combines regex + semantic):  
-    ck --hybrid "async function"      # Best of both worlds
-    ck --hybrid "error" --limit 10    # Top 10 most relevant results (--limit is alias for --topk)
-    ck --hybrid "bug" --threshold 0.02 # Only results with RRF score >= 0.02
-    ck --sem "auth" --scores           # Show similarity scores in output
+  Hybrid search (combines regex + semantic):
+    ckq --hybrid "async function"      # Best of both worlds
+    ckq --hybrid "error" --limit 10    # Top 10 most relevant results (--limit is alias for --topk)
+    ckq --hybrid "bug" --threshold 0.02 # Only results with RRF score >= 0.02
+    ckq --sem "auth" --scores          # Show similarity scores in output
 
   Index management:
-    ck --status .                     # Check index status
-    ck --status-verbose .              # Detailed index statistics
-    ck --clean-orphans .               # Clean up orphaned files
-    ck --clean .                       # Remove entire index
-    ck --switch-model nomic-v1.5       # Clean + rebuild with a different embedding model
-    ck --add file.rs                   # Add single file to index
-    ck --index .                       # Optional: pre-build before CI runs
+    ckq --status .                     # Check index status
+    ckq --status-verbose .             # Detailed index statistics
+    ckq --clean-orphans .              # Drop sidecars for deleted files
+    ckq --clean .                      # Remove entire index
+    ckq --switch-model granite-gguf    # Clean + rebuild with a different embedding model
+    ckq --add file.rs                  # Add single file to index
+    ckq --index .                      # Optional: pre-build before CI runs
 
   JSON output for tools/scripts:
-    ck --json --sem "bug fix" src/    # Traditional JSON (single array)
-    ck --json --limit 5 "TODO"       # Limit results (--limit alias for --topk)
-    
+    ckq --json --sem "bug fix" src/    # Traditional JSON (single array)
+    ckq --json --limit 5 "TODO"        # Limit results (--limit alias for --topk)
+
   JSONL output for AI agents (recommended):
-    ck --jsonl "auth" --no-snippet    # Streaming, memory-efficient format
-    ck --jsonl --sem "error" src/     # Perfect for LLM/agent consumption
-    ck --jsonl --topk 5 --threshold 0.8 "func"  # High-confidence agent results
+    ckq --jsonl "auth" --no-snippet    # Streaming, memory-efficient format
+    ckq --jsonl --sem "error" src/     # Perfect for LLM/agent consumption
+    ckq --jsonl --topk 5 --threshold 0.8 "func"  # High-confidence agent results
     # Why JSONL? Streaming, error-resilient, standard in AI pipelines
 
   Advanced grep features:
-    ck -C 2 "error" src/              # Show 2 lines of context  
-    ck -A 3 -B 1 "TODO"              # 3 lines after, 1 before
-    ck -w "test" .                    # Match whole words only
-    ck -F "log.Error()" .             # Fixed string (no regex)
+    ckq -C 2 "error" src/              # Show 2 lines of context
+    ckq -A 3 -B 1 "TODO"               # 3 lines after, 1 before
+    ckq -w "test" .                    # Match whole words only
+    ckq -F "log.Error()" .             # Fixed string (no regex)
 
-  Model and embedding options:
-    ck --index --model nomic-v1.5      # Index with higher-quality model (8k context)
-    ck --index --model jina-code       # Index with code-specialized model
-    ck --sem "auth" --rerank           # Enable reranking for better relevance
-    ck --sem "login" --rerank-model bge # Use specific reranking model
+  Embedding models (all multilingual GGUF, default gemma-q4):
+    ckq --index --model gemma-q4       # EmbeddingGemma-300M, QAT Q4_0. The default
+    ckq --index --model granite-gguf   # granite-embedding-278m-multilingual, Apache-2.0
+    ckq --index --model bge-m3-gguf    # BGE-M3, 1024 dims
+    ckq --index --model qwen3-gguf     # Qwen3-Embedding-0.6B, last-token pooling
+    ckq --sem "auth" --rerank          # Enable reranking for better relevance
+    ckq --sem "login" --rerank-model bge  # Use specific reranking model
+
+  The model loads once per machine, not once per process: the first run starts a
+  daemon over a unix socket and later runs connect to it. It exits after 15
+  minutes idle. CKQ_IN_PROCESS=1 loads in-process instead. On Windows there is no
+  daemon and every process loads its own copy.
 
   AI agent integration (MCP):
-    ck --serve                         # Start MCP server for Claude/Cursor integration
+    ckq --serve                        # Start MCP server, and hold the daemon open
     # Provides tools: semantic_search, regex_search, hybrid_search, index_status, reindex, health_check
     # Connect with Claude Desktop, Cursor, or any MCP-compatible client
 
   SEARCH MODES:
   --regex   : Classic grep behavior (default, no index needed)
-  --lex     : BM25 lexical search (auto-indexed before it runs)  
-  --sem     : Semantic/embedding search (auto-indexed, defaults: top 10, threshold ≥0.6)
+  --lex     : BM25 lexical search (auto-indexed before it runs)
+  --sem     : Semantic/embedding search (auto-indexed, defaults: top 10, threshold >=0.6)
   --hybrid  : Combines regex and semantic (shares the auto-indexing path)
 
 RESULT FILTERING:
@@ -96,7 +105,7 @@ RESULT FILTERING:
                       (0.0-1.0 semantic/lexical, 0.01-0.05 hybrid RRF)
   --scores          : Show scores in output [0.950] file:line:match
 
-The semantic search understands meaning - searching for "error handling" 
+The semantic search understands meaning - searching for "error handling"
 will find try/catch blocks, error returns, exception handling, etc.
 "#)]
 #[command(version)]
@@ -886,7 +895,7 @@ async fn inspect_file_metadata(file_path: &PathBuf, status: &StatusReporter) -> 
                 style(stats.total_chunks).green()
             );
         } else {
-            println!("\nNot indexed. Run 'ck --index .' to enable semantic search");
+            println!("\nNot indexed. Run 'ckq --index .' to enable semantic search");
         }
     }
 
@@ -996,8 +1005,10 @@ fn main() {
             source = err.source();
         }
 
+        ck_embed::shutdown_embedders();
         std::process::exit(1);
     }
+    ck_embed::shutdown_embedders();
 }
 
 async fn run_main(cli: Cli, embed_options: ck_embed::EmbedderOptions) -> Result<()> {
@@ -1194,7 +1205,7 @@ async fn run_cli_mode(cli: Cli) -> Result<()> {
             .first()
             .cloned()
             .or_else(|| cli.pattern.as_ref().map(PathBuf::from))
-            .ok_or_else(|| anyhow::anyhow!("No file specified. Usage: ck --add <file>"))?;
+            .ok_or_else(|| anyhow::anyhow!("No file specified. Usage: ckq --add <file>"))?;
         status.section_header("Adding File to Index");
         status.info(&format!("Processing {}", file.display()));
 
@@ -1270,7 +1281,7 @@ async fn run_cli_mode(cli: Cli) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&json_output)?);
         } else if stats.total_files == 0 {
             status.warn(&format!("No index found at {}", status_path.display()));
-            status.info("Run 'ck --index .' to create an index");
+            status.info("Run 'ckq --index .' to create an index");
         } else {
             status.info(&format!("Index location: {}", status_path.display()));
             status.success(&format!("Files indexed: {}", stats.total_files));

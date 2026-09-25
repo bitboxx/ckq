@@ -404,7 +404,7 @@ pub struct CkMcpServer {
 
 impl ServerHandler for CkMcpServer {
     fn get_info(&self) -> InitializeResult {
-        let server_info = Implementation::new("ck", env!("CARGO_PKG_VERSION"))
+        let server_info = Implementation::new("ckq", env!("CARGO_PKG_VERSION"))
             .with_title("CK Semantic Search Server")
             .with_website_url("https://github.com/BeaconBay/ck");
 
@@ -688,7 +688,7 @@ impl CkMcpServer {
             Box::pin(async move {
                 let status_data = json!({
                     "status": "healthy",
-                    "server": "ck",
+                    "server": "ckq",
                     "version": env!("CARGO_PKG_VERSION"),
                     "protocol": "mcp",
                     "timestamp": chrono::Utc::now().to_rfc3339(),

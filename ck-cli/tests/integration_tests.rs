@@ -6,7 +6,7 @@ use std::process::Command;
 use tempfile::TempDir;
 
 fn ck_binary() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_ck"))
+    PathBuf::from(env!("CARGO_BIN_EXE_ckq"))
 }
 
 /// Spawn ck with `CK_INDEX_DIR` cleared so these tests exercise the default
@@ -165,7 +165,7 @@ fn test_switch_model_skips_when_same_model() {
     let updated_before = read_manifest_updated(temp_dir.path());
 
     let output = ck_command()
-        .args(["--switch-model", "bge-small"])
+        .args(["--switch-model", "gemma-q4"])
         .current_dir(temp_dir.path())
         .output()
         .expect("ck --switch-model should run");
@@ -181,6 +181,9 @@ fn test_switch_model_skips_when_same_model() {
     );
 }
 
+/// Switches to the model the index already uses, on purpose: `--force` must
+/// rebuild anyway. Any other alias would download a second model for a test
+/// that is about the force flag, not about the model.
 #[test]
 #[serial]
 fn test_switch_model_force_rebuild() {
@@ -203,7 +206,7 @@ fn test_switch_model_force_rebuild() {
     std::thread::sleep(std::time::Duration::from_secs(1));
 
     let output = ck_command()
-        .args(["--switch-model", "bge-small", "--force"])
+        .args(["--switch-model", "gemma-q4", "--force"])
         .current_dir(temp_dir.path())
         .output()
         .expect("ck --switch-model --force should run");

@@ -29,7 +29,7 @@ pub async fn semantic_search_v3_with_progress(
     let index_dir = ck_core::index_dir(&index_root);
     if !index_dir.exists() {
         return Err(CkError::Index(
-            "Index creation failed. Please try running 'ck --index' explicitly.".to_string(),
+            "Index creation failed. Please try running 'ckq --index' explicitly.".to_string(),
         )
         .into());
     }
@@ -80,7 +80,7 @@ pub async fn semantic_search_v3_with_progress(
 
     if file_chunks.is_empty() {
         return Err(CkError::Index(
-            "No embeddings found. Run 'ck --index' first with embeddings.".to_string(),
+            "No embeddings found. Run 'ckq --index' first with embeddings.".to_string(),
         )
         .into());
     }

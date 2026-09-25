@@ -21,6 +21,22 @@ pub use tokenizer::TokenEstimator;
 pub mod embed_daemon;
 #[cfg(feature = "llamacpp")]
 mod llamacpp;
+
+/// Release any model this process loaded itself, before it exits.
+///
+/// A ckq that talks to the shared daemon holds no model and this does nothing.
+/// One that loaded in-process does, and on macOS the GPU resources have to be
+/// given back on the thread that took them or ggml aborts the process from a
+/// static destructor, after the output has already been printed. Call it last.
+#[cfg(feature = "llamacpp")]
+pub fn shutdown_embedders() {
+    llamacpp::shutdown();
+}
+
+/// No in-process llama.cpp model is possible in this build, so nothing to do.
+#[cfg(not(feature = "llamacpp"))]
+pub fn shutdown_embedders() {}
+
 #[cfg(feature = "mixedbread")]
 mod mixedbread;
 #[cfg(feature = "mixedbread")]
@@ -191,18 +207,31 @@ pub fn create_embedder_for_config(
             }
 
             #[cfg(unix)]
-            let alias = options
-                .model_alias
-                .clone()
-                .unwrap_or_else(|| config.name.clone());
-            #[cfg(unix)]
-            Ok(Box::new(llamacpp::LlamaCppDaemonClient::new(
-                config,
-                &alias,
-                &gguf,
-                config.dimensions,
-                options.pin,
-            )))
+            {
+                let alias = options
+                    .model_alias
+                    .clone()
+                    .unwrap_or_else(|| config.name.clone());
+                let socket = embed_daemon::socket_path(&config.name, &gguf);
+                if embed_daemon::reachable(&alias, &socket) {
+                    return Ok(Box::new(llamacpp::LlamaCppDaemonClient::new(
+                        config,
+                        &alias,
+                        &gguf,
+                        config.dimensions,
+                        options.pin,
+                    )));
+                }
+                // The daemon could not be started, which is normal when the
+                // running executable is not ckq. Carry on in-process.
+                let embedder = llamacpp::LlamaCppEmbedder::new_in_process(
+                    config,
+                    progress_callback,
+                    &gguf,
+                    LlamaPoolingType::Unspecified,
+                )?;
+                Ok(Box::new(embedder))
+            }
         }
         #[cfg(feature = "mixedbread")]
         "qwen" => {

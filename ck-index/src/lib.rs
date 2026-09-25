@@ -26,6 +26,14 @@ fn legacy_model_config(name: &str, dimensions: Option<usize>) -> ck_models::Mode
     }
 }
 
+/// How many chunks go to the embedder in one call.
+///
+/// The provider decides its own decode width underneath, so this only has to be
+/// wide enough to keep that width full and to amortise the daemon round trip.
+/// The average vault note holds about ten chunks, so 32 puts most files through
+/// in a single call while a long file still reports progress several times.
+const EMBED_BATCH: usize = 32;
+
 pub type ProgressCallback = Box<dyn Fn(&str) + Send + Sync>;
 
 /// Detailed progress information for embedding operations
@@ -335,7 +343,7 @@ async fn index_directory_inner(
         {
             return Err(anyhow::anyhow!(
                 "Model mismatch: Index was created with '{}', but you're trying to use '{}'. \
-                Please run 'ck --clean {}' to remove the old index, then rerun with the new model.",
+                Please run 'ckq --clean {}' to remove the old index, then rerun with the new model.",
                 existing_model,
                 config.name,
                 path.display()
@@ -901,7 +909,7 @@ pub async fn smart_update_index_with_detailed_progress(
         {
             return Err(anyhow::anyhow!(
                 "Model mismatch: Index was created with '{}', but you're trying to use '{}'. \
-                    Please run 'ck --clean .' to remove the old index, then 'ck --index --model {}' to rebuild with the new model.",
+                    Please run 'ckq --clean .' to remove the old index, then 'ckq --index --model {}' to rebuild with the new model.",
                 existing_model,
                 resolved.1.name,
                 model.unwrap_or("default")
@@ -1260,71 +1268,91 @@ fn index_single_file_with_progress(
             .to_string_lossy()
             .to_string();
 
-        // Process chunks with progress reporting
-        if let Some(ref callback) = detailed_progress {
-            tracing::info!(
-                "Computing embeddings for {} chunks in {:?}",
-                total_chunks,
-                file_path
-            );
+        // Embeddings go to the model in batches. The llama.cpp provider packs
+        // several sequences into one decode, and a call carrying a single chunk
+        // wastes all of that. There used to be a second path here that embedded
+        // one chunk at a time so the progress bar could move per chunk; it ran
+        // 4x slower, exactly the batch width. Progress is now reported per batch.
+        // Measured 25 Sep 2026 on 100 notes: 82.7 s one at a time, 20.8 s batched.
+        let expected_dim = embedder.dim();
+        let mut chunks_to_embed: Vec<(String, usize)> = Vec::new();
+        let mut chunk_results: Vec<(ck_chunk::Chunk, String, Option<Vec<f32>>)> = Vec::new();
 
-            let mut chunk_entries = Vec::new();
-            for (chunk_index, chunk) in chunks.into_iter().enumerate() {
+        for chunk in chunks {
+            // Include trivia so that doc comment changes invalidate the cache
+            let chunk_hash = compute_chunk_hash(
+                &chunk.text,
+                &chunk.metadata.leading_trivia,
+                &chunk.metadata.trailing_trivia,
+            );
+            match chunk_cache.get(&chunk_hash) {
+                Some(cached) if cached.len() == expected_dim => {
+                    chunks_reused += 1;
+                    chunk_results.push((chunk, chunk_hash, Some(cached.clone())));
+                }
+                Some(cached) => {
+                    // Dimension mismatch, the model changed under the index.
+                    tracing::warn!(
+                        "Chunk in {:?} has cached embedding with dimension {} but current model expects {}. Re-embedding.",
+                        file_path,
+                        cached.len(),
+                        expected_dim
+                    );
+                    chunks_to_embed.push((chunk.text.clone(), chunk_results.len()));
+                    chunk_results.push((chunk, chunk_hash, None));
+                }
+                None => {
+                    chunks_to_embed.push((chunk.text.clone(), chunk_results.len()));
+                    chunk_results.push((chunk, chunk_hash, None));
+                }
+            }
+        }
+
+        if !chunks_to_embed.is_empty() {
+            tracing::info!(
+                "Computing embeddings for {}/{} chunks in {:?} ({} reused from cache)",
+                chunks_to_embed.len(),
+                chunk_results.len(),
+                file_path,
+                chunks_reused
+            );
+            for batch in chunks_to_embed.chunks(EMBED_BATCH) {
                 if INTERRUPTED.load(Ordering::SeqCst) {
                     return Err(anyhow::anyhow!(INDEX_INTERRUPTED_MSG));
                 }
-                // Report progress before processing chunk
-                callback(EmbeddingProgress {
-                    file_name: file_name.clone(),
-                    file_index,
-                    total_files,
-                    chunk_index,
-                    total_chunks,
-                    chunk_size: chunk.text.len(),
-                });
+                if let Some(callback) = detailed_progress {
+                    let (text, result_idx) = &batch[0];
+                    callback(EmbeddingProgress {
+                        file_name: file_name.clone(),
+                        file_index,
+                        total_files,
+                        chunk_index: *result_idx,
+                        total_chunks,
+                        chunk_size: text.len(),
+                    });
+                }
 
-                // Compute chunk hash for cache lookup or storage
-                // Include trivia so that doc comment changes invalidate the cache
-                let chunk_hash = compute_chunk_hash(
-                    &chunk.text,
-                    &chunk.metadata.leading_trivia,
-                    &chunk.metadata.trailing_trivia,
-                );
+                let texts: Vec<String> = batch.iter().map(|(text, _)| text.clone()).collect();
+                let embeddings = embedder.embed(&texts)?;
+                if embeddings.len() != batch.len() {
+                    return Err(anyhow::anyhow!(
+                        "Embedder returned {} embeddings for {} chunks in file {:?}. Expected equal counts.",
+                        embeddings.len(),
+                        batch.len(),
+                        file_path
+                    ));
+                }
+                chunks_embedded += embeddings.len();
+                for ((_, result_idx), embedding) in batch.iter().zip(embeddings) {
+                    chunk_results[*result_idx].2 = Some(embedding);
+                }
+            }
+        }
 
-                // Check cache first, but validate dimension matches current embedder
-                let expected_dim = embedder.dim();
-                let embedding = if let Some(cached_embedding) = chunk_cache.get(&chunk_hash) {
-                    if cached_embedding.len() == expected_dim {
-                        // Dimension matches, safe to reuse
-                        chunks_reused += 1;
-                        cached_embedding.clone()
-                    } else {
-                        // Dimension mismatch, re-embed (model changed)
-                        chunks_embedded += 1;
-                        tracing::warn!(
-                            "Chunk in {:?} has cached embedding with dimension {} but current model expects {}. Re-embedding.",
-                            file_path,
-                            cached_embedding.len(),
-                            expected_dim
-                        );
-                        let embeddings = embedder.embed(std::slice::from_ref(&chunk.text))?;
-                        embeddings.into_iter().next().ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "Embedder returned empty results for chunk {chunk_index} in file {file_path:?}. This may indicate an issue with the embedding model or chunk content."
-                            )
-                        })?
-                    }
-                } else {
-                    // No cache hit, compute embedding
-                    chunks_embedded += 1;
-                    let embeddings = embedder.embed(std::slice::from_ref(&chunk.text))?;
-                    embeddings.into_iter().next().ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "Embedder returned empty results for chunk {chunk_index} in file {file_path:?}. This may indicate an issue with the embedding model or chunk content."
-                        )
-                    })?
-                };
-
+        chunk_results
+            .into_iter()
+            .map(|(chunk, chunk_hash, embedding)| {
+                let embedding = embedding.expect("All chunks should have embeddings by now");
                 let chunk_type_str = match chunk.chunk_type {
                     ck_chunk::ChunkType::Function => Some("function".to_string()),
                     ck_chunk::ChunkType::Class => Some("class".to_string()),
@@ -1332,7 +1360,6 @@ fn index_single_file_with_progress(
                     ck_chunk::ChunkType::Module => Some("module".to_string()),
                     ck_chunk::ChunkType::Text => None,
                 };
-
                 let breadcrumb = chunk.metadata.breadcrumb.clone();
                 let ancestry = if chunk.metadata.ancestry.is_empty() {
                     None
@@ -1349,8 +1376,7 @@ fn index_single_file_with_progress(
                 } else {
                     Some(chunk.metadata.trailing_trivia.clone())
                 };
-
-                chunk_entries.push(ChunkEntry {
+                ChunkEntry {
                     span: chunk.span,
                     embedding: Some(embedding),
                     chunk_type: chunk_type_str,
@@ -1361,120 +1387,9 @@ fn index_single_file_with_progress(
                     leading_trivia,
                     trailing_trivia,
                     chunk_hash: Some(chunk_hash),
-                });
-            }
-            chunk_entries
-        } else {
-            // Fallback to batch processing for backward compatibility
-            // First, check which chunks have cached embeddings with dimension validation
-            let expected_dim = embedder.dim();
-            let mut chunks_to_embed = Vec::new();
-            let mut chunk_results: Vec<(ck_chunk::Chunk, String, Option<Vec<f32>>)> = Vec::new();
-
-            for chunk in chunks {
-                // Include trivia so that doc comment changes invalidate the cache
-                let chunk_hash = compute_chunk_hash(
-                    &chunk.text,
-                    &chunk.metadata.leading_trivia,
-                    &chunk.metadata.trailing_trivia,
-                );
-                if let Some(cached_embedding) = chunk_cache.get(&chunk_hash) {
-                    if cached_embedding.len() == expected_dim {
-                        // Dimension matches, safe to reuse
-                        chunks_reused += 1;
-                        chunk_results.push((chunk, chunk_hash, Some(cached_embedding.clone())));
-                    } else {
-                        // Dimension mismatch, need to re-embed
-                        tracing::warn!(
-                            "Chunk in {:?} has cached embedding with dimension {} but current model expects {}. Re-embedding.",
-                            file_path,
-                            cached_embedding.len(),
-                            expected_dim
-                        );
-                        chunks_to_embed.push((chunk.text.clone(), chunk_results.len()));
-                        chunk_results.push((chunk, chunk_hash, None));
-                    }
-                } else {
-                    // No cache hit, need to embed
-                    chunks_to_embed.push((chunk.text.clone(), chunk_results.len()));
-                    chunk_results.push((chunk, chunk_hash, None));
                 }
-            }
-
-            // Batch embed only the chunks without cache hits
-            if !chunks_to_embed.is_empty() {
-                let texts: Vec<String> = chunks_to_embed
-                    .iter()
-                    .map(|(text, _)| text.clone())
-                    .collect();
-                tracing::info!(
-                    "Computing embeddings for {}/{} chunks in {:?} ({} reused from cache)",
-                    texts.len(),
-                    chunk_results.len(),
-                    file_path,
-                    chunks_reused
-                );
-                let embeddings = embedder.embed(&texts)?;
-
-                if embeddings.len() != chunks_to_embed.len() {
-                    return Err(anyhow::anyhow!(
-                        "Embedder returned {} embeddings for {} chunks in file {:?}. Expected equal counts.",
-                        embeddings.len(),
-                        chunks_to_embed.len(),
-                        file_path
-                    ));
-                }
-
-                chunks_embedded += embeddings.len();
-
-                // Fill in the computed embeddings
-                for ((_, result_idx), embedding) in chunks_to_embed.into_iter().zip(embeddings) {
-                    chunk_results[result_idx].2 = Some(embedding);
-                }
-            }
-
-            chunk_results
-                .into_iter()
-                .map(|(chunk, chunk_hash, embedding)| {
-                    let embedding = embedding.expect("All chunks should have embeddings by now");
-                    let chunk_type_str = match chunk.chunk_type {
-                        ck_chunk::ChunkType::Function => Some("function".to_string()),
-                        ck_chunk::ChunkType::Class => Some("class".to_string()),
-                        ck_chunk::ChunkType::Method => Some("method".to_string()),
-                        ck_chunk::ChunkType::Module => Some("module".to_string()),
-                        ck_chunk::ChunkType::Text => None,
-                    };
-                    let breadcrumb = chunk.metadata.breadcrumb.clone();
-                    let ancestry = if chunk.metadata.ancestry.is_empty() {
-                        None
-                    } else {
-                        Some(chunk.metadata.ancestry.clone())
-                    };
-                    let leading_trivia = if chunk.metadata.leading_trivia.is_empty() {
-                        None
-                    } else {
-                        Some(chunk.metadata.leading_trivia.clone())
-                    };
-                    let trailing_trivia = if chunk.metadata.trailing_trivia.is_empty() {
-                        None
-                    } else {
-                        Some(chunk.metadata.trailing_trivia.clone())
-                    };
-                    ChunkEntry {
-                        span: chunk.span,
-                        embedding: Some(embedding),
-                        chunk_type: chunk_type_str,
-                        breadcrumb,
-                        ancestry,
-                        byte_length: Some(chunk.metadata.byte_length),
-                        estimated_tokens: Some(chunk.metadata.estimated_tokens),
-                        leading_trivia,
-                        trailing_trivia,
-                        chunk_hash: Some(chunk_hash),
-                    }
-                })
-                .collect()
-        }
+            })
+            .collect()
     } else {
         // No embedder, just store spans without embeddings
         chunks
@@ -1864,7 +1779,7 @@ mod tests {
         // Create an embedder that returns empty results
         let mut empty_embedder: Box<dyn ck_embed::Embedder> = Box::new(EmptyResultsEmbedder);
 
-        // Use the detailed progress callback to trigger the single-chunk processing path
+        // Progress reporting and batching share one path now, so this covers both.
         let dummy_callback: DetailedProgressCallback = Box::new(|_progress: EmbeddingProgress| {});
         let result = index_single_file_with_progress(
             &test_file,
@@ -1875,11 +1790,11 @@ mod tests {
             1,
         );
 
+        // An embedder that answers with nothing must fail the file rather than
+        // write a sidecar with chunks missing their vectors.
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
-        // This should hit the single-chunk path and get the specific error
-        assert!(error_msg.contains("Embedder returned empty results"));
-        assert!(error_msg.contains("chunk 0"));
+        assert!(error_msg.contains("Embedder returned 0 embeddings for 1 chunks"));
         assert!(error_msg.contains("test.txt"));
     }
 

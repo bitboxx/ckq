@@ -4,6 +4,7 @@ use ck_models::{ModelConfig, ModelRegistry};
 use std::path::Path;
 #[cfg(any(feature = "fastembed", feature = "mixedbread"))]
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 pub mod reranker;
 pub mod tokenizer;
@@ -14,11 +15,13 @@ pub use reranker::{
 };
 pub use tokenizer::TokenEstimator;
 
-#[cfg(feature = "mixedbread")]
-#[cfg(feature = "llamacpp")]
+// Unix sockets only. Windows has AF_UNIX since 1803 but std does not expose it,
+// so there the model is loaded per process instead of shared.
+#[cfg(all(feature = "llamacpp", unix))]
 pub mod embed_daemon;
 #[cfg(feature = "llamacpp")]
 mod llamacpp;
+#[cfg(feature = "mixedbread")]
 mod mixedbread;
 #[cfg(feature = "mixedbread")]
 use mixedbread::MixedbreadEmbedder;
@@ -31,6 +34,67 @@ pub trait Embedder: Send + Sync {
 }
 
 pub type ModelDownloadCallback = Box<dyn Fn(&str) + Send + Sync>;
+
+/// Embedding configuration that used to travel through environment variables.
+///
+/// `std::env::set_var` racing a concurrent `getenv` on another thread is
+/// undefined, so nothing mutates the environment after startup: the CLI reads
+/// these once before its worker threads exist and passes the value down, and
+/// `EmbedderOptions::process()` serves the library call sites that are too
+/// deep to thread a parameter through. The `CKQ_*` variables stay readable so
+/// users' existing invocations keep working.
+#[derive(Debug, Clone, Default)]
+pub struct EmbedderOptions {
+    /// `CKQ_GGUF_FILE`: which GGUF to download and load for llama.cpp models.
+    pub gguf_file: Option<String>,
+    /// `CKQ_MODEL_ALIAS`: the alias clients re-exec the daemon with.
+    pub model_alias: Option<String>,
+    /// `CKQ_PIN` / `--serve`: ask the daemon to outlive the idle timeout.
+    pub pin: bool,
+    /// `CKQ_IN_PROCESS`: load the model here rather than via the daemon.
+    pub in_process: bool,
+}
+
+impl EmbedderOptions {
+    /// Snapshot the `CKQ_*` environment. Call once at process start, before
+    /// any worker threads exist.
+    pub fn from_env() -> Self {
+        Self {
+            gguf_file: std::env::var("CKQ_GGUF_FILE")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            model_alias: std::env::var("CKQ_MODEL_ALIAS")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            pin: std::env::var("CKQ_PIN").is_ok(),
+            in_process: std::env::var("CKQ_IN_PROCESS").is_ok(),
+        }
+    }
+
+    /// The process-wide snapshot installed by [`init_process_options`], or an
+    /// empty override set when nobody installed one (library and test use).
+    pub fn process() -> Self {
+        PROCESS_OPTIONS.get().cloned().unwrap_or_default()
+    }
+
+    /// The GGUF file for a model. Both the client (it hashes this into the
+    /// socket path) and the daemon (it binds that path) must derive the file
+    /// the same way, or a `CKQ_GGUF_FILE` override changes only one side's
+    /// socket and every request then times out.
+    pub fn gguf_file_for(&self, config: &ModelConfig) -> String {
+        self.gguf_file
+            .clone()
+            .unwrap_or_else(|| config.gguf_file.clone())
+    }
+}
+
+static PROCESS_OPTIONS: OnceLock<EmbedderOptions> = OnceLock::new();
+
+/// Install the process-wide [`EmbedderOptions`] snapshot. Write-once, before
+/// worker threads start; later calls are ignored.
+pub fn init_process_options(options: EmbedderOptions) {
+    let _ = PROCESS_OPTIONS.set(options);
+}
 
 #[cfg(any(feature = "fastembed", feature = "mixedbread"))]
 pub(crate) fn model_cache_root() -> Result<PathBuf> {
@@ -57,12 +121,16 @@ pub fn create_embedder_with_progress(
 ) -> Result<Box<dyn Embedder>> {
     let registry = ModelRegistry::default();
     let (_, config) = registry.resolve(model_name)?;
-    create_embedder_for_config(&config, progress_callback)
+    create_embedder_for_config(&config, &EmbedderOptions::process(), progress_callback)
 }
 
+// `options` is only read on the llamacpp path; an empty feature set leaves it
+// unused rather than branching the signature per feature.
+#[cfg_attr(not(feature = "llamacpp"), allow(unused_variables))]
 #[allow(clippy::needless_return)]
 pub fn create_embedder_for_config(
     config: &ModelConfig,
+    options: &EmbedderOptions,
     progress_callback: Option<ModelDownloadCallback>,
 ) -> Result<Box<dyn Embedder>> {
     match config.provider.as_str() {
@@ -92,9 +160,10 @@ pub fn create_embedder_for_config(
             // metadata. Qwen is causal and wants last-token; Granite and
             // EmbeddingGemma are encoders and want CLS or mean. Hardcoding one
             // would silently corrupt the others, so let the model declare it.
-            let gguf = std::env::var("CKQ_GGUF_FILE").unwrap_or_else(|_| config.gguf_file.clone());
-            // CKQ_IN_PROCESS is the daemon's own path, and the escape hatch.
-            if std::env::var("CKQ_IN_PROCESS").is_ok() {
+            let gguf = options.gguf_file_for(config);
+            // The daemon's own path (it forces this on), and the escape hatch
+            // if the socket cannot be used.
+            if options.in_process {
                 let embedder = llamacpp::LlamaCppEmbedder::new_in_process(
                     config,
                     progress_callback,
@@ -104,18 +173,38 @@ pub fn create_embedder_for_config(
                 return Ok(Box::new(embedder));
             }
             // Otherwise talk to the shared daemon: one model per machine, not
-            // one per process. CKQ_PIN keeps it alive past the idle timeout,
-            // which is what `--serve` wants.
-            let alias = std::env::var("CKQ_MODEL_ALIAS").unwrap_or_else(|_| config.name.clone());
-            let pin = std::env::var("CKQ_PIN").is_ok();
+            // one per process. `pin` keeps it alive past the idle timeout for
+            // as long as this client holds its connection, which is what
+            // `--serve` wants.
+            // Not on Windows: the daemon speaks over a unix socket. There each
+            // process loads its own copy, which is how ckq worked before the
+            // daemon existed. Correct, only heavier when several run at once.
+            #[cfg(not(unix))]
+            {
+                let embedder = llamacpp::LlamaCppEmbedder::new_in_process(
+                    config,
+                    progress_callback,
+                    &gguf,
+                    LlamaPoolingType::Unspecified,
+                )?;
+                return Ok(Box::new(embedder));
+            }
+
+            #[cfg(unix)]
+            let alias = options
+                .model_alias
+                .clone()
+                .unwrap_or_else(|| config.name.clone());
+            #[cfg(unix)]
             Ok(Box::new(llamacpp::LlamaCppDaemonClient::new(
                 config,
                 &alias,
                 &gguf,
                 config.dimensions,
-                pin,
+                options.pin,
             )))
         }
+        #[cfg(feature = "mixedbread")]
         "qwen" => {
             // Same ONNX path as mixedbread, but Qwen3-Embedding is causal: the
             // sentence vector sits at the last real token, not the first.
@@ -125,6 +214,13 @@ pub fn create_embedder_for_config(
                 mixedbread::Pooling::LastToken,
             )?;
             Ok(Box::new(embedder))
+        }
+        #[cfg(not(feature = "mixedbread"))]
+        "qwen" => {
+            bail!(
+                "Model '{}' requires the `mixedbread` feature. Rebuild ck with Mixedbread support.",
+                config.name
+            );
         }
         "mixedbread" => {
             #[cfg(feature = "mixedbread")]

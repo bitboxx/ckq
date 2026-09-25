@@ -358,7 +358,11 @@ async fn index_directory_inner(
         let (_, config) = resolved_model
             .as_ref()
             .expect("resolved model must be present when computing embeddings");
-        let mut embedder = ck_embed::create_embedder_for_config(config, None)?;
+        let mut embedder = ck_embed::create_embedder_for_config(
+            config,
+            &ck_embed::EmbedderOptions::process(),
+            None,
+        )?;
 
         for file_path in files.iter() {
             match index_single_file(file_path, path, Some(&mut embedder)) {
@@ -482,11 +486,14 @@ pub async fn index_file(file_path: &Path, compute_embeddings: bool) -> Result<()
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?
         };
 
-        manifest.embedding_model = Some(config.name.clone());
+        let mut embedder = ck_embed::create_embedder_for_config(
+            &config,
+            &ck_embed::EmbedderOptions::process(),
+            None,
+        )?;
         manifest.embedding_dimensions = Some(config.dimensions);
         tracing::debug!("Using embedding model '{}' ({})", config.name, alias);
 
-        let mut embedder = ck_embed::create_embedder_for_config(&config, None)?;
         index_single_file(file_path, &repo_root, Some(&mut embedder))?
     } else {
         index_single_file(file_path, &repo_root, None)?
@@ -554,7 +561,11 @@ pub async fn update_index(
             alias
         );
 
-        let mut embedder = ck_embed::create_embedder_for_config(&config, None)?;
+        let mut embedder = ck_embed::create_embedder_for_config(
+            &config,
+            &ck_embed::EmbedderOptions::process(),
+            None,
+        )?;
         files
             .iter()
             .filter_map(|file_path| {
@@ -982,11 +993,14 @@ pub async fn smart_update_index_with_detailed_progress(
 
     // Second pass: index the files that need updating
     if compute_embeddings {
-        // Sequential processing with streaming - write each file immediately
         let (_, config) = resolved_model
             .as_ref()
             .expect("resolved model must exist for embedding updates");
-        let mut embedder = ck_embed::create_embedder_for_config(config, None)?;
+        let mut embedder = ck_embed::create_embedder_for_config(
+            config,
+            &ck_embed::EmbedderOptions::process(),
+            None,
+        )?;
         let mut _processed_count = 0;
 
         for file_path in files_to_update.iter() {

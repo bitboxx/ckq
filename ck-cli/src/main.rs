@@ -373,6 +373,7 @@ struct Cli {
 
     /// Run as the shared embedding daemon for one model. Started automatically
     /// by the first invocation; not meant to be typed.
+    #[cfg(all(feature = "llamacpp", unix))]
     #[arg(long, hide = true, value_name = "MODEL")]
     embed_daemon: Option<String>,
 
@@ -910,22 +911,81 @@ fn reset_sigpipe() {}
 /// Load the model in this process and serve embeddings over the socket until
 /// idle. Exits on its own; nothing supervises it.
 #[cfg(feature = "llamacpp")]
-fn run_embed_daemon(alias: &str) -> anyhow::Result<()> {
+fn run_embed_daemon(alias: &str, options: &ck_embed::EmbedderOptions) -> anyhow::Result<()> {
     let registry = ck_models::ModelRegistry::default();
     let (_, config) = registry.resolve(Some(alias))?;
-    let socket = ck_embed::embed_daemon::socket_path(&config.name, &config.gguf_file);
+    // Same derivation as the client, so a CKQ_GGUF_FILE override moves both
+    // sides to the same socket; hashing it on one side only used to leave the
+    // override timing out against a daemon that never saw it.
+    let socket = ck_embed::embed_daemon::socket_path(&config.name, &options.gguf_file_for(&config));
 
-    unsafe { std::env::set_var("CKQ_IN_PROCESS", "1") };
-    let mut embedder = ck_embed::create_embedder_for_config(&config, None)?;
+    // Bind before loading: two ckq starting together must not both load the
+    // model — that double-load is the whole thing the daemon exists to
+    // prevent. Clients queue on the socket while the winner loads.
+    let Some(listener) = ck_embed::embed_daemon::bind(&socket)? else {
+        return Ok(()); // another daemon won the startup race and is serving
+    };
 
-    ck_embed::embed_daemon::serve(socket, move |texts| embedder.embed(texts))
+    // In-process is forced here: the daemon loading its model by spawning
+    // another daemon would loop. Everything else (gguf override, pin) comes
+    // from the same snapshot the spawning client used.
+    let mut daemon_options = options.clone();
+    daemon_options.in_process = true;
+    let mut embedder = ck_embed::create_embedder_for_config(&config, &daemon_options, None)?;
+
+    ck_embed::embed_daemon::serve_on(listener, socket, move |texts| embedder.embed(texts))
 }
 
-#[tokio::main]
-async fn main() {
+/// Open and keep a pinned connection to the embedding daemon, starting it if
+/// needed, so it survives the gaps between an MCP server's queries.
+#[cfg(all(feature = "llamacpp", unix))]
+fn hold_daemon_pin(options: &ck_embed::EmbedderOptions) -> anyhow::Result<()> {
+    let registry = ck_models::ModelRegistry::default();
+    let (alias, config) = registry.resolve(None)?;
+    if config.provider != "llamacpp" {
+        return Ok(());
+    }
+    let gguf = options.gguf_file_for(&config);
+    let socket = ck_embed::embed_daemon::socket_path(&config.name, &gguf);
+    let mut stream = match ck_embed::embed_daemon::try_connect(&socket) {
+        Some(s) => s,
+        None => ck_embed::embed_daemon::spawn(&alias, &socket)?,
+    };
+    // An empty request registers the pin without asking for any work.
+    ck_embed::embed_daemon::request(&mut stream, &[], true)?;
+    ck_embed::embed_daemon::pin_for_process(stream);
+    Ok(())
+}
+
+fn main() {
     reset_sigpipe();
 
-    if let Err(e) = run_main().await {
+    // Read the command line and the embedding environment before the async
+    // runtime starts worker threads. The old code called
+    // `unsafe { std::env::set_var }` for CKQ_PIN and CKQ_IN_PROCESS from
+    // inside the runtime, where a concurrent getenv on another thread can
+    // read freed memory; after this point nothing mutates the environment —
+    // the snapshot is passed down explicitly.
+    let cli = Cli::parse();
+    let mut embed_options = ck_embed::EmbedderOptions::from_env();
+    if cli.serve {
+        embed_options.pin = true;
+        // Take a pin connection and hold it for the life of the server. Without
+        // this the pin would last only as long as one request, because clients
+        // open a connection per request, and the daemon would idle out between
+        // queries that may be hours apart.
+        #[cfg(all(feature = "llamacpp", unix))]
+        if let Err(e) = hold_daemon_pin(&embed_options) {
+            tracing::warn!("could not pin the embedding daemon: {e}");
+        }
+    }
+    ck_embed::init_process_options(embed_options.clone());
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("building the tokio runtime");
+    if let Err(e) = runtime.block_on(run_main(cli, embed_options)) {
         eprintln!("DETAILED ERROR: {e:#}");
         eprintln!("DEBUG: Error occurred in main");
 
@@ -940,9 +1000,7 @@ async fn main() {
     }
 }
 
-async fn run_main() -> Result<()> {
-    let cli = Cli::parse();
-
+async fn run_main(cli: Cli, embed_options: ck_embed::EmbedderOptions) -> Result<()> {
     if cli.print_default_ckignore {
         print!("{}", get_default_ckignore_content());
         return Ok(());
@@ -950,15 +1008,15 @@ async fn run_main() -> Result<()> {
 
     // The daemon loads the model in-process; everything else talks to it.
     #[cfg(feature = "llamacpp")]
-    if let Some(ref model) = cli.embed_daemon {
-        return run_embed_daemon(model);
+    if let Some(model) = cli.embed_daemon.as_deref() {
+        return run_embed_daemon(model, &embed_options);
     }
 
-    // Handle MCP server mode first
+    // Handle MCP server mode first. `pin` is already in embed_options, set
+    // before any threads started: an MCP server is long-lived and its next
+    // query may be hours away, so its connection keeps the daemon past the
+    // idle timeout rather than paying a reload.
     if cli.serve {
-        // An MCP server is long-lived and its next query may be hours away, so
-        // keep the daemon past the idle timeout rather than paying a reload.
-        unsafe { std::env::set_var("CKQ_PIN", "1") };
         return run_mcp_server().await;
     }
 

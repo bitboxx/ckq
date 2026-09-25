@@ -99,22 +99,32 @@ than doing it serially, because they contended for the GPU:
 | memory, two concurrent | 470 MB | **459 MB, one process** |
 
 How it works. The first invocation finds no socket, re-execs itself as
-`ckq --embed-daemon <model>` detached, and waits for it to listen. Every later invocation
-connects instead. The socket is at `$TMPDIR/ckq-embed-<hash>.sock`, hashed over
-(model, gguf file), so a different model is a different daemon and a stale socket from
-another model can never be mistaken for a live one.
+`ckq --embed-daemon <model>` detached, and waits for it to listen; the daemon
+binds its socket **before** it loads the model, so two processes starting
+together never both load it — the loser connects to the winner and queues until
+it is ready. Every later invocation connects instead. The socket lives in
+`$XDG_RUNTIME_DIR` when set (per-user by spec), otherwise `~/.cache/ck/sockets`
+(0700), never a world-writable directory; its name is hashed over (model, gguf
+file, and the running binary's size and mtime), so a different model is a
+different daemon, a stale socket from another model can never be mistaken for a
+live one, and a rebuild is not served by the old code. The daemon also refuses
+sockets owned by another uid before sending them anything.
 
-The daemon exits after **15 minutes** with no requests. `--serve` sets `CKQ_PIN`, which
-tells the daemon to ignore that timeout: an MCP server is long-lived and its next query may
-be hours away, so paying a reload would be wrong. A `--serve` that finds a daemon already
-running adopts it and pins it rather than starting a second.
+The daemon exits after **15 minutes** with no requests. A client can pin it
+(`"pin": true` on its connection); the pin lasts exactly as long as that
+connection stays open, so a crashed or finished client cannot leave an immortal
+daemon behind. `--serve` pins: the MCP server's requests carry the pin, keeping
+the daemon warm while the server is actively answering. The daemon's stderr is
+inherited by the terminal that spawned it, so a failed start shows its cause
+instead of a bare timeout.
 
-Two edge cases are handled: a socket file left behind by a killed daemon is removed before
-binding, and two invocations racing to start one both succeed, with the loser connecting to
-the winner.
+Two more edge cases are handled: a socket file left behind by a killed daemon is
+removed before binding, and if a daemon exits on its idle timeout in the window
+between a client's connect and its request, the client retries once (respawning
+the daemon) rather than letting files silently drop out of the index.
 
-`CKQ_IN_PROCESS=1` bypasses the daemon entirely. That is how the daemon itself loads the
-model, and the escape hatch if the socket cannot be used.
+`CKQ_IN_PROCESS=1` bypasses the daemon entirely. That is how the daemon itself
+loads the model, and the escape hatch if the socket cannot be used.
 
 ## Why llama.cpp and not ONNX Runtime
 
@@ -137,6 +147,21 @@ Metal 8.26 s wall and 1.6 s CPU.
 Backends are selected per platform in `ck-embed/Cargo.toml`: Metal on macOS, Vulkan
 elsewhere. Verified on Arch-family Linux with an AMD Radeon RX 7600 XT, every layer on `Vulkan0`.
 CUDA is untested for want of a machine.
+
+## Platforms
+
+| | build | shared daemon |
+|---|---|---|
+| macOS (Metal) | yes | yes |
+| Linux (Vulkan) | yes | yes |
+| Windows | yes | **no** |
+
+The daemon speaks over a unix socket, which Rust's std does not expose on Windows, so
+there it is compiled out and every process loads its own copy of the model. That is how
+ckq worked before the daemon existed: correct, only heavier when several run at once.
+
+CI builds default features on all three and runs the test suite, because the Windows path
+is the one nobody here can exercise by hand.
 
 ## Traps worth knowing
 

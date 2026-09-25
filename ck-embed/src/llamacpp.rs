@@ -15,9 +15,13 @@ use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaModel};
 use std::collections::HashMap;
 use std::num::NonZeroU32;
+use std::sync::Arc;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
+
+use parking_lot::Mutex;
 
 use crate::mixedbread::download_assets;
 use crate::{Embedder, ModelDownloadCallback};
@@ -35,6 +39,7 @@ const DEFAULT_CTX: u32 = PER_SEQ * MAX_SEQ as u32;
 /// Talks to the shared daemon so the model is loaded once per machine rather
 /// than once per process. `LlamaCppEmbedder::new_in_process` is the daemon's own
 /// path, and the escape hatch if the socket cannot be used.
+#[cfg(unix)]
 pub struct LlamaCppDaemonClient {
     socket: std::path::PathBuf,
     alias: String,
@@ -43,6 +48,7 @@ pub struct LlamaCppDaemonClient {
     pin: bool,
 }
 
+#[cfg(unix)]
 impl LlamaCppDaemonClient {
     pub fn new(config: &ModelConfig, alias: &str, gguf: &str, dim: usize, pin: bool) -> Self {
         Self {
@@ -55,6 +61,7 @@ impl LlamaCppDaemonClient {
     }
 }
 
+#[cfg(unix)]
 impl Embedder for LlamaCppDaemonClient {
     fn id(&self) -> &'static str {
         "llamacpp-daemon"
@@ -69,11 +76,23 @@ impl Embedder for LlamaCppDaemonClient {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        let mut stream = match crate::embed_daemon::try_connect(&self.socket) {
-            Some(s) => s,
-            None => crate::embed_daemon::spawn(&self.alias, &self.socket)?,
-        };
-        crate::embed_daemon::request(&mut stream, texts, self.pin)
+        // A daemon can hit its idle timeout in the window between our connect
+        // and our request. ck-index catches per-file errors, counts
+        // files_errored and still reports success, so healing it here is the
+        // difference between one respawn and files silently missing from the
+        // index. One retry: connect (respawning if nothing answers), request.
+        let mut last_err = None;
+        for _ in 0..2 {
+            let mut stream = match crate::embed_daemon::try_connect(&self.socket) {
+                Some(s) => s,
+                None => crate::embed_daemon::spawn(&self.alias, &self.socket)?,
+            };
+            match crate::embed_daemon::request(&mut stream, texts, self.pin) {
+                Ok(embeddings) => return Ok(embeddings),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow!("embed daemon request failed twice")))
     }
 }
 
@@ -96,7 +115,7 @@ type Job = (Vec<String>, Sender<Result<Vec<Vec<f32>>>>);
 ///
 /// Keyed by model, because a process may legitimately touch two of them and an
 /// unkeyed cache would hand the second one the first one's weights.
-type Workers = Mutex<HashMap<String, Arc<Result<(Sender<Job>, usize), String>>>>;
+type Workers = Mutex<HashMap<String, Arc<(Sender<Job>, usize)>>>;
 static WORKERS: OnceLock<Workers> = OnceLock::new();
 
 impl LlamaCppEmbedder {
@@ -113,35 +132,40 @@ impl LlamaCppEmbedder {
         if let Some(cb) = progress_callback.as_ref() {
             cb("Loading llama.cpp model (Metal)...");
         }
-
         let gguf = gguf_file.to_string();
         let declared = config.dimensions;
         let max_length = config.max_tokens.min(PER_SEQ as usize);
         let name = config.name.clone();
-
         // One worker per (model, file); `LlamaBackend::init()` inside it is
         // idempotent in llama.cpp once the first has run.
         let key = format!("{}::{}", config.name, gguf);
-        let started = {
-            let workers = WORKERS.get_or_init(|| Mutex::new(HashMap::new()));
-            let mut guard = workers
-                .lock()
-                .map_err(|_| anyhow!("llama.cpp worker registry is poisoned"))?;
-            Arc::clone(guard.entry(key).or_insert_with(|| {
-                Arc::new(
-                    start_worker(model_path, gguf, name, declared, max_length, pooling)
-                        .map_err(|e| e.to_string()),
-                )
-            }))
-        };
-        let (tx, dim) = match started.as_ref() {
-            Ok(pair) => (pair.0.clone(), pair.1),
-            Err(e) => return Err(anyhow!("{e}")),
-        };
-
+        let workers = WORKERS.get_or_init(|| Mutex::new(HashMap::new()));
+        {
+            // Fast path: this process already has the model loaded.
+            let guard = workers.lock();
+            if let Some(hit) = guard.get(&key) {
+                return Ok(Self {
+                    tx: hit.0.clone(),
+                    dim: hit.1,
+                    model_name: config.name.clone(),
+                });
+            }
+        }
+        // Load without holding the registry lock — a second model must not
+        // block behind this one's download — and cache only successes: caching
+        // the Err of one transient failure used to poison the model for the
+        // whole process.
+        let built = Arc::new(start_worker(
+            model_path, gguf, name, declared, max_length, pooling,
+        )?);
+        let mut guard = workers.lock();
+        let hit = Arc::clone(guard.entry(key).or_insert(built));
+        // A concurrent winner inserted its own worker; ours sees its sender
+        // dropped below and exits (its loaded model leaks with it, but the
+        // race is a once-per-process event).
         Ok(Self {
-            tx,
-            dim,
+            tx: hit.0.clone(),
+            dim: hit.1,
             model_name: config.name.clone(),
         })
     }
@@ -155,16 +179,24 @@ fn run(
     texts: &[String],
     max_length: usize,
     dim: usize,
+    pooling: LlamaPoolingType,
 ) -> Result<Vec<Vec<f32>>> {
     let mut encoded: Vec<Vec<_>> = Vec::with_capacity(texts.len());
+    let mut truncated = 0usize;
     for text in texts {
         let mut tokens = model
             .str_to_token(text, AddBos::Always)
             .map_err(|e| anyhow!("tokenize: {e}"))?;
         // Truncate rather than fail: ck chunks upstream, so an over-long chunk
         // is a chunker bug and not a reason to lose the whole file.
-        tokens.truncate(max_length);
+        if tokens.len() > max_length {
+            truncated += 1;
+            tokens.truncate(max_length);
+        }
         encoded.push(tokens);
+    }
+    if truncated > 0 {
+        warn_truncation(truncated, texts.len(), max_length, pooling);
     }
 
     let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
@@ -206,6 +238,28 @@ fn run(
         start = end;
     }
     Ok(out)
+}
+
+/// Truncation must not be silent: for a last-token pooling model the dropped
+/// tail is exactly the token that carries the sentence vector, so the result
+/// is wrong rather than merely lossy. Once per run is enough — an index job
+/// truncates in the thousands and one visible line says it all.
+static TRUNCATION_WARNED: AtomicBool = AtomicBool::new(false);
+
+fn warn_truncation(count: usize, total: usize, max_length: usize, pooling: LlamaPoolingType) {
+    if TRUNCATION_WARNED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let gravity = if pooling == LlamaPoolingType::Last {
+        "this model pools its LAST token, so truncation removes the sentence vector itself: the embedding is wrong, not just lossy"
+    } else {
+        // Pooling came from GGUF metadata, so it may still be last-token.
+        "if this model pools its last token, the embedding is wrong, not just lossy"
+    };
+    eprintln!(
+        "ckq: warning: truncated {count} of {total} inputs to {max_length} tokens before \
+         embedding ({gravity}; further truncations are not logged)"
+    );
 }
 
 fn start_worker(
@@ -268,7 +322,7 @@ fn start_worker(
             let _ = ready_tx.send(Ok(dim));
 
             while let Ok((texts, reply)) = rx.recv() {
-                let _ = reply.send(run(&model, &mut ctx, &texts, max_length, dim));
+                let _ = reply.send(run(&model, &mut ctx, &texts, max_length, dim, pooling));
             }
             // Leak the context and model rather than dropping them: teardown
             // races Metal's resource sets and trips a GGML_ASSERT on exit.

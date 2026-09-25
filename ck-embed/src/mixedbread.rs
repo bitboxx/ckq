@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, anyhow};
 use hf_hub::{Repo, RepoType, api::sync::ApiBuilder};
@@ -130,21 +131,31 @@ impl MixedbreadEmbedder {
 
         // Some "embedding" ONNX exports are the full causal LM graph and declare a
         // past_key_values input per layer. A prefill only needs them present and
-        // empty, so count the layers and read the head shape from the declaration.
-        let kv_layers = session
+        // empty, so count the layers and read the head shape from the key
+        // declaration itself — Qwen3's (8, 128) used to be hardcoded, and any
+        // other causal export would have built a wrongly-shaped cache and died
+        // inside the runtime with no hint of why.
+        let kv_key_input = session
             .inputs()
             .iter()
-            .filter(|input| {
+            .find(|input| {
                 input.name().starts_with("past_key_values.") && input.name().ends_with(".key")
             })
-            .count();
-        let kv_cache_shape = if kv_layers > 0 {
-            // EXPERIMENT: Qwen3-Embedding-0.6B's shape, from its config.json
-            // (num_key_value_heads 8, head_dim 128). A real implementation must
-            // read config.json next to the weights rather than assume this.
-            Some((kv_layers, 8usize, 128usize))
-        } else {
-            None
+            .map(|input| input.name().to_string());
+        let kv_cache_shape = match kv_key_input {
+            Some(key_input) => {
+                let kv_layers = session
+                    .inputs()
+                    .iter()
+                    .filter(|input| {
+                        input.name().starts_with("past_key_values.")
+                            && input.name().ends_with(".key")
+                    })
+                    .count();
+                let (kv_heads, head_dim) = kv_head_shape(&session, &key_input, &config.name)?;
+                Some((kv_layers, kv_heads, head_dim))
+            }
+            None => None,
         };
 
         Ok(Self {
@@ -166,12 +177,19 @@ impl MixedbreadEmbedder {
         texts: &[String],
     ) -> Result<(Array2<i64>, Array2<i64>, Option<Array2<i64>>)> {
         let mut encodings = Vec::with_capacity(texts.len());
+        let mut truncated = 0usize;
         for text in texts {
             let encoding = self
                 .tokenizer
                 .encode(text.as_str(), true)
                 .map_err(|e| anyhow!("Tokenizer encode failed: {e}"))?;
+            if encoding.len() > self.max_length {
+                truncated += 1;
+            }
             encodings.push(encoding);
+        }
+        if truncated > 0 {
+            warn_truncation(truncated, texts.len(), self.max_length, self.pooling);
         }
 
         let seq_len = encodings
@@ -226,6 +244,7 @@ impl MixedbreadEmbedder {
 
     fn normalize(
         rows: ArrayViewD<'_, f32>,
+        model: &str,
         dim: usize,
         pooling: Pooling,
         lengths: &[usize],
@@ -235,18 +254,16 @@ impl MixedbreadEmbedder {
             // Already pooled by the graph: one vector per input, nothing to select.
             2 => {
                 let view = rows.into_dimensionality::<Ix2>()?;
-                Ok(view
-                    .rows()
+                view.rows()
                     .into_iter()
-                    .map(|row| normalize_row(row, dim))
-                    .collect())
+                    .map(|row| normalize_row(row, model, dim))
+                    .collect()
             }
             // (batch, sequence, hidden): pick the position that carries the vector.
             3 => {
                 let view = rows.into_dimensionality::<Ix3>()?;
                 let seq_len = view.shape()[1];
-                Ok(view
-                    .outer_iter()
+                view.outer_iter()
                     .enumerate()
                     .map(|(row, matrix)| {
                         let index = match pooling {
@@ -261,13 +278,50 @@ impl MixedbreadEmbedder {
                                 .saturating_sub(1)
                                 .min(seq_len.saturating_sub(1)),
                         };
-                        normalize_row(matrix.index_axis(Axis(0), index), dim)
+                        normalize_row(matrix.index_axis(Axis(0), index), model, dim)
                     })
-                    .collect())
+                    .collect()
             }
             other => Err(anyhow!("Unexpected embedding tensor rank: {other}")),
         }
     }
+}
+/// (kv_heads, head_dim) from the declared rank-4 shape
+/// (batch, kv_heads, past_len, head_dim) of a `past_key_values.*.key` input.
+/// Batch and past_len are dynamic in these exports and do not matter for an
+/// empty prefill cache; a dynamic head dimension means the export does not pin
+/// its attention geometry, and erroring clearly beats guessing a shape that
+/// belongs to a different model.
+fn kv_head_shape(session: &Session, key_input: &str, model: &str) -> Result<(usize, usize)> {
+    use ort::value::ValueType;
+
+    let dims = match session
+        .inputs()
+        .iter()
+        .find(|input| input.name() == key_input)
+        .map(|input| input.dtype())
+    {
+        Some(ValueType::Tensor { shape, .. }) => shape,
+        Some(other) => {
+            return Err(anyhow!(
+                "{model}: KV input '{key_input}' is not a tensor ({other:?})"
+            ));
+        }
+        None => unreachable!("the name was taken from this same session"),
+    };
+    let fixed = |idx: usize, what: &str| -> Result<usize> {
+        dims.get(idx)
+            .copied()
+            .filter(|dim| *dim > 0)
+            .map(|dim| dim as usize)
+            .ok_or_else(|| {
+                anyhow!(
+                    "{model}: KV input '{key_input}' declares a dynamic {what} dimension \
+                     ({dims:?}); cannot build its empty prefill cache"
+                )
+            })
+    };
+    Ok((fixed(1, "key-value head")?, fixed(3, "head")?))
 }
 
 impl Embedder for MixedbreadEmbedder {
@@ -356,7 +410,13 @@ impl Embedder for MixedbreadEmbedder {
             .try_extract_array::<f32>()
             .context("Failed to extract embedding tensor")?;
 
-        Self::normalize(embedding_tensor, self.dim, self.pooling, &lengths)
+        Self::normalize(
+            embedding_tensor,
+            self.model_name.as_str(),
+            self.dim,
+            self.pooling,
+            &lengths,
+        )
     }
 }
 
@@ -522,23 +582,47 @@ impl Reranker for MixedbreadReranker {
     }
 }
 
-fn normalize_row(row: ArrayView<'_, f32, Ix1>, dim: usize) -> Vec<f32> {
-    let take = row.len().min(dim);
-    let mut values = vec![0f32; dim];
-    let mut norm = 0.0;
-    for (idx, value) in row.iter().take(take).enumerate() {
-        values[idx] = *value;
-        norm += value * value;
+fn normalize_row(row: ArrayView<'_, f32, Ix1>, model: &str, dim: usize) -> Result<Vec<f32>> {
+    // A registry/model dimension mismatch must fail loudly like the llama.cpp
+    // path does: zero-padding used to turn it into a plausible half-empty
+    // vector that silently poisoned every similarity score that touched it.
+    if row.len() != dim {
+        return Err(anyhow!(
+            "{model} produced {}-d vectors but the registry declares {dim}",
+            row.len()
+        ));
     }
-
+    let mut values = row.to_vec();
+    let norm = values.iter().map(|value| value * value).sum::<f32>().sqrt();
     if norm > 0.0 {
-        let inv = norm.sqrt().recip();
-        for value in values.iter_mut().take(take) {
+        let inv = norm.recip();
+        for value in &mut values {
             *value *= inv;
         }
     }
+    Ok(values)
+}
 
-    values
+/// Truncation must not be silent: for a last-token pooling model the dropped
+/// tail is exactly the token that carries the sentence vector, so the result
+/// is wrong rather than merely lossy. Once per run is enough — an index job
+/// truncates in the thousands and one visible line says it all.
+static TRUNCATION_WARNED: AtomicBool = AtomicBool::new(false);
+
+fn warn_truncation(count: usize, total: usize, max_length: usize, pooling: Pooling) {
+    if TRUNCATION_WARNED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let gravity = if pooling == Pooling::LastToken {
+        "this model pools its LAST token, so truncation removes the token that carries \
+         the sentence vector: the embedding is wrong, not just lossy"
+    } else {
+        "the truncated tokens are absent from the pooled vector"
+    };
+    eprintln!(
+        "ckq: warning: truncated {count} of {total} inputs to {max_length} tokens before \
+         embedding ({gravity}; further truncations are not logged)"
+    );
 }
 
 pub(crate) fn download_assets(

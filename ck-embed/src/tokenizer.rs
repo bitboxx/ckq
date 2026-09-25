@@ -8,14 +8,18 @@ impl TokenEstimator {
     /// Estimate token count for text
     /// Based on empirical analysis of code and text tokenization:
     /// - Code: ~4.2 characters per token
-    /// - Text: ~4.8 characters per token  
+    /// - Text: ~4.8 characters per token
     /// - Average: ~4.5 characters per token
+    ///
+    /// Those ratios hold for Latin scripts. CJK and several Southeast-Asian
+    /// scripts run 1-1.5 characters per token, so they are counted separately:
+    /// one blended ratio underestimated a CJK chunk by ~3x, the chunk sailed
+    /// past every size check and the embedder then silently truncated it.
     pub fn estimate_tokens(text: &str) -> usize {
         if text.is_empty() {
             return 0;
         }
 
-        // More sophisticated estimation based on content type
         let char_count = text.chars().count();
 
         // Detect if text is primarily code vs natural language
@@ -35,7 +39,33 @@ impl TokenEstimator {
             4.8
         };
 
-        (char_count as f32 / chars_per_token).ceil() as usize
+        let wide = Self::count_wide_script_chars(text);
+        let narrow = char_count - wide;
+        let tokens = wide as f32 / 1.2 + narrow as f32 / chars_per_token;
+        tokens.ceil() as usize
+    }
+
+    /// Characters from scripts whose tokenizers spend roughly one token per
+    /// character: Han (incl. extensions and compat), kana, Hangul, Thai, Lao,
+    /// Khmer and Myanmar.
+    fn count_wide_script_chars(text: &str) -> usize {
+        fn is_wide(code: u32) -> bool {
+            matches!(code,
+                0x3400..=0x4DBF   // CJK Extension A
+                | 0x4E00..=0x9FFF // CJK Unified
+                | 0xF900..=0xFAFF // CJK Compatibility Ideographs
+                | 0x20000..=0x2A6DF // CJK Extension B
+                | 0x3040..=0x30FF // Hiragana, Katakana
+                | 0x1100..=0x11FF // Hangul Jamo
+                | 0x3130..=0x318F // Hangul Compatibility Jamo
+                | 0xAC00..=0xD7AF // Hangul Syllables
+                | 0x0E00..=0x0E7F // Thai
+                | 0x0E80..=0x0EFF // Lao
+                | 0x1780..=0x17FF // Khmer
+                | 0x1000..=0x109F // Myanmar
+            )
+        }
+        text.chars().filter(|c| is_wide(*c as u32)).count()
     }
 
     /// Check if text exceeds token limit for a given model
@@ -123,6 +153,31 @@ mod tests {
         let tokens = TokenEstimator::estimate_tokens(text);
         // Should be around 3 tokens, estimation might vary
         assert!((2..=4).contains(&tokens), "Got {tokens} tokens");
+    }
+
+    #[test]
+    fn test_estimate_tokens_cjk_not_underestimated() {
+        // CJK tokenizes at ~1-1.5 chars/token; a 1000-char chunk is really
+        // ~800+ tokens. The old ~4.5 chars/token ratio called it ~222, the
+        // chunk sailed past every size check and got truncated at embed time.
+        let text = "語".repeat(1000);
+        let tokens = TokenEstimator::estimate_tokens(&text);
+        assert!((750..=1100).contains(&tokens), "Got {tokens} tokens");
+    }
+
+    #[test]
+    fn test_estimate_tokens_mixed_script() {
+        // 450 latin chars (~94 tokens at 4.8) plus 100 CJK chars (~83 tokens).
+        let text = format!("{} {}", "x".repeat(450), "漢字".repeat(50));
+        let tokens = TokenEstimator::estimate_tokens(&text);
+        assert!((150..=210).contains(&tokens), "Got {tokens} tokens");
+    }
+
+    #[test]
+    fn test_estimate_tokens_thai_counts_as_wide() {
+        let thai = "ก".repeat(60);
+        let tokens = TokenEstimator::estimate_tokens(&thai);
+        assert!((45..=60).contains(&tokens), "Got {tokens} tokens");
     }
 
     #[test]

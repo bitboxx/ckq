@@ -26,6 +26,7 @@ ort = { workspace = true, optional = true }
 once_cell = { workspace = true, optional = true }
 ndarray = { workspace = true, optional = true }
 num_cpus = { workspace = true, optional = true }
+parking_lot = { version = "0.12", optional = true }
 
 
 # GPU backend per platform: Metal on Apple Silicon, Vulkan elsewhere (covers AMD,
@@ -36,8 +37,16 @@ llama-cpp-2 = { workspace = true, optional = true, features = ["metal"] }
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 llama-cpp-2 = { workspace = true, optional = true, features = ["vulkan"] }
 
+[target.'cfg(unix)'.dependencies]
+# geteuid() for refusing sockets owned by another user (see embed_daemon).
+libc = "0.2"
+
 [features]
-llamacpp = ["dep:llama-cpp-2"]
+# llamacpp pulls mixedbread: its GGUF download goes through
+# mixedbread::download_assets (hf-hub), and the daemon client shares the
+# socket code, so the combination "llamacpp without mixedbread" was never
+# buildable — now the feature says so instead of failing to compile.
+llamacpp = ["dep:llama-cpp-2", "dep:parking_lot", "mixedbread"]
 default = ["fastembed", "mixedbread"]
 fastembed = ["dep:fastembed"]
 mixedbread = [

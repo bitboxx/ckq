@@ -1,0 +1,47 @@
+# ckq's own CI. Upstream's ci.yaml still runs and covers the inherited crates;
+# this exists because the llamacpp backend and the embedding daemon are new here
+# and the daemon is unix-only, so Windows needs proving rather than assuming.
+name: ckq
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # llama-cpp-sys-2 builds llama.cpp from source.
+      - name: Install CMake
+        uses: lukka/get-cmake@latest
+
+      # Default features include llamacpp. On Windows the daemon is compiled out
+      # and each process loads its own model; this job is what proves that path
+      # still builds.
+      - name: Build (default features)
+        run: cargo build --release -p ck-search
+
+      - name: Test
+        run: cargo test --release -p ck-models -p ck-chunk -p ck-embed
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: lukka/get-cmake@latest
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --release -p ck-models -p ck-embed -p ck-chunk --all-targets -- -D warnings

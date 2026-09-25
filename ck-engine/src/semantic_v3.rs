@@ -115,7 +115,11 @@ pub async fn semantic_search_v3_with_progress(
         }
     }
 
-    let mut embedder = ck_embed::create_embedder_for_config(&resolved_model.config, None)?;
+    let mut embedder = ck_embed::create_embedder_for_config(
+        &resolved_model.config,
+        &ck_embed::EmbedderOptions::process(),
+        None,
+    )?;
     let query_embeddings = embedder.embed(std::slice::from_ref(&options.query))?;
 
     if query_embeddings.is_empty() {

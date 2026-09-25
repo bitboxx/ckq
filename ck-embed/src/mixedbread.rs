@@ -15,6 +15,12 @@ use ck_models::{ModelConfig, RerankModelConfig};
 
 const EMBED_TOKENIZER_PATH: &str = "tokenizer.json";
 const EMBED_MODEL_PATH: &str = "onnx/model_quantized.onnx";
+
+/// Which ONNX file to pull. CoreML handles INT8 QDQ graphs poorly and splits them
+/// node by node, so fp16 is worth trying: CKQ_ONNX_FILE=onnx/model_fp16.onnx
+fn embed_model_path() -> String {
+    std::env::var("CKQ_ONNX_FILE").unwrap_or_else(|_| EMBED_MODEL_PATH.to_string())
+}
 const RERANK_TOKENIZER_PATH: &str = "tokenizer.json";
 const RERANK_MODEL_PATH: &str = "onnx/model_quantized.onnx";
 
@@ -64,7 +70,7 @@ impl MixedbreadEmbedder {
         }
 
         let (model_path, tokenizer_path) =
-            download_assets(&config.name, EMBED_MODEL_PATH, EMBED_TOKENIZER_PATH)?;
+            download_assets(&config.name, &embed_model_path(), EMBED_TOKENIZER_PATH)?;
 
         if let Some(cb) = progress_callback.as_ref() {
             cb("Loading Mixedbread embedder session...");
@@ -84,8 +90,10 @@ impl MixedbreadEmbedder {
         //    ({1,8,0,128}) has zero elements. This is not supported by the
         //    CoreML EP."
         // Pooling is the available proxy: LastToken means a causal export.
+        // Off by default: measured slower than plain CPU in every configuration
+        // on this hardware. CKQ_COREML=1 to try it on another machine.
         #[cfg(target_os = "macos")]
-        if pooling == Pooling::FirstToken {
+        if pooling == Pooling::FirstToken && std::env::var("CKQ_COREML").is_ok() {
             use ort::execution_providers::CoreMLExecutionProvider;
             use ort::execution_providers::coreml::{ComputeUnits, ModelFormat, SpecializationStrategy};
             // The defaults are close to useless here. ModelFormat::NeuralNetwork is
@@ -97,7 +105,7 @@ impl MixedbreadEmbedder {
                 .with_model_format(ModelFormat::MLProgram)
                 .with_compute_units(ComputeUnits::All)
                 .with_specialization_strategy(SpecializationStrategy::FastPrediction)
-                .with_static_input_shapes(false)
+                .with_static_input_shapes(true)
                 .build()])?;
         }
 

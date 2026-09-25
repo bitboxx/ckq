@@ -71,7 +71,18 @@ GPU that LEANN uses through MLX is simply not reachable from ONNX Runtime.
   `NeuralNetwork`, which supports fewer operators than `MLProgram`, and `MLComputeUnits`
   is unset so the GPU and ANE are never requested. Setting `MLProgram`, `ComputeUnits::All`
   and `FastPrediction` changed nothing.
-- **Untested lever:** ck hardcodes `onnx/model_quantized.onnx`, INT8 with QDQ nodes, which
+- **The untested lever was tried and it is worse.** `CKQ_ONNX_FILE` switches the ONNX
+  file, and `with_static_input_shapes(true)` matches the recipe that worked in
+  [pykeio/ort#341](https://github.com/pykeio/ort/issues/341). On `mxbai-xsmall`, warm
+  cache: CPU only **1.01 s**, CoreML + static shapes 2.41 s, CoreML + static shapes +
+  fp16 **5.11 s**. Every CoreML configuration is slower than plain CPU, and fp16 is the
+  worst of them.
+- **CoreML is therefore off by default** and behind `CKQ_COREML=1`. The EP is definitely
+  compiled in: 516 CoreML symbols in the statically linked binary, so this is not the
+  missing-EP problem rc.13's notes warn about. It is graph splits plus per-call overhead
+  on small models with short sequences, which is exactly what ort's maintainer points at
+  in #341: "the most important factor for performance is minimizing graph splits".
+- Superseded, kept for the record: ck hardcodes `onnx/model_quantized.onnx`, INT8 with QDQ nodes, which
   CoreML handles poorly. Pointing `EMBED_MODEL_PATH` at `onnx/model_fp16.onnx` is the one
   thing that might still work. Moot for `qwen3-embed`, which CoreML refuses whatever the
   format.
@@ -97,3 +108,21 @@ more than the benchmark above.
 
 To enable a GPU provider, add the feature to `ort` in the workspace `Cargo.toml` (`cuda`,
 `directml`) and register it in `mixedbread.rs` beside the CoreML block.
+
+## ort upstream, checked 25 Sep 2026
+
+`ort` is at **v2.0.0-rc.13** (28 Jul 2026); ck pins `=2.0.0-rc.11` (7 Jan 2026) because
+rc.12 made `SessionOptionsPointer` `!Sync`. Nothing in rc.12 or rc.13 changes the macOS
+GPU story:
+
+- No MLX provider, and no issue or PR has ever mentioned MLX.
+- No Metal provider. The only macOS GPU paths remain CoreML and WebGPU.
+- rc.13 adds a link-time error when `download-binaries` is on and the prebuilt binaries
+  lack a requested EP, plus a build.rs rerun when Xcode updates. Useful, not relevant here.
+- WebGPU on macOS is the one untried path, and
+  [#552](https://github.com/pykeio/ort/issues/552) reports it crashing under concurrent
+  multi-threaded inference. ck indexes files in parallel with rayon, so that is a direct
+  hazard rather than a theoretical one.
+
+Upgrading ort would not help. The gap is that ONNX Runtime has no path to the Apple GPU
+that MLX uses, and that has not changed.

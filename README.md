@@ -160,3 +160,28 @@ but is unofficial bindings and also needs the architecture written.
 
 If the llama-cpp-2 swap works, ckq makes LEANN redundant: one binary, GPU-fast,
 multilingual, no Python.
+
+### Why `llama-cpp-2` specifically
+
+The `2` is a crates.io naming artifact, not a second llama.cpp. It is the crate name for
+the Rust bindings at `utilityai/llama-cpp-rs`; the plain names were already registered.
+The alternatives are dead:
+
+| crate | version | last updated | downloads |
+|---|---|---|---:|
+| **llama-cpp-2** | v0.1.157 | **2026-09-22** | **1,365,392** |
+| `llama_cpp` (edgenai) | v0.3.2 | 2024-04-29 | 43,027 |
+| `llama-cpp-rs` (mdrokz) | v0.3.0 | 2023-10-12 | 15,106 |
+
+So it is the only maintained Rust binding, not a preference.
+
+**Backend coverage is wider than ort's.** ggml builds with BLAS, CUDA, HIP, METAL, MUSA,
+OPENCL, RPC, SYCL, VULKAN and WEBGPU, and the crate exposes `cuda`, `metal`, `vulkan`,
+`opencl` and `dynamic-link` as cargo features. Vulkan alone covers AMD and Intel GPUs on
+Linux and Windows without vendor-specific builds, which DirectML-or-CUDA does not.
+
+**Not a tweaked fork.** `ik_llama.cpp` is alive (3,254 stars, pushed 25 Sep 2026) but has
+no Rust bindings, so using it means writing and maintaining the FFI. Its optimisation
+target is CPU quantisation performance, which is the thing this swap is trying to leave.
+Forks also lag upstream on new architectures, and prompt Qwen3-Embedding support is what
+makes this plan work. Worth revisiting only if CPU inference ever becomes the goal.

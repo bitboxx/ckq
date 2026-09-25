@@ -87,8 +87,18 @@ impl MixedbreadEmbedder {
         #[cfg(target_os = "macos")]
         if pooling == Pooling::FirstToken {
             use ort::execution_providers::CoreMLExecutionProvider;
-            builder = builder
-                .with_execution_providers([CoreMLExecutionProvider::default().build()])?;
+            use ort::execution_providers::coreml::{ComputeUnits, ModelFormat, SpecializationStrategy};
+            // The defaults are close to useless here. ModelFormat::NeuralNetwork is
+            // the default and supports fewer operators than MLProgram, so most of
+            // the graph falls back to CPU node by node; that is why the untuned EP
+            // was worth 4%. MLComputeUnits is unset by default, so the GPU and ANE
+            // are never asked for.
+            builder = builder.with_execution_providers([CoreMLExecutionProvider::default()
+                .with_model_format(ModelFormat::MLProgram)
+                .with_compute_units(ComputeUnits::All)
+                .with_specialization_strategy(SpecializationStrategy::FastPrediction)
+                .with_static_input_shapes(false)
+                .build()])?;
         }
 
         let session = builder.commit_from_file(&model_path)?;

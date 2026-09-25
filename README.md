@@ -50,14 +50,31 @@ Measured on 92 KB of real markdown, Mac Studio, 12 cores saturated:
 | ckq + bge-m3 + CoreML | GPU/ANE | 40.7 s | ~71 min |
 | LEANN + Qwen3-Embedding-0.6B | MPS | - | **8 min** (measured) |
 
+**ort has no MLX or Metal path.** Its full provider list is cuda, tensorrt, openvino,
+onednn, directml, nnapi, coreml, xnnpack, rocm, acl, armnn, tvm, migraphx, rknpu, vitis,
+cann, qnn, webgpu, azure. On macOS that means CoreML or WebGPU and nothing else, so the
+GPU that LEANN uses through MLX is simply not reachable from ONNX Runtime.
+
 **CoreML does not rescue it.**
 
 - For `qwen3-embed` it cannot be used at all. The empty KV tensors are the problem:
   `"has a dynamic shape ({-1,8,-1,128}) but the runtime shape ({1,8,0,128}) has zero
   elements. This is not supported by the CoreML EP."` It errors rather than falling back,
   so CoreML is gated to `Pooling::FirstToken` models.
-- For `bge-m3` it is worth 4%, which is noise. The quantized ops are presumably falling
-  back to CPU per node.
+- The first measurement of this was wrong: `bge-m3` has `provider: "fastembed"` and never
+  touches the ONNX provider CoreML is registered on, so both runs measured fastembed on
+  CPU. `mxbai-xsmall` is the only model on that path.
+- Corrected, on `mxbai-xsmall`: CPU-only 6.31 s wall / 2.33 s CPU; tuned CoreML 6.48 s
+  wall / **6.76 s CPU**. Slightly slower, and nearly 3x the CPU time, which is CoreML
+  compiling the graph and then falling back node by node.
+- It was tuned, not left on defaults. The defaults are bad: `ModelFormat` defaults to
+  `NeuralNetwork`, which supports fewer operators than `MLProgram`, and `MLComputeUnits`
+  is unset so the GPU and ANE are never requested. Setting `MLProgram`, `ComputeUnits::All`
+  and `FastPrediction` changed nothing.
+- **Untested lever:** ck hardcodes `onnx/model_quantized.onnx`, INT8 with QDQ nodes, which
+  CoreML handles poorly. Pointing `EMBED_MODEL_PATH` at `onnx/model_fp16.onnx` is the one
+  thing that might still work. Moot for `qwen3-embed`, which CoreML refuses whatever the
+  format.
 
 So on macOS, ckq is roughly **10x slower than LEANN for the same model**. LEANN is not
 redundant here.

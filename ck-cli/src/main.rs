@@ -1011,6 +1011,20 @@ fn main() {
     ck_embed::shutdown_embedders();
 }
 
+/// The model an existing index was built with, if there is one.
+///
+/// `--index` with no `--model` used to take the registry default, which is only
+/// right for a fresh index. Against an index built on another model it refused
+/// to run and told the reader to clean and rebuild, so a plain reindex after
+/// editing a few notes failed until someone remembered the alias. An index
+/// already names its model, and that beats a default nobody asked for.
+fn model_of_existing_index(path: &Path) -> Option<String> {
+    let manifest_path = ck_core::index_dir(path).join("manifest.json");
+    let data = std::fs::read(manifest_path).ok()?;
+    let manifest = serde_json::from_slice::<ck_index::IndexManifest>(&data).ok()?;
+    manifest.embedding_model
+}
+
 async fn run_main(cli: Cli, embed_options: ck_embed::EmbedderOptions) -> Result<()> {
     if cli.print_default_ckignore {
         print!("{}", get_default_ckignore_content());
@@ -1133,8 +1147,16 @@ async fn run_cli_mode(cli: Cli) -> Result<()> {
         let path = cli.command_target_path();
 
         let registry = ck_models::ModelRegistry::default();
+        // An explicit --model wins. Otherwise follow the index that is already
+        // there, and fall back to the default only for a fresh one.
+        let existing = if cli.model.is_none() {
+            model_of_existing_index(&path)
+        } else {
+            None
+        };
+        let requested = cli.model.as_deref().or(existing.as_deref());
         let (model_alias, model_config) = registry
-            .resolve(cli.model.as_deref())
+            .resolve(requested)
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
         run_index_workflow(

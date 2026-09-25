@@ -126,3 +126,37 @@ GPU story:
 
 Upgrading ort would not help. The gap is that ONNX Runtime has no path to the Apple GPU
 that MLX uses, and that has not changed.
+
+## Next: replace ort with llama-cpp-2
+
+ONNX Runtime is the wrong backend for this on a Mac, and no amount of configuration fixes
+that. The replacement candidates, checked 25 Sep 2026:
+
+| crate | version | note |
+|---|---|---|
+| **llama-cpp-2** | v0.1.157, 22 Sep 2026, 1.4M dl | Metal backend, native embedding support |
+| candle | v0.11.0, 8.6M dl | pure Rust, `metal` feature, model must be written |
+| mlx-rs | v0.32.0, 12 Sep 2026, 376 stars | unofficial MLX bindings, model must be written |
+
+**llama-cpp-2 removes every hack in this fork rather than adding a fifth:**
+
+| hack here | llama.cpp |
+|---|---|
+| `Pooling::LastToken` plus mask arithmetic | `LLAMA_POOLING_TYPE_LAST`, a flag (also CLS, MEAN, NONE, RANK) |
+| `position_ids` plumbing | knows the architecture |
+| 56 empty `past_key_values` tensors | manages the KV cache natively |
+| hardcoded 8 heads / 128 head_dim | reads GGUF metadata |
+
+Models are first-party: `Qwen/Qwen3-Embedding-0.6B-GGUF` is published by Qwen, and
+`gpustack/bge-m3-GGUF` exists. llama.cpp's Metal kernels are the best-tuned on Apple
+Silicon, which is the gap ONNX Runtime cannot close.
+
+Cost: a C++ build dependency, so ckq stops being a pure-Rust single binary. llama.cpp
+carries CUDA and Vulkan backends, so portability survives, less cleanly.
+
+candle keeps the single binary but needs the Qwen3-Embedding architecture written in Rust
+and has thinner Metal coverage. mlx-rs would match LEANN exactly, being the same runtime,
+but is unofficial bindings and also needs the architecture written.
+
+If the llama-cpp-2 swap works, ckq makes LEANN redundant: one binary, GPU-fast,
+multilingual, no Python.

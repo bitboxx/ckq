@@ -1,21 +1,44 @@
 # ckq
 
-A fork of [BeaconBay/ck](https://github.com/BeaconBay/ck) for multilingual notes. Binary is
-`ckq`, so it sits alongside stock `ck` rather than replacing it.
+Semantic, lexical and regex search over a directory, for corpora that are not in English.
 
-Two things changed: the embedding models are multilingual and run on the GPU through
-llama.cpp, and one shared daemon serves every invocation on the machine.
+A fork of [BeaconBay/ck](https://github.com/BeaconBay/ck) by Mike Renwick. Upstream is an
+excellent code-search tool whose embedding models are all English-only; ckq swaps them for
+multilingual ones, runs them on the GPU through llama.cpp, and shares a single loaded model
+across every invocation on the machine. The binary is `ckq`, so it coexists with `ck`.
+
+Everything else, the grep-compatible CLI, BM25, tree-sitter chunking, `--full-section`, the
+MCP server, is upstream's work and is unchanged.
+
+## Install
 
 ```bash
+git clone https://github.com/bitboxx/ckq && cd ckq
 cargo build --release -p ck-search --features llamacpp
-ckq --index ~/notes            # gemma-q4 by default
-ckq --sem "wanneer moet de cv ketel onderhouden worden" ~/notes
-ckq --serve                    # MCP server; pins the daemon
+./target/release/ckq --index ~/notes
 ```
+
+Needs a Rust toolchain and CMake; llama.cpp is built from source by `llama-cpp-sys-2`.
+Model weights are fetched from Hugging Face on first use and cached.
+
+```bash
+ckq --index ~/notes                       # gemma-q4 by default
+ckq --sem "when is the boiler serviced" ~/notes
+ckq --lex "exact phrase" ~/notes          # BM25
+ckq "regex.*here" ~/notes                 # grep-compatible
+ckq --serve                               # MCP server; pins the daemon
+ckq --index --model granite-gguf ~/notes  # a different model
+```
+
+## Status
+
+Working and used daily, but young. It has been exercised on prose and on Rust source, on
+Apple Silicon and on Linux/Vulkan. CUDA is untested. The API is upstream's; the model
+registry and the daemon are new here and may still move.
 
 ## Why EmbeddingGemma
 
-Stock ck ships English-only models. On a nine-note English/Dutch/Indonesian fixture,
+Stock ck ships English-only models. On a nine-note multilingual fixture (three languages, mixed within the corpus),
 correct note at rank 1:
 
 | model | params | fixture |
@@ -30,7 +53,7 @@ correct note at rank 1:
 
 Four models tie on accuracy, so the choice is cost. Indexing 347 KB of multilingual text:
 
-| model | Mac Studio (Metal) | nara, AMD RX 7600 XT (Vulkan) |
+| model | Apple Silicon (Metal) | Linux desktop, AMD RX 7600 XT (Vulkan) |
 |---|---:|---:|
 | **EmbeddingGemma 300M** | **9.15 s** | 14.21 s |
 | granite 278M | 10.21 s | **8.63 s** |
@@ -44,6 +67,24 @@ size that still scores 4/4.
 Q4_0 beside the Q8_0. Both score 4/4, and the Q4 separates *better*: top score 0.604
 against Q8's 0.521 on the same query. It is half the size. So `gemma-q4` is the default
 and `gemma-gguf` (Q8_0) is kept only for comparison.
+
+## Code search is unchanged
+
+Upstream is a code-search tool, and ckq drops its code-specialised model
+(`jina-embeddings-v2-base-code`). Measured on eight semantic queries against ckq's own Rust
+source, correct file at rank 1:
+
+| | score |
+|---|---|
+| upstream `bge-small-en-v1.5` | 5/8 |
+| ckq `gemma-q4` | 5/8 |
+
+Not the same five; they trade. A general text embedder handles code about as well as
+`bge-small` does, which was never a code model either. `--full-section`, tree-sitter
+chunking and BM25 are model-independent and untouched.
+
+What was given up is unmeasured: `jina-code` was never benchmarked here. If code search
+matters as much as prose, it is worth adding back as an alias and testing properly.
 
 ## The shared daemon
 
@@ -94,7 +135,7 @@ Result on the same 92 KB of notes: ONNX on CPU 45.6 s wall and ~520 s CPU; llama
 Metal 8.26 s wall and 1.6 s CPU.
 
 Backends are selected per platform in `ck-embed/Cargo.toml`: Metal on macOS, Vulkan
-elsewhere. Verified on Manjaro with an AMD Radeon RX 7600 XT, every layer on `Vulkan0`.
+elsewhere. Verified on Arch-family Linux with an AMD Radeon RX 7600 XT, every layer on `Vulkan0`.
 CUDA is untested for want of a machine.
 
 ## Traps worth knowing
@@ -125,3 +166,13 @@ The three multilingual fastembed models are upstream as
 and should not be: the maintainer has an embedder-trait redesign planned and this fork
 cuts straight across it. Upstream also keeps `bge-small` as the default for backwards
 compatibility; ckq does not, because English-only is the problem it exists to solve.
+
+## License
+
+MIT OR Apache-2.0, unchanged from upstream. Copyright for the original work remains with
+Mike Renwick and the ck contributors; the changes described above are offered under the
+same dual licence.
+
+The models are separately licensed: EmbeddingGemma under the Gemma Terms of Use, Granite
+under Apache-2.0, BGE-M3 under MIT, Qwen3-Embedding under Apache-2.0. Check them before
+commercial use; ckq only downloads them.

@@ -194,7 +194,10 @@ impl Default for ModelRegistry {
 
         Self {
             models,
-            default_model: "bge-small".to_string(), // Keep BGE as default for backward compatibility
+            // ckq defaults to a multilingual model. bge-small is English-only and
+            // scored 2/4 on the trilingual fixture where this scores 4/4, at
+            // roughly stock ck's search latency.
+            default_model: "gemma-gguf".to_string(),
         }
     }
 }
@@ -457,13 +460,17 @@ mod tests {
         }
     }
 
+    /// ckq departs from upstream ck here on purpose: the default is multilingual.
+    /// Upstream keeps `bge-small` for backwards compatibility, and PR #199 does
+    /// not touch it.
     #[test]
-    fn adding_multilingual_models_leaves_the_default_alone() {
+    fn the_default_is_multilingual() {
         let registry = ModelRegistry::default();
 
         let (alias, config) = registry.resolve(None).expect("default should resolve");
-        assert_eq!(alias, "bge-small");
-        assert_eq!(config.name, "BAAI/bge-small-en-v1.5");
+        assert_eq!(alias, "gemma-gguf");
+        assert_eq!(config.name, "ggml-org/embeddinggemma-300M-GGUF");
+        assert_eq!(config.provider, "llamacpp");
     }
 
     #[test]

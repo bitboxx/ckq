@@ -321,3 +321,37 @@ index run means the model never loaded.
 ### Still to do
 
 - No CUDA machine to test on. Vulkan is verified on nara's AMD card.
+
+## Default model: `gemma-gguf`
+
+ckq departs from upstream ck here deliberately. Upstream defaults to `bge-small` for
+backwards compatibility; that model is English-only and scores 2 of 4 on the trilingual
+fixture. `gemma-gguf` scores 4 of 4 at roughly the same search latency, so it is the
+default here. Upstream PR #199 does not touch the default.
+
+## A daemon: `--serve` already is one
+
+Where the half second goes, measured on the fixture:
+
+| | time |
+|---|---:|
+| process start + index scan (regex, no model) | **0.038 s** |
+| full semantic search | 0.400 s |
+| therefore model load + query inference | **~0.36 s, 90% of it** |
+
+So a persistent process would take search from 0.40 s to roughly 0.05 s, about 8x. The
+model load is paid once instead of on every invocation, and it does not grow with corpus
+size, so the win is constant rather than proportional.
+
+**ck already ships that process.** `ckq --serve` is an MCP server, verified to start with
+the llama.cpp backend. Run it that way and the worker thread built in `llamacpp.rs` stays
+alive for the life of the server, loading the model once. There is nothing to build.
+
+What a bespoke daemon would add over `--serve` is a CLI that talks to it, so shell
+invocations are fast too. That is a socket, a protocol and a lifecycle to manage, for
+0.35 s per shell search. Not obviously worth it; `--serve` covers the case that matters,
+which is an agent issuing many searches.
+
+Cost either way: `gemma-gguf` at Q8 is about 320 MB resident, against LEANN's 1.2 GB
+for Qwen. The worker cache is keyed by model, so a server touching two models runs two
+workers rather than silently reusing the first one's weights.

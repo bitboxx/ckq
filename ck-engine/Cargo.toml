@@ -39,4 +39,7 @@ mixedbread = ["ck-embed/mixedbread", "ck-index/mixedbread", "ck-chunk/mixedbread
 llamacpp = ["ck-embed/llamacpp"]
 
 [dev-dependencies]
+# The tests that reach semantic search each load the model, and in CI they
+# race each other for the same download lock. One at a time.
+serial_test = "2.0"
 tempfile = "3.27"

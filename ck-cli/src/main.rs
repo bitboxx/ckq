@@ -1037,6 +1037,9 @@ fn model_of_existing_index(path: &Path) -> Option<String> {
     manifest.embedding_model
 }
 
+// `embed_options` is only read on the unix daemon path; on Windows there is no
+// daemon and it goes unused rather than branching the signature per platform.
+#[cfg_attr(not(unix), allow(unused_variables))]
 async fn run_main(cli: Cli, embed_options: ck_embed::EmbedderOptions) -> Result<()> {
     if cli.print_default_ckignore {
         print!("{}", get_default_ckignore_content());

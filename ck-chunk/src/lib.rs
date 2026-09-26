@@ -1054,10 +1054,10 @@ fn chunk_type_for_node(
         {
             return None;
         }
-        ParseableLanguage::CSharp if node.kind() == "variable_declaration" => {
-            if !is_csharp_field_like(*node) {
-                return None;
-            }
+        ParseableLanguage::CSharp
+            if node.kind() == "variable_declaration" && !is_csharp_field_like(*node) =>
+        {
+            return None;
         }
         _ => {}
     }
@@ -1296,7 +1296,7 @@ fn strip_method_bodies_in_class_text(
             .to_string();
     }
 
-    replacements.sort_by(|a, b| b.0.cmp(&a.0));
+    replacements.sort_by_key(|r| std::cmp::Reverse(r.0));
     let mut text = source
         .get(byte_start..byte_end)
         .unwrap_or_default()

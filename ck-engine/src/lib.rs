@@ -2126,6 +2126,7 @@ mod tests {
     #[cfg(feature = "fastembed")]
     #[tokio::test]
     #[cfg(feature = "llamacpp")]
+    #[serial_test::serial]
     async fn test_subdirectory_search_uses_parent_ckignore() {
         // Regression test for issue where searching in subdirectory doesn't use parent .ckignore
         // Bug: When searching ~/parent/subdir/, .ckignore is loaded from subdir (doesn't exist)
@@ -2209,6 +2210,7 @@ mod tests {
     #[cfg(feature = "fastembed")]
     #[tokio::test]
     #[cfg(feature = "llamacpp")]
+    #[serial_test::serial]
     async fn test_multiple_ckignore_files_merge_correctly() {
         // Test that multiple .ckignore files in the hierarchy are all applied
         use std::fs;
@@ -2301,6 +2303,7 @@ mod tests {
     #[cfg(feature = "fastembed")]
     #[tokio::test]
     #[cfg(feature = "llamacpp")]
+    #[serial_test::serial]
     async fn test_scoped_search_does_not_lose_results_to_global_top_k() {
         // Regression test for the bug where scoped semantic search applied
         // top_k BEFORE the path filter, so a small top_k against a whole-

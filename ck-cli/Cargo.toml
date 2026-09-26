@@ -67,6 +67,8 @@ default = ["fastembed", "mixedbread", "llamacpp"]
 fastembed = ["ck-embed/fastembed", "ck-index/fastembed", "ck-engine/fastembed", "ck-chunk/fastembed", "ck-tui/fastembed"]
 mixedbread = ["ck-embed/mixedbread", "ck-index/mixedbread", "ck-engine/mixedbread", "ck-chunk/mixedbread", "ck-tui/mixedbread"]
 llamacpp = ["ck-embed/llamacpp"]
+# See ck-embed: GPU on Linux and Windows, needs the Vulkan SDK at build time.
+vulkan = ["ck-embed/vulkan"]
 vendored-openssl = ["openssl?/vendored"]
 
 [dev-dependencies]

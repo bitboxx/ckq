@@ -19,6 +19,11 @@ cargo build --release -p ck-search --features llamacpp
 ```
 
 Needs a Rust toolchain and CMake; llama.cpp is built from source by `llama-cpp-sys-2`.
+
+On macOS that is all: Metal is always on. On Linux and Windows the build is CPU-only
+unless you ask for the GPU with `--features vulkan`, which needs the Vulkan SDK installed
+and `VULKAN_SDK` set. llama.cpp's build script fails the whole build when the feature is
+on and the SDK is missing, which is why it is not the default.
 Model weights are fetched from Hugging Face on first use and cached.
 
 ```bash

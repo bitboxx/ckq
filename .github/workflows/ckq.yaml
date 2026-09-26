@@ -28,19 +28,11 @@ jobs:
       # Default features include llamacpp. On Windows the daemon is compiled out
       # and each process loads its own model; this job is what proves that path
       # still builds.
-      # esaxx-rs, which tokenizers pulls in, compiles its C++ against the static
-      # CRT, and llama.cpp defaults to the dynamic one. Linking the two gives
-      # LNK2038 "mismatch detected for RuntimeLibrary". llama-cpp-sys-2 reads
-      # this variable, so llama.cpp is built the same way esaxx-rs is.
       - name: Build (default features)
         run: cargo build --release -p ck-search
-        env:
-          LLAMA_STATIC_CRT: ${{ matrix.os == 'windows-latest' && '1' || '' }}
 
       - name: Test
         run: cargo test --release -p ck-models -p ck-chunk -p ck-embed
-        env:
-          LLAMA_STATIC_CRT: ${{ matrix.os == 'windows-latest' && '1' || '' }}
 
   lint:
     runs-on: ubuntu-latest

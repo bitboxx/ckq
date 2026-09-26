@@ -20,11 +20,6 @@ cargo build --release -p ck-search --features llamacpp
 
 Needs a Rust toolchain and CMake; llama.cpp is built from source by `llama-cpp-sys-2`.
 
-On Windows, set `LLAMA_STATIC_CRT=1` before building. `esaxx-rs`, which `tokenizers`
-pulls in, compiles its C++ against the static CRT while llama.cpp defaults to the dynamic
-one, and linking the two fails with `LNK2038: mismatch detected for 'RuntimeLibrary'`. The
-variable tells llama-cpp-sys-2 to match.
-
 On macOS that is all: Metal is always on. On Linux and Windows the build is CPU-only
 unless you ask for the GPU with `--features vulkan`, which needs the Vulkan SDK installed
 and `VULKAN_SDK` set. llama.cpp's build script fails the whole build when the feature is

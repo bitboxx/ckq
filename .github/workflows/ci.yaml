@@ -78,7 +78,9 @@ jobs:
       # ck-search is excluded for the reason given in the test job.
       run: cargo hack check --each-feature --exclude-features vulkan --locked --rust-version --ignore-private --workspace --exclude ck-search --all-targets --keep-going
     - name: MSRV of the CLI
-      run: cargo check -p ck-search --locked --rust-version --all-targets --keep-going
+      # cargo hack, not cargo: --rust-version is its flag. No --each-feature
+      # here, for the reason given in the test job.
+      run: cargo hack check -p ck-search --locked --rust-version --all-targets --keep-going
   minimal-versions:
     name: Minimal versions
     # Temporarily disabled due to issue building sharded-slab in CI

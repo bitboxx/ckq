@@ -30,9 +30,13 @@ tracing = { workspace = true }
 globset = { workspace = true }
 
 [features]
-default = ["fastembed", "mixedbread"]
+# llamacpp is in the default set because every embedding model in ckq's registry
+# is served by it. Without it there is no model, so semantic search cannot run
+# and the tests that use it are compiled out rather than failing.
+default = ["fastembed", "mixedbread", "llamacpp"]
 fastembed = ["ck-embed/fastembed", "ck-index/fastembed", "ck-chunk/fastembed"]
 mixedbread = ["ck-embed/mixedbread", "ck-index/mixedbread", "ck-chunk/mixedbread"]
+llamacpp = ["ck-embed/llamacpp"]
 
 [dev-dependencies]
 tempfile = "3.27"

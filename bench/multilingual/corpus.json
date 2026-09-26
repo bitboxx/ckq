@@ -1,0 +1,446 @@
+{
+ "documents": [
+  {
+   "id": "coffee-storage",
+   "lang": "en",
+   "title": "Storing roasted beans",
+   "text": "Roasted coffee goes stale because oxygen reacts with the oils on the surface of the bean. Keep beans in an opaque container with a one-way valve, at room temperature, and grind only what you need. A freezer works for long storage if the beans are sealed in small portions and never thawed twice. Whole beans keep their aroma about four weeks after roasting; ground coffee loses most of it within an hour."
+  },
+  {
+   "id": "coffee-roast",
+   "lang": "zh",
+   "title": "烘焙曲线",
+   "text": "烘焙咖啡豆时，升温速度决定风味的走向。第一阶段是脱水，豆子从绿色变为黄色，通常需要四到六分钟。接着是梅纳反应阶段，糖和氨基酸生成香气物质。一爆之后，豆温上升很快，如果不降低火力，苦味会明显增加。浅烘留下更多酸质，深烘则带来焦糖和可可的味道。每一炉都应记录时间与温度，否则无法重复。"
+  },
+  {
+   "id": "coffee-grinder",
+   "lang": "hi",
+   "title": "ग्राइंडर के बर्र",
+   "text": "कॉफ़ी की पिसाई की एकरूपता स्वाद तय करती है। शंक्वाकार बर्र धीमे चलते हैं और कम गर्मी पैदा करते हैं, इसलिए वे एस्प्रेसो के लिए ठीक रहते हैं। सपाट बर्र अधिक समान कण देते हैं, लेकिन उनमें महीन धूल भी बनती है। ब्लेड वाली मशीन असल में पीसती नहीं, वह काटती है, और उससे कण असमान रहते हैं। बर्र को हर कुछ सौ किलो के बाद बदलना पड़ता है।"
+  },
+  {
+   "id": "coffee-espresso",
+   "lang": "es",
+   "title": "Tiempo de extracción",
+   "text": "Un espresso equilibrado suele salir en veinticinco a treinta segundos. Si corre más rápido, la molienda está demasiado gruesa y la bebida queda ácida y delgada. Si tarda mucho, el resultado es amargo y seco porque se extraen compuestos que no interesan. Conviene cambiar una sola variable cada vez: primero la molienda, después la dosis, y sólo al final la temperatura del grupo."
+  },
+  {
+   "id": "bike-chain",
+   "lang": "zh",
+   "title": "链条润滑",
+   "text": "自行车链条需要定期上油，否则磨损会加快，变速也会变得迟钝。先用抹布擦掉旧油和沙尘，再在每一节链节上滴一滴链条油，转动曲柄让油渗入滚子之间。多余的油必须擦干净，因为表面残留的油只会吸附灰尘。干燥天气用蜡基润滑剂，雨季则用湿性油。"
+  },
+  {
+   "id": "bike-tyre",
+   "lang": "hi",
+   "title": "टायर का दबाव",
+   "text": "टायर में हवा का दबाव आराम और रफ़्तार दोनों तय करता है। बहुत अधिक दबाव पर टायर सड़क की छोटी दरारों पर उछलता है और पकड़ कम हो जाती है। बहुत कम दबाव पर रिम से टकराकर ट्यूब फट सकती है। सवार का वज़न और टायर की चौड़ाई देखकर दबाव चुनें, और हर दो सप्ताह में पंप से जाँचें, क्योंकि हवा धीरे धीरे निकलती रहती है।"
+  },
+  {
+   "id": "bike-wheel",
+   "lang": "es",
+   "title": "Centrado de la rueda",
+   "text": "Una rueda se centra ajustando la tensión de los radios, no golpeando la llanta. Se gira la tuerca un cuarto de vuelta cada vez y se comprueba el desvío lateral contra las zapatas. Si la llanta se va hacia la derecha, hay que aflojar los radios de ese lado y apretar los del lado contrario. Al terminar, todos los radios deben sonar con un tono parecido."
+  },
+  {
+   "id": "bike-brake",
+   "lang": "ar",
+   "title": "تآكل وسادات الفرامل",
+   "text": "تتآكل وسادات الفرامل ببطء، ولذلك يصعب ملاحظة ذلك قبل أن يضعف التوقف. افحص الأخاديد المحفورة على سطح الوسادة، فإذا اختفت وجب تغييرها. الوسادة التي تلامس الإطار بدل الحافة تفسد الإطار في دقائق. في الفرامل القرصية يجب ألا تقل سماكة المادة عن ميلليمتر واحد، وإلا احتكّ المعدن بالمعدن وتلف القرص."
+  },
+  {
+   "id": "bread-starter",
+   "lang": "hi",
+   "title": "खमीर को खिलाना",
+   "text": "खट्टे आटे का खमीर आटे और पानी के बराबर भाग से ज़िंदा रहता है। रोज़ाना एक हिस्सा पुराना खमीर लेकर उसमें उतना ही आटा और पानी मिलाएँ। कमरे का तापमान जितना ऊँचा होगा, खमीर उतनी जल्दी चरम पर पहुँचेगा। ऊपर भूरा पानी जमा दिखे तो इसका अर्थ है कि उसे भोजन चाहिए। फ़्रिज में रखने पर सप्ताह में एक बार खिलाना काफ़ी है।"
+  },
+  {
+   "id": "bread-steam",
+   "lang": "es",
+   "title": "Vapor en el horno",
+   "text": "El vapor de los primeros minutos mantiene la corteza blanda para que el pan siga creciendo. Sin vapor, la superficie se fija enseguida y el corte se rompe por donde no debe. En casa funciona una olla de hierro tapada, que atrapa la humedad del propio pan. Pasados quince minutos conviene retirar la tapa para que la corteza se dore y quede crujiente."
+  },
+  {
+   "id": "bread-flour",
+   "lang": "ar",
+   "title": "نسبة البروتين في الدقيق",
+   "text": "تحدد نسبة البروتين في الدقيق مقدار الغلوتين الذي يمكن أن يتكوّن. دقيق الخبز يحتوي على اثني عشر إلى أربعة عشر في المئة، وهو يعطي شبكة قوية تحتفظ بالغاز وترفع العجين. دقيق الكيك أقل بروتينًا، فيعطي فتاتًا ناعمًا يتفتت بسهولة. إذا استُعمل دقيق ضعيف لرغيف عالٍ، انهار العجين عند الخبز مهما طالت مدة العجن."
+  },
+  {
+   "id": "bread-proof",
+   "lang": "en",
+   "title": "Proofing temperature",
+   "text": "Dough rises faster when it is warm, but flavour comes from time rather than speed. At twenty-four degrees a straight dough is ready in about four hours; at eighteen it takes most of a day and tastes noticeably more sour. A cold retard overnight in the fridge slows the yeast while the bacteria keep working, which is why a loaf shaped in the evening and baked in the morning has more character than one rushed through in an afternoon."
+  },
+  {
+   "id": "solar-tilt",
+   "lang": "es",
+   "title": "Ángulo de los paneles",
+   "text": "El ángulo de inclinación determina cuánta radiación recibe el panel a lo largo del año. Una regla práctica es igualar la inclinación a la latitud del lugar. Si interesa más la producción de invierno, conviene inclinarlos algo más, y al contrario si el consumo es de verano. En tejados planos el ángulo también decide la separación entre filas para que no se den sombra unas a otras."
+  },
+  {
+   "id": "solar-inverter",
+   "lang": "ar",
+   "title": "اختيار حجم العاكس",
+   "text": "قدرة العاكس لا تساوي بالضرورة قدرة الألواح. من المعتاد أن تكون الألواح أكبر بنسبة عشرين إلى ثلاثين في المئة، لأن الإنتاج نادرًا ما يبلغ ذروته الاسمية. هذا الفائض يحسّن الأداء في الصباح والمساء، وقد يُقصّ جزء صغير في أيام الصيف الصافية. العاكس الكبير جدًا يعمل بكفاءة منخفضة معظم الوقت."
+  },
+  {
+   "id": "solar-battery",
+   "lang": "en",
+   "title": "Battery cycle life",
+   "text": "A home battery is rated in cycles, and a cycle is a full charge and discharge. Lithium iron phosphate cells commonly last six thousand cycles to eighty per cent of their original capacity, which is fifteen years of one cycle a day. Depth of discharge matters: keeping a pack between twenty and ninety per cent roughly doubles its life compared with running it flat every day. Heat shortens it in every chemistry."
+  },
+  {
+   "id": "solar-shading",
+   "lang": "zh",
+   "title": "阴影带来的损失",
+   "text": "光伏组件串联时，一块被遮挡的组件会拖累整串的电流。一根电线杆的影子扫过阵列，输出可能下降三分之一以上，而不是被遮面积的比例。旁路二极管只能减轻，不能消除。设计时应把可能产生阴影的物体标在图上，并计算一年中最短那天的影长。必要时改用功率优化器或微型逆变器。"
+  },
+  {
+   "id": "train-refund",
+   "lang": "ar",
+   "title": "استرداد قيمة التذكرة",
+   "text": "تختلف قواعد الاسترداد بحسب نوع التذكرة. التذكرة المرنة تُعاد قيمتها كاملة قبل موعد القطار، أما التذكرة المخفّضة فغالبًا لا تُسترد إطلاقًا. عند تأخر القطار ساعة أو أكثر يحق للمسافر تعويض جزئي حتى لو كانت التذكرة مخفّضة. يُقدَّم الطلب خلال مدة محددة، ومعه رقم الحجز وإثبات السفر."
+  },
+  {
+   "id": "train-signal",
+   "lang": "en",
+   "title": "Signalling and headway",
+   "text": "Signalling decides how close two trains may run. In a fixed block system the line is cut into sections and only one train may occupy a section, so the minimum gap is the length of a block plus braking distance. Moving block, where each train reports its position continuously, shrinks the gap to the braking distance alone and can raise capacity on a busy line by a third without laying any new track."
+  },
+  {
+   "id": "train-gauge",
+   "lang": "zh",
+   "title": "轨距",
+   "text": "轨距是两根钢轨内侧之间的距离。世界上多数铁路采用一千四百三十五毫米的标准轨距，但俄罗斯、西班牙和印度等地使用更宽的轨距，这使得跨境运输必须换车或更换转向架。窄轨在山区更便宜，曲线半径可以更小，但列车的速度和载重也受到限制。改变既有线路的轨距代价极高。"
+  },
+  {
+   "id": "train-timetable",
+   "lang": "hi",
+   "title": "समय सारणी बनाना",
+   "text": "समय सारणी बनाते समय हर ट्रेन के लिए दूरी और समय का एक तिरछी रेखा वाला चित्र खींचा जाता है। जहाँ दो रेखाएँ काटती हैं, वहाँ एक ट्रेन को दूसरी के लिए रुकना होगा, इसलिए एकल पटरी पर क्रॉसिंग स्टेशन ही क्षमता तय करते हैं। हर सेवा में थोड़ा अतिरिक्त समय जोड़ा जाता है ताकि एक छोटी देरी पूरे दिन में न फैले।"
+  },
+  {
+   "id": "bee-winter",
+   "lang": "en",
+   "title": "Winter feeding",
+   "text": "A colony needs enough stores to live from the last flow until spring. Weigh the hive in autumn rather than guessing: a strong colony in a temperate climate wants roughly eighteen kilos of honey. If it is short, feed thick syrup early, while the bees can still cure it, because thin syrup late in the year raises the moisture in the cluster and they may not seal it before the cold."
+  },
+  {
+   "id": "bee-swarm",
+   "lang": "zh",
+   "title": "防止分蜂",
+   "text": "蜂群在春季拥挤时会分蜂，一半的工蜂随老蜂王离开，采蜜量随之大减。检查巢脾底部是否出现王台，是判断的主要依据。及时加继箱、扩大巢门、调换有卵的巢脾都能缓解拥挤。若王台已封盖，通常来不及阻止，只能人工分群，把老蜂王连同部分蜂脾移到另一箱。"
+  },
+  {
+   "id": "bee-extract",
+   "lang": "hi",
+   "title": "शहद निकालना",
+   "text": "शहद तभी निकालें जब छत्ते की कोठरियाँ मोम से ढक दी गई हों, क्योंकि खुली कोठरियों में नमी अधिक रहती है और शहद खमीर उठा सकता है। पहले गर्म चाकू से ढक्कन उतारें, फिर फ़्रेम को एक्सट्रैक्टर में घुमाएँ। धीमे शुरू करें, वरना नया छत्ता टूट जाएगा। निकाले हुए शहद को छानकर कुछ दिन रखने पर झाग ऊपर आ जाता है।"
+  },
+  {
+   "id": "bee-varroa",
+   "lang": "es",
+   "title": "Tratamiento contra varroa",
+   "text": "El ácaro varroa se reproduce dentro de la cría operculada, así que cualquier tratamiento debe tener en cuenta el ciclo del ácaro. Conviene medir la infestación antes y después, lavando una muestra de abejas, en vez de tratar a ciegas. El ácido oxálico funciona bien cuando la colonia no tiene cría, normalmente a finales de otoño. Alternar productos evita que la población se vuelva resistente."
+  },
+  {
+   "id": "clay-glaze",
+   "lang": "zh",
+   "title": "釉烧",
+   "text": "釉料在高温下熔化成玻璃层，温度曲线决定最终的外观。升温太快，坯体内的气体来不及排出，釉面会出现针孔。到达最高温后保温一段时间，可以让釉面变得平整。还原气氛中铜呈红色，氧化气氛中同样的配方却是绿色，因此同一个窑不同的位置也可能烧出不同结果。"
+  },
+  {
+   "id": "clay-wedging",
+   "lang": "hi",
+   "title": "मिट्टी को गूँधना",
+   "text": "मिट्टी को गूँधने का उद्देश्य हवा के बुलबुले निकालना और नमी को एक समान करना है। बुलबुला रह जाए तो भट्ठी में भाप फैलकर बर्तन फोड़ सकती है। मेज़ पर मिट्टी को बार बार मोड़कर दबाएँ, ताकि वह एक ही दिशा में मुड़े। सही गूँधी हुई मिट्टी काटने पर भीतर से एक समान दिखती है, उसमें कोई छेद या सूखी परत नहीं होती।"
+  },
+  {
+   "id": "clay-cooling",
+   "lang": "es",
+   "title": "Enfriamiento del horno",
+   "text": "El enfriamiento importa tanto como la subida. Entre quinientos setenta y cinco grados el cuarzo cambia de forma y la pieza puede agrietarse si el horno pierde calor demasiado rápido. Por eso no se abre la puerta hasta bajar de doscientos grados. Un enfriamiento lento en el tramo alto también deja que crezcan cristales en ciertos esmaltes, lo que cambia el color y el brillo."
+  },
+  {
+   "id": "clay-throwing",
+   "lang": "ar",
+   "title": "الرمي على الدولاب",
+   "text": "أول خطوة على الدولاب هي التوسيط، أي جعل كتلة الطين تدور دون اهتزاز. اضغط بكلتا اليدين وثبّت مرفقيك على ساقيك ليكون الثبات من الجسم لا من العضلات. بعد التوسيط افتح مركز الكتلة ثم ارفع الجدار بحركات بطيئة متصلة. اليدان المبللتان دائمًا تمنعان الالتصاق، لكن الماء الزائد يُضعف الطين ويجعله ينهار."
+  },
+  {
+   "id": "garden-compost",
+   "lang": "hi",
+   "title": "खाद बनाना",
+   "text": "अच्छी खाद के लिए हरे और भूरे पदार्थों का संतुलन चाहिए। हरे में रसोई का कचरा और ताज़ी घास आती है, भूरे में सूखे पत्ते, गत्ता और टहनियाँ। ढेर को हर कुछ सप्ताह में पलटें ताकि हवा भीतर पहुँचे, वरना गंध आने लगती है। ढेर का भीतरी भाग गर्म होना चाहिए; यही गर्मी खरपतवार के बीज और रोगाणु नष्ट करती है।"
+  },
+  {
+   "id": "garden-prune",
+   "lang": "es",
+   "title": "Poda de frutales",
+   "text": "Se poda en invierno para dar forma y vigor, y en verano para frenar el crecimiento. Primero se quitan las ramas muertas, las que se cruzan y las que crecen hacia dentro, porque el aire y la luz en el centro del árbol reducen las enfermedades. Un corte junto al collar de la rama cicatriza solo; dejar un tocón invita a la podredumbre."
+  },
+  {
+   "id": "garden-seed",
+   "lang": "ar",
+   "title": "إنبات البذور",
+   "text": "لكل نوع من البذور حرارة مثلى للإنبات، وهي غالبًا أعلى من حرارة الغرفة. احفظ التربة رطبة لا غارقة، لأن الماء الزائد يطرد الهواء فتتعفن البذرة قبل أن تنبت. بعض البذور تحتاج ضوءًا فتوضع على السطح، وبعضها يحتاج ظلامًا فتُغطى بعمق يساوي ضعف قطرها. البذور القديمة تنبت بنسبة أقل، فازرع منها عددًا أكبر."
+  },
+  {
+   "id": "garden-drip",
+   "lang": "en",
+   "title": "Drip irrigation",
+   "text": "Drip lines put water at the root instead of on the leaves, which cuts evaporation and keeps foliage dry enough to discourage mildew. Pressure-compensating emitters give the same flow at the start and the end of a long run, which matters on a slope. Run the system for longer but less often: a deep soak every few days sends roots down, while a daily sprinkle keeps them at the surface where they dry out first."
+  },
+  {
+   "id": "photo-noise",
+   "lang": "es",
+   "title": "Ruido del sensor",
+   "text": "El ruido aparece cuando la señal que llega al sensor es débil y hay que amplificarla. Subir la sensibilidad no hace al sensor más sensible: sólo amplifica lo que ya se registró, y con ello el ruido. La mejor defensa es recoger más luz, abriendo el diafragma o alargando la exposición. En sombras profundas el ruido se ve antes que en las luces, porque allí la señal es menor."
+  },
+  {
+   "id": "photo-aperture",
+   "lang": "ar",
+   "title": "فتحة العدسة",
+   "text": "تتحكم فتحة العدسة في كمية الضوء وفي عمق الميدان معًا. الفتحة الواسعة تعزل الموضوع عن الخلفية، لكنها تضيّق المدى الحاد إلى سنتيمترات عند التصوير القريب. الفتحات الضيقة جدًا تزيد العمق غير أن الحيود يقلل الحدة الكلية. معظم العدسات تبلغ أفضل وضوح لها عند إغلاقها درجتين عن أوسع فتحة."
+  },
+  {
+   "id": "photo-wb",
+   "lang": "en",
+   "title": "White balance",
+   "text": "White balance tells the camera which light source it is under, so that a sheet of paper comes out neutral. Daylight is around 5500 kelvin, an overcast sky is higher and looks blue if you leave the camera on a warm setting, and old tungsten bulbs sit near 2800. Shooting raw lets you set it afterwards at no cost in quality, but getting it close in camera still saves time and keeps the preview honest."
+  },
+  {
+   "id": "photo-tripod",
+   "lang": "zh",
+   "title": "三脚架的稳定性",
+   "text": "三脚架的稳定性取决于腿的直径、材料和展开的角度。碳纤维比铝更能吸收振动，但轻的架子在风中反而容易晃。先伸出最粗的一节，最细的一节最后再用。中轴升得越高，晃动越明显，因此宁可把腿张得更开。在柔软的地面上，把脚尖压入土中，并挂上重物增加配重。"
+  },
+  {
+   "id": "chess-opening",
+   "lang": "ar",
+   "title": "مبادئ الافتتاح",
+   "text": "في الافتتاح ثلاثة أهداف: السيطرة على المركز، وإخراج القطع، وتأمين الملك. تحريك القطعة نفسها مرتين قبل إكمال التطوير يهدر نقلة كاملة. البيادق الطرفية لا تطوّر شيئًا في الغالب، ولذلك تُؤجَّل. التبييت مبكرًا يخرج الملك من العمود المفتوح ويصل الرخين ببعضهما."
+  },
+  {
+   "id": "chess-endgame",
+   "lang": "en",
+   "title": "King activity in the endgame",
+   "text": "The king changes role once the queens come off. In the middlegame it hides; in the endgame it is a strong piece and should walk towards the centre or towards the passed pawns. A common mistake is to keep it tucked away while the opponent marches theirs up the board, because a king two files closer to the action often decides a pawn ending on its own, with no tactics involved at all."
+  },
+  {
+   "id": "chess-clock",
+   "lang": "zh",
+   "title": "时间控制",
+   "text": "比赛的时间控制影响棋的质量与风格。古典赛制每方九十分钟以上，可以深算变化；快棋只有十几分钟，直觉和熟悉的套路更重要。增秒制在每走一步后补回几秒，可以避免在明显赢的局面下超时。时间紧张时，多数错误出现在需要重新评估局面的转折点，而不是在计算长变化的时候。"
+  },
+  {
+   "id": "chess-notation",
+   "lang": "hi",
+   "title": "चालों का अंकन",
+   "text": "बीजीय अंकन में हर ख़ाना एक अक्षर और एक अंक से लिखा जाता है, जैसे e4। मोहरे का पहला अक्षर आगे लगता है, प्यादे के लिए कुछ नहीं लिखा जाता। कटाई को x से दिखाते हैं और शह को + से। यदि दो एक जैसे मोहरे एक ही ख़ाने पर जा सकते हैं, तो चलने वाले का स्तंभ या पंक्ति भी लिखनी पड़ती है, वरना चाल अस्पष्ट रहेगी।"
+  }
+ ],
+ "queries": [
+  {
+   "q": "cómo evitar que el café molido pierda aroma",
+   "lang": "es",
+   "answer": "coffee-storage"
+  },
+  {
+   "q": "how the temperature curve changes the flavour when roasting beans",
+   "lang": "en",
+   "answer": "coffee-roast"
+  },
+  {
+   "q": "平刃和锥刃磨豆机有什么区别",
+   "lang": "zh",
+   "answer": "coffee-grinder"
+  },
+  {
+   "q": "shot is running too fast and tastes sour, what should I change",
+   "lang": "en",
+   "answer": "coffee-espresso"
+  },
+  {
+   "q": "cada cuánto hay que engrasar la cadena de la bicicleta",
+   "lang": "es",
+   "answer": "bike-chain"
+  },
+  {
+   "q": "what pressure should I put in my tyres for comfort and grip",
+   "lang": "en",
+   "answer": "bike-tyre"
+  },
+  {
+   "q": "轮圈左右摆动怎么调整辐条",
+   "lang": "zh",
+   "answer": "bike-wheel"
+  },
+  {
+   "q": "how do I know the brake pads need replacing",
+   "lang": "en",
+   "answer": "bike-brake"
+  },
+  {
+   "q": "how often to feed a sourdough starter kept in the fridge",
+   "lang": "en",
+   "answer": "bread-starter"
+  },
+  {
+   "q": "لماذا يجب وضع بخار في الفرن في بداية الخبز",
+   "lang": "ar",
+   "answer": "bread-steam"
+  },
+  {
+   "q": "qué harina usar para un pan alto que no se hunda",
+   "lang": "es",
+   "answer": "bread-flour"
+  },
+  {
+   "q": "面团在冰箱里过夜发酵有什么好处",
+   "lang": "zh",
+   "answer": "bread-proof"
+  },
+  {
+   "q": "what angle should solar panels be mounted at",
+   "lang": "en",
+   "answer": "solar-tilt"
+  },
+  {
+   "q": "should the inverter be smaller than the array",
+   "lang": "en",
+   "answer": "solar-inverter"
+  },
+  {
+   "q": "¿cuántos ciclos dura una batería doméstica de litio?",
+   "lang": "es",
+   "answer": "solar-battery"
+  },
+  {
+   "q": "why does one shaded panel cost more than its share of the output",
+   "lang": "en",
+   "answer": "solar-shading"
+  },
+  {
+   "q": "can I get money back if my train was delayed on a discounted ticket",
+   "lang": "en",
+   "answer": "train-refund"
+  },
+  {
+   "q": "كيف يزيد النظام المتحرك سعة الخط دون بناء مسار جديد",
+   "lang": "ar",
+   "answer": "train-signal"
+  },
+  {
+   "q": "por qué hay que cambiar de tren en algunas fronteras",
+   "lang": "es",
+   "answer": "train-gauge"
+  },
+  {
+   "q": "how do crossing stations limit capacity on a single track line",
+   "lang": "en",
+   "answer": "train-timetable"
+  },
+  {
+   "q": "cuánta miel necesita una colmena para pasar el invierno",
+   "lang": "es",
+   "answer": "bee-winter"
+  },
+  {
+   "q": "how to stop a colony from swarming in spring",
+   "lang": "en",
+   "answer": "bee-swarm"
+  },
+  {
+   "q": "متى تُقطف الأقراص لاستخراج العسل",
+   "lang": "ar",
+   "answer": "bee-extract"
+  },
+  {
+   "q": "when should mites be treated if there is no brood",
+   "lang": "en",
+   "answer": "bee-varroa"
+  },
+  {
+   "q": "why does the same copper glaze come out red or green",
+   "lang": "en",
+   "answer": "clay-glaze"
+  },
+  {
+   "q": "por qué explota una pieza en el horno si queda aire dentro",
+   "lang": "es",
+   "answer": "clay-wedging"
+  },
+  {
+   "q": "为什么窑不能在高温时打开",
+   "lang": "zh",
+   "answer": "clay-cooling"
+  },
+  {
+   "q": "how to centre the clay before opening it on the wheel",
+   "lang": "en",
+   "answer": "clay-throwing"
+  },
+  {
+   "q": "why does a compost heap start to smell",
+   "lang": "en",
+   "answer": "garden-compost"
+  },
+  {
+   "q": "متى تُقلَّم أشجار الفاكهة ولماذا",
+   "lang": "ar",
+   "answer": "garden-prune"
+  },
+  {
+   "q": "बीज बोने की गहराई कैसे तय करें",
+   "lang": "hi",
+   "answer": "garden-seed"
+  },
+  {
+   "q": "¿es mejor regar poco cada día o mucho cada varios días?",
+   "lang": "es",
+   "answer": "garden-drip"
+  },
+  {
+   "q": "why is noise worse in the shadows of a photograph",
+   "lang": "en",
+   "answer": "photo-noise"
+  },
+  {
+   "q": "at which aperture is a lens sharpest",
+   "lang": "en",
+   "answer": "photo-aperture"
+  },
+  {
+   "q": "¿qué temperatura de color tiene la luz de día?",
+   "lang": "es",
+   "answer": "photo-wb"
+  },
+  {
+   "q": "how to keep a tripod steady in wind",
+   "lang": "en",
+   "answer": "photo-tripod"
+  },
+  {
+   "q": "why should you not move the same piece twice in the opening",
+   "lang": "en",
+   "answer": "chess-opening"
+  },
+  {
+   "q": "cuándo debe el rey avanzar hacia el centro",
+   "lang": "es",
+   "answer": "chess-endgame"
+  },
+  {
+   "q": "what does adding seconds per move prevent",
+   "lang": "en",
+   "answer": "chess-clock"
+  },
+  {
+   "q": "how do you write a capture and a check in algebraic notation",
+   "lang": "en",
+   "answer": "chess-notation"
+  }
+ ]
+}

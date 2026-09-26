@@ -495,14 +495,31 @@ mod tests {
         assert!(embeddings[1].iter().all(|&x| x == 0.0));
     }
 
+    /// Every embedding model in ckq's registry is served by llamacpp, so a
+    /// build without that feature cannot make one and must say so rather than
+    /// hand back something that returns plausible-looking zeros. Upstream's
+    /// default was a fastembed model and this test asserted a dummy fallback;
+    /// keeping that here would assert a lie.
     #[test]
-    fn test_create_embedder_dummy() {
-        #[cfg(not(feature = "fastembed"))]
-        {
-            let embedder = create_embedder(None).unwrap();
-            assert_eq!(embedder.id(), "dummy");
-            assert_eq!(embedder.dim(), 384);
-        }
+    #[cfg(not(feature = "llamacpp"))]
+    fn create_embedder_refuses_when_no_provider_is_compiled_in() {
+        let err = match create_embedder(None) {
+            Err(e) => e,
+            Ok(_) => panic!("no provider is compiled in, so this must not succeed"),
+        };
+        assert!(
+            err.to_string().contains("Unsupported embedding provider"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The dummy embedder is still reachable on purpose, for tests and for
+    /// callers that want the pipeline without a model.
+    #[test]
+    fn dummy_embedder_has_a_stable_shape() {
+        let embedder = DummyEmbedder::new();
+        assert_eq!(embedder.id(), "dummy");
+        assert_eq!(embedder.dim(), 384);
     }
 
     #[test]

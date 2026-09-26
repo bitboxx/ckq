@@ -60,14 +60,17 @@ Four models tie, so the fixture decides nothing beyond ruling out the English-on
 A 1012-note corpus in three languages does decide it. Six queries with a known correct
 answer, top 3 each, no threshold:
 
+Each query is asked in one language about notes written in another, which is the case
+these models exist for. The corpus is private, so the queries are described by shape.
+
 | query | `gemma-q4` | `granite-gguf` |
 |---|---|---|
-| Indonesian, "latest news about mama" | right note at 2 | right note at 3 |
-| Indonesian, "who helps look after her at home" | topic right, note wrong | **the exact note** |
-| Dutch, "when is the boiler serviced" | correct | correct |
-| English, "how much do I owe the tax office" | miss | miss |
-| English, "court deadline for the claim" | correct | correct |
-| English, "when is the car inspection due" | miss | miss |
+| Indonesian, recent news about a named person | right note at 2 | right note at 3 |
+| Indonesian, who carries out a recurring duty | topic right, note wrong | **the exact note** |
+| Dutch, a maintenance interval | correct | correct |
+| English, an amount owed to an institution | miss | miss |
+| English, a deadline in a formal process | correct | correct |
+| English, a vehicle's next inspection date | miss | miss |
 
 Four of six each, granite better on two and worse on none. The deciding factor is the score
 range rather than the ranking. Granite answers between 0.71 and 0.85 where EmbeddingGemma

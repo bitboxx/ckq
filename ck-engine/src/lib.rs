@@ -223,6 +223,10 @@ fn legacy_model_config(name: &str, dimensions: usize) -> ck_models::ModelConfig 
         max_tokens: 8192,
         description: "Legacy ck embedding model preserved for backwards compatibility".to_string(),
         gguf_file: String::new(),
+        // Built before prefixes existed, so it is described without them.
+        query_prefix: String::new(),
+        document_prefix: String::new(),
+        default_threshold: 0.6,
     }
 }
 

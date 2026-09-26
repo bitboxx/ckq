@@ -15,6 +15,21 @@ use std::time::SystemTime;
 use tempfile::NamedTempFile;
 use walkdir::WalkDir;
 
+/// What an index's vectors were produced by: the model and its prefixes.
+///
+/// Short on purpose; it is compared, never parsed.
+pub fn embedding_signature(config: &ck_models::ModelConfig) -> String {
+    // A separator that cannot occur in a model name or a prompt, so two
+    // different triples cannot hash to the same string by concatenation.
+    let material = [
+        config.name.as_str(),
+        config.query_prefix.as_str(),
+        config.document_prefix.as_str(),
+    ]
+    .join("\u{1f}");
+    blake3::hash(material.as_bytes()).to_hex()[..16].to_string()
+}
+
 fn legacy_model_config(name: &str, dimensions: Option<usize>) -> ck_models::ModelConfig {
     ck_models::ModelConfig {
         name: name.to_string(),
@@ -23,6 +38,11 @@ fn legacy_model_config(name: &str, dimensions: Option<usize>) -> ck_models::Mode
         max_tokens: 8192,
         description: "Legacy ck embedding model (inferred from manifest)".to_string(),
         gguf_file: String::new(),
+        // A manifest from before prefixes existed describes an index built
+        // without them, so reconstructing it without them is correct.
+        query_prefix: String::new(),
+        document_prefix: String::new(),
+        default_threshold: 0.6,
     }
 }
 
@@ -197,6 +217,14 @@ pub struct IndexManifest {
     pub embedding_model: Option<String>,
     /// Embedding model dimensions (for validation)
     pub embedding_dimensions: Option<usize>,
+    /// What the vectors in this index were produced by, beyond the model name.
+    ///
+    /// Two indexes built by the same model but with different instruction
+    /// prefixes hold vectors from different spaces, and comparing across them
+    /// is silently wrong rather than loudly broken. The model name alone cannot
+    /// see that, so this hashes the name together with the prefixes.
+    #[serde(default)]
+    pub embedding_signature: Option<String>,
     /// Chunk hash version for incremental indexing
     /// - v1 = blake3 of chunk text only
     /// - v2 = blake3 of chunk text + leading_trivia + trailing_trivia
@@ -217,6 +245,7 @@ impl Default for IndexManifest {
             updated: now,
             files: HashMap::new(),
             embedding_model: None, // Default to None for backward compatibility
+            embedding_signature: None,
             embedding_dimensions: None,
             chunk_hash_version: Some(2), // v2 = blake3 of chunk text + trivia
         }
@@ -961,8 +990,33 @@ pub async fn smart_update_index_with_detailed_progress(
             ));
         }
 
+        // Same model, different instruction prefixes: the vectors already on
+        // disk are from another space and cannot be compared with new ones.
+        // Nothing about the file hashes would notice, so the whole index has to
+        // go rather than drift into a half-and-half state.
+        let signature = embedding_signature(&resolved.1);
+        let prefixed =
+            !resolved.1.query_prefix.is_empty() || !resolved.1.document_prefix.is_empty();
+        // No signature and no files is simply a new index, which is the common
+        // case and must not be refused. No signature *with* files means an
+        // index written before the field existed, so it carries no prompts; it
+        // matches a model that has none and cannot match one that has.
+        let stale = match &manifest.embedding_signature {
+            Some(existing) => existing != &signature,
+            None => prefixed && !manifest.files.is_empty(),
+        };
+        if stale {
+            return Err(anyhow::anyhow!(
+                "This index was built with different embedding prompts for '{}'. \
+                    The vectors are not comparable with the ones this build would write. \
+                    Run 'ckq --clean .' and index again.",
+                resolved.1.name
+            ));
+        }
+
         manifest.embedding_model = Some(resolved.1.name.clone());
         manifest.embedding_dimensions = Some(resolved.1.dimensions);
+        manifest.embedding_signature = Some(signature);
 
         Some(resolved)
     } else {
@@ -1762,7 +1816,11 @@ mod tests {
             "test-empty-results"
         }
 
-        fn embed(&mut self, _texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        fn embed_with(
+            &mut self,
+            _texts: &[String],
+            _role: ck_embed::Role,
+        ) -> Result<Vec<Vec<f32>>> {
             // Always return empty vector to trigger the panic scenario
             Ok(Vec::new())
         }
@@ -1784,7 +1842,7 @@ mod tests {
             "test-mismatched-count"
         }
 
-        fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        fn embed_with(&mut self, texts: &[String], _role: ck_embed::Role) -> Result<Vec<Vec<f32>>> {
             // Always return one less embedding than requested
             if texts.is_empty() {
                 Ok(Vec::new())

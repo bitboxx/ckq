@@ -165,7 +165,7 @@ fn test_switch_model_skips_when_same_model() {
     let updated_before = read_manifest_updated(temp_dir.path());
 
     let output = ck_command()
-        .args(["--switch-model", "granite-gguf"])
+        .args(["--switch-model", "gemma-q4"])
         .current_dir(temp_dir.path())
         .output()
         .expect("ck --switch-model should run");
@@ -207,7 +207,7 @@ fn test_switch_model_force_rebuild() {
     std::thread::sleep(std::time::Duration::from_secs(1));
 
     let output = ck_command()
-        .args(["--switch-model", "granite-gguf", "--force"])
+        .args(["--switch-model", "gemma-q4", "--force"])
         .current_dir(temp_dir.path())
         .output()
         .expect("ck --switch-model --force should run");

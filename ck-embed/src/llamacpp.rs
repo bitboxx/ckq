@@ -25,7 +25,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 
 use crate::mixedbread::download_assets;
-use crate::{Embedder, ModelDownloadCallback};
+use crate::{Embedder, ModelDownloadCallback, Role};
 
 /// Offload every layer. llama.cpp silently keeps on CPU whatever will not fit.
 const GPU_LAYERS: u32 = 1000;
@@ -60,6 +60,10 @@ pub struct LlamaCppDaemonClient {
     dim: usize,
     model_name: String,
     pin: bool,
+    /// The client applies these before it sends, so the daemon never needs to
+    /// know which side a text is on and the wire format is unchanged.
+    query_prefix: String,
+    document_prefix: String,
 }
 
 #[cfg(unix)]
@@ -71,6 +75,15 @@ impl LlamaCppDaemonClient {
             dim,
             model_name: config.name.clone(),
             pin,
+            query_prefix: config.query_prefix.clone(),
+            document_prefix: config.document_prefix.clone(),
+        }
+    }
+
+    fn prefix_for(&self, role: Role) -> &str {
+        match role {
+            Role::Query => &self.query_prefix,
+            Role::Document => &self.document_prefix,
         }
     }
 }
@@ -86,10 +99,11 @@ impl Embedder for LlamaCppDaemonClient {
     fn model_name(&self) -> &str {
         &self.model_name
     }
-    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+    fn embed_with(&mut self, texts: &[String], role: Role) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
+        let texts = &crate::apply_prefix(texts, self.prefix_for(role));
         // A daemon can hit its idle timeout in the window between our connect
         // and our request. ck-index catches per-file errors, counts
         // files_errored and still reports success, so healing it here is the
@@ -119,6 +133,8 @@ pub struct LlamaCppEmbedder {
     tx: Sender<Job>,
     dim: usize,
     model_name: String,
+    query_prefix: String,
+    document_prefix: String,
 }
 
 enum Job {
@@ -169,6 +185,8 @@ impl LlamaCppEmbedder {
                     tx: hit.0.clone(),
                     dim: hit.1,
                     model_name: config.name.clone(),
+                    query_prefix: config.query_prefix.clone(),
+                    document_prefix: config.document_prefix.clone(),
                 });
             }
         }
@@ -188,6 +206,8 @@ impl LlamaCppEmbedder {
             tx: hit.0.clone(),
             dim: hit.1,
             model_name: config.name.clone(),
+            query_prefix: config.query_prefix.clone(),
+            document_prefix: config.document_prefix.clone(),
         })
     }
 }
@@ -468,13 +488,18 @@ impl Embedder for LlamaCppEmbedder {
         &self.model_name
     }
 
-    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+    fn embed_with(&mut self, texts: &[String], role: Role) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
+        let prefix = match role {
+            Role::Query => &self.query_prefix,
+            Role::Document => &self.document_prefix,
+        };
+        let texts = crate::apply_prefix(texts, prefix);
         let (reply_tx, reply_rx) = channel();
         self.tx
-            .send(Job::Embed(texts.to_vec(), reply_tx))
+            .send(Job::Embed(texts, reply_tx))
             .map_err(|_| anyhow!("llama.cpp thread is gone"))?;
         reply_rx
             .recv()

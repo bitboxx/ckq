@@ -120,7 +120,11 @@ pub async fn semantic_search_v3_with_progress(
         &ck_embed::EmbedderOptions::process(),
         None,
     )?;
-    let query_embeddings = embedder.embed(std::slice::from_ref(&options.query))?;
+    // Role::Query, not the default: an asymmetric model puts a different
+    // instruction on the question than on the answer, and only then do the two
+    // land near each other.
+    let query_embeddings =
+        embedder.embed_with(std::slice::from_ref(&options.query), ck_embed::Role::Query)?;
 
     if query_embeddings.is_empty() {
         return Ok(ck_core::SearchResults {

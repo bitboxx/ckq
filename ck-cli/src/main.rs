@@ -35,7 +35,7 @@ QUICK START EXAMPLES:
     ckq -n "import" lib.py             # Show line numbers
 
   Semantic search (finds conceptually similar text):
-    ckq --sem "error handling" src/    # Builds/updates the index automatically (top 10, threshold >=0.6)
+    ckq --sem "error handling" src/    # Builds/updates the index automatically (top 10, threshold from the model)
     ckq --sem "wanneer is de APK"      # Query in any language the model covers
     ckq --sem --limit 5 "authentication"   # Limit to top 5 results
     ckq --sem --threshold 0.8 "auth"   # Higher precision filtering
@@ -75,9 +75,9 @@ QUICK START EXAMPLES:
     ckq -w "test" .                    # Match whole words only
     ckq -F "log.Error()" .             # Fixed string (no regex)
 
-  Embedding models (all multilingual GGUF, default granite-gguf):
-    ckq --index --model granite-gguf   # granite-embedding-278m-multilingual. The default
-    ckq --index --model gemma-q4       # EmbeddingGemma-300M, QAT Q4_0
+  Embedding models (all multilingual GGUF, default gemma-q4):
+    ckq --index --model gemma-q4       # EmbeddingGemma-300M, QAT Q4_0. The default
+    ckq --index --model granite-gguf   # granite-embedding-278m-multilingual, Apache-2.0
     ckq --index --model bge-m3-gguf    # BGE-M3, 1024 dims
     ckq --index --model qwen3-gguf     # Qwen3-Embedding-0.6B, last-token pooling
     ckq --sem "auth" --rerank          # Enable reranking for better relevance
@@ -96,12 +96,12 @@ QUICK START EXAMPLES:
   SEARCH MODES:
   --regex   : Classic grep behavior (default, no index needed)
   --lex     : BM25 lexical search (auto-indexed before it runs)
-  --sem     : Semantic/embedding search (auto-indexed, defaults: top 10, threshold >=0.6)
+  --sem     : Semantic/embedding search (auto-indexed, defaults: top 10, threshold from the model)
   --hybrid  : Combines regex and semantic (shares the auto-indexing path)
 
 RESULT FILTERING:
   --topk, --limit N : Limit to top N results (default: 10 for semantic search)
-  --threshold SCORE : Filter by minimum score (default: 0.6 for semantic search)
+  --threshold SCORE : Filter by minimum score (default: the model's own, see --help)
                       (0.0-1.0 semantic/lexical, 0.01-0.05 hybrid RRF)
   --scores          : Show scores in output [0.950] file:line:match
 
@@ -215,7 +215,7 @@ struct Cli {
     #[arg(
         long = "threshold",
         value_name = "SCORE",
-        help = "Minimum score threshold (0.0-1.0 for semantic/lexical, 0.01-0.05 for hybrid RRF) [default: 0.6 for semantic search]"
+        help = "Minimum score threshold (0.0-1.0 for semantic/lexical, 0.01-0.05 for hybrid RRF) [default: the model's own]"
     )]
     threshold: Option<f32>,
 
@@ -346,7 +346,7 @@ struct Cli {
     #[arg(
         long = "model",
         value_name = "MODEL",
-        help = "Embedding model for indexing: granite-gguf (default), gemma-q4, gemma-gguf, bge-m3-gguf, qwen3-gguf. All multilingual, all run on llama.cpp. Only used with --index."
+        help = "Embedding model for indexing: gemma-q4 (default), gemma-gguf, granite-gguf, bge-m3-gguf, qwen3-gguf. All multilingual, all run on llama.cpp. Only used with --index."
     )]
     model: Option<String>,
 
@@ -1593,8 +1593,18 @@ fn build_options(cli: &Cli, reindex: bool, _repo_root: Option<&Path>) -> SearchO
         SearchMode::Semantic => Some(10),
         _ => None,
     };
+    // The model's own number, not a shared constant: scores do not mean the
+    // same thing across models. Measured on bench/multilingual, granite answers
+    // its correct hits between 0.61 and 0.88 while EmbeddingGemma answers the
+    // same ones between 0.42 and 0.74, so upstream's flat 0.6 threw away most
+    // of what EmbeddingGemma got right and read as an empty corpus.
     let default_threshold = match mode {
-        SearchMode::Semantic => Some(0.6),
+        SearchMode::Semantic => Some(
+            ck_models::ModelRegistry::default()
+                .resolve(cli.model.as_deref())
+                .map(|(_, config)| config.default_threshold)
+                .unwrap_or(0.6),
+        ),
         _ => None,
     };
 

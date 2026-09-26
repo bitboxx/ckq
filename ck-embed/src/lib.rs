@@ -42,11 +42,46 @@ mod mixedbread;
 #[cfg(feature = "mixedbread")]
 use mixedbread::MixedbreadEmbedder;
 
+/// Which side of a retrieval pair a text is on.
+///
+/// An asymmetric model is trained with a different instruction on the question
+/// than on the answer, and puts the two vectors near each other only when both
+/// instructions are present. `embed` alone could not say which side it was
+/// embedding, so no provider could apply them, and every such model ran in a
+/// space it was not trained for. Saying it at the call site is the fix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// What someone is searching for.
+    Query,
+    /// What is being searched.
+    Document,
+}
+
 pub trait Embedder: Send + Sync {
     fn id(&self) -> &'static str;
     fn dim(&self) -> usize;
     fn model_name(&self) -> &str;
-    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
+
+    /// Embed `texts` as one side of a retrieval pair.
+    fn embed_with(&mut self, texts: &[String], role: Role) -> Result<Vec<Vec<f32>>>;
+
+    /// Embed documents. The common case, and what indexing does.
+    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        self.embed_with(texts, Role::Document)
+    }
+}
+
+/// Put the model's instruction on each text, for the side it is on.
+///
+/// One function, called by the in-process embedder and by the daemon client
+/// before it sends, so the daemon never has to know about roles and the wire
+/// format stays as it was. A symmetric model has empty prefixes and this is a
+/// clone.
+pub fn apply_prefix(texts: &[String], prefix: &str) -> Vec<String> {
+    if prefix.is_empty() {
+        return texts.to_vec();
+    }
+    texts.iter().map(|t| format!("{prefix}{t}")).collect()
 }
 
 pub type ModelDownloadCallback = Box<dyn Fn(&str) + Send + Sync>;
@@ -311,7 +346,7 @@ impl Embedder for DummyEmbedder {
         &self.model_name
     }
 
-    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+    fn embed_with(&mut self, texts: &[String], _role: Role) -> Result<Vec<Vec<f32>>> {
         Ok(texts.iter().map(|_| vec![0.0; self.dim]).collect())
     }
 }
@@ -465,7 +500,7 @@ impl Embedder for FastEmbedder {
         &self.model_name
     }
 
-    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+    fn embed_with(&mut self, texts: &[String], _role: Role) -> Result<Vec<Vec<f32>>> {
         let text_refs: Vec<&str> = texts.iter().map(std::string::String::as_str).collect();
         let embeddings = self.model.embed(text_refs, None)?;
         Ok(embeddings)

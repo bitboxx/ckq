@@ -14,6 +14,32 @@ pub struct ModelConfig {
     /// provider, where one GGUF repo holds several quantizations.
     #[serde(default)]
     pub gguf_file: String,
+    /// Glued to the front of a query before it is embedded.
+    ///
+    /// Asymmetric models are trained with different instructions on the two
+    /// sides of a retrieval pair, and land the query near its answer only when
+    /// both are present. A symmetric model leaves both of these empty. Getting
+    /// one side right and the other wrong is worse than leaving both off, which
+    /// is why they travel together in the registry rather than as a flag.
+    #[serde(default)]
+    pub query_prefix: String,
+    /// Glued to the front of a document before it is embedded.
+    #[serde(default)]
+    pub document_prefix: String,
+    /// Minimum score a semantic hit needs, when the caller does not say.
+    ///
+    /// Scores are not comparable between models: on the same 40-query
+    /// cross-lingual benchmark, granite answers between 0.61 and 0.88 while
+    /// EmbeddingGemma answers between 0.47 and 0.72. One shared default cuts
+    /// most of the correct answers off one model or lets everything through on
+    /// another, so each carries its own.
+    #[serde(default = "default_threshold")]
+    pub default_threshold: f32,
+}
+
+/// Upstream's number, for a config deserialized from an older file.
+fn default_threshold() -> f32 {
+    0.6
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +64,9 @@ impl Default for ModelRegistry {
                 max_tokens: 8192,
                 description: "BGE-M3 multilingual via llama.cpp, 8k context".to_string(),
                 gguf_file: "bge-m3-Q8_0.gguf".to_string(),
+                query_prefix: String::new(),
+                document_prefix: String::new(),
+                default_threshold: 0.35,
             },
         );
 
@@ -50,6 +79,13 @@ impl Default for ModelRegistry {
                 max_tokens: 2048,
                 description: "EmbeddingGemma 300M, quantization-aware trained Q4_0".to_string(),
                 gguf_file: "embeddinggemma-300M-qat-Q4_0.gguf".to_string(),
+                // EmbeddingGemma is trained with a task instruction on the
+                // query and a title slot on the document. "none" is what the
+                // model card uses when there is no title, and ck chunks have
+                // none to give.
+                query_prefix: "task: search result | query: ".to_string(),
+                document_prefix: "title: none | text: ".to_string(),
+                default_threshold: 0.40,
             },
         );
 
@@ -64,6 +100,9 @@ impl Default for ModelRegistry {
                     "IBM Granite 278M multilingual, Apache-2.0, no instruction prefix needed"
                         .to_string(),
                 gguf_file: "granite-embedding-278m-multilingual-Q8_0.gguf".to_string(),
+                query_prefix: String::new(),
+                document_prefix: String::new(),
+                default_threshold: 0.55,
             },
         );
 
@@ -77,6 +116,9 @@ impl Default for ModelRegistry {
                 description: "EmbeddingGemma 300M, 100+ languages (wants a task prefix)"
                     .to_string(),
                 gguf_file: "embeddinggemma-300M-Q8_0.gguf".to_string(),
+                query_prefix: "task: search result | query: ".to_string(),
+                document_prefix: "title: none | text: ".to_string(),
+                default_threshold: 0.40,
             },
         );
 
@@ -89,6 +131,13 @@ impl Default for ModelRegistry {
                 max_tokens: 8192,
                 description: "Qwen3-Embedding 0.6B via llama.cpp, GPU-accelerated".to_string(),
                 gguf_file: "Qwen3-Embedding-0.6B-Q8_0.gguf".to_string(),
+                // Qwen3 takes an instruction on the query only. The task
+                // sentence is the one from the model card; the documents go
+                // in bare.
+                query_prefix: "Instruct: Given a search query, retrieve relevant passages that answer it\nQuery: "
+                    .to_string(),
+                document_prefix: String::new(),
+                default_threshold: 0.35,
             },
         );
 
@@ -97,7 +146,7 @@ impl Default for ModelRegistry {
             // ckq defaults to a multilingual model. bge-small is English-only and
             // scored 2/4 on the trilingual fixture where this scores 4/4, at
             // roughly stock ck's search latency.
-            default_model: "granite-gguf".to_string(),
+            default_model: "gemma-q4".to_string(),
         }
     }
 }
@@ -368,11 +417,8 @@ mod tests {
         let registry = ModelRegistry::default();
 
         let (alias, config) = registry.resolve(None).expect("default should resolve");
-        assert_eq!(alias, "granite-gguf");
-        assert_eq!(
-            config.name,
-            "bartowski/granite-embedding-278m-multilingual-GGUF"
-        );
+        assert_eq!(alias, "gemma-q4");
+        assert_eq!(config.name, "ggml-org/embeddinggemma-300M-qat-q4_0-GGUF");
         assert_eq!(config.provider, "llamacpp");
     }
 

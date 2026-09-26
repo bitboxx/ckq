@@ -341,7 +341,7 @@ impl Embedder for MixedbreadEmbedder {
         &self.model_name
     }
 
-    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+    fn embed_with(&mut self, texts: &[String], _role: crate::Role) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }

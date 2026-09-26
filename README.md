@@ -27,12 +27,12 @@ on and the SDK is missing, which is why it is not the default.
 Model weights are fetched from Hugging Face on first use and cached.
 
 ```bash
-ckq --index ~/notes                       # granite-gguf by default
+ckq --index ~/notes                       # gemma-q4 by default
 ckq --sem "when is the boiler serviced" ~/notes
 ckq --lex "exact phrase" ~/notes          # BM25
 ckq "regex.*here" ~/notes                 # grep-compatible
 ckq --serve                               # MCP server; pins the daemon
-ckq --index --model gemma-q4 ~/notes      # a different model
+ckq --index --model granite-gguf ~/notes  # a different model
 ```
 
 ## Status
@@ -41,63 +41,55 @@ Working and used daily, but young. It has been exercised on prose and on Rust so
 Apple Silicon and on Linux/Vulkan. CUDA is untested. The API is upstream's; the model
 registry and the daemon are new here and may still move.
 
-## Why granite
+## Why EmbeddingGemma, and how it is measured
 
-Stock ck ships English-only models. On a nine-note multilingual fixture (three languages,
-mixed within the corpus), correct note at rank 1:
+`bench/multilingual/` holds the benchmark: 40 documents, eight each in English,
+Mandarin, Hindi, Spanish and Arabic, over ten subjects with four neighbouring aspects
+each, and 40 queries. **Every query is asked in a language other than the one its answer
+is written in**, and every wrong answer in a subject is a document about the same subject,
+so finding the topic is not enough. `python3 bench/multilingual/run.py <model>...`
+reproduces the table.
 
-| model | params | fixture |
-|---|---:|---|
-| stock ck `bge-small-en-v1.5` | 33M | 2/4 |
-| stock ck `nomic-embed-text-v1.5` | 137M | 1/4 |
-| `paraphrase-multilingual-MiniLM` | 118M | 2/4 |
-| `gemma-q4` EmbeddingGemma 300M | 300M | 4/4 |
-| **`granite-gguf` granite-embedding-278m** | **278M** | **4/4** |
-| `bge-m3-gguf` | 568M | 4/4 |
-| `qwen3-gguf` Qwen3-Embedding-0.6B | 600M | 4/4 |
+| model | params | rank 1 | MRR@5 | score range of correct hits |
+|---|---:|---:|---:|---:|
+| **`gemma-q4` EmbeddingGemma 300M** | **300M** | **35/40** | **0.927** | 0.42-0.74 |
+| `bge-m3-gguf` | 568M | 34/40 | 0.904 | 0.38-0.71 |
+| `qwen3-gguf` Qwen3-Embedding | 600M | 31/40 | 0.851 | 0.36-0.71 |
+| `granite-gguf` granite-embedding-278m | 278M | 28/40 | 0.781 | 0.61-0.88 |
 
-Four models tie, so the fixture decides nothing beyond ruling out the English-only ones.
-A 1012-note corpus in three languages does decide it. Six queries with a known correct
-answer, top 3 each, no threshold:
+EmbeddingGemma ties a model nearly twice its size and beats both larger ones, at 240 MB on
+disk. Upstream's own models are not in the table because they are English-only and score
+around 2/4 on even a nine-note multilingual fixture; that is what this fork exists to fix.
 
-Each query is asked in one language about notes written in another, which is the case
-these models exist for. The corpus is private, so the queries are described by shape.
+### Instruction prefixes
 
-| query | `gemma-q4` | `granite-gguf` |
-|---|---|---|
-| Indonesian, recent news about a named person | right note at 2 | right note at 3 |
-| Indonesian, who carries out a recurring duty | topic right, note wrong | **the exact note** |
-| Dutch, a maintenance interval | correct | correct |
-| English, an amount owed to an institution | miss | miss |
-| English, a deadline in a formal process | correct | correct |
-| English, a vehicle's next inspection date | miss | miss |
+Some models are trained with a different instruction on the query than on the document, and
+put the two vectors near each other only when both are present. Upstream ck has one
+`embed` method with no way to say which side it is embedding, so no such prefix could ever
+be applied. ckq's trait takes a `Role`:
 
-Four of six each, granite better on two and worse on none. The deciding factor is the score
-range rather than the ranking. Granite answers between 0.71 and 0.85 where EmbeddingGemma
-answers between 0.47 and 0.57, and ck's default is `--threshold 0.6`. EmbeddingGemma
-therefore drops its own correct answers below the cut, and an imperfect search reads as an
-empty corpus. Granite's clear it.
+```rust
+fn embed_with(&mut self, texts: &[String], role: Role) -> Result<Vec<Vec<f32>>>;
+```
 
-EmbeddingGemma wants task prefixes (`task: search result | query: ` on a query,
-`title: none | text: ` on a document) and ck applies none, which is the likely cause. Both
-sides are unprefixed, so the space is self-consistent but weaker than the model was trained
-for. Granite needs no prefix at all, which is why it works as-is. Upstream never applied
-nomic's `search_query:` prefix either, and that is probably why nomic scores 1/4 above.
+The prefixes live in the model registry, empty for the models that want none. For
+EmbeddingGemma they are `task: search result | query: ` and `title: none | text: `, and
+adding them moved it from 34/40 to 35/40 and from 0.896 to 0.927 MRR. Qwen3 gains about
+half as much from its instruction. This is also why upstream's `nomic-embed-text-v1.5`
+measured *worse* than a model a quarter of its size: it wants `search_query: ` and never
+got it.
 
-Granite is also Apache-2.0, where the Gemma weights come under the Gemma Terms of Use.
-That did not decide it, but it removes a question.
+Changing a prefix changes every vector, and the model name alone cannot see that, so the
+index manifest carries a signature over the model and its prompts. A mismatch refuses to
+index rather than mixing two vector spaces in one directory.
 
-What it costs: granite's context is 512 tokens against EmbeddingGemma's 2048, so the same
-corpus produces about 1.8x the chunks and an index about 1.8x the size. Indexing time is
-unchanged, because that tracks tokens rather than chunks.
+### Thresholds are per model
 
-`gemma-q4` remains available and is a reasonable pick for a corpus that is short on disk
-and long per document.
-
-**On quantization.** `ggml-org` publishes a QAT Q4_0 of EmbeddingGemma beside the Q8_0;
-both score 4/4 and the Q4 separates slightly better. Granite is served at Q8_0. A Q5_K_M
-was measured and indexed at exactly the same speed, so there is nothing to win by going
-smaller: the work is not bound by weight size.
+Scores are not comparable between models. On the same 40 queries granite answers its
+correct hits between 0.61 and 0.88 while EmbeddingGemma answers the same ones between 0.42
+and 0.74. Upstream's flat `--threshold 0.6` therefore throws away most of what
+EmbeddingGemma gets right, and an imperfect search reads as an empty corpus. Each model
+carries its own default, measured from that benchmark; `--threshold` still overrides it.
 
 ## Code search is unchanged
 

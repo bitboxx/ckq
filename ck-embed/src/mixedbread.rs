@@ -77,6 +77,10 @@ impl MixedbreadEmbedder {
             cb("Loading Mixedbread embedder session...");
         }
 
+        // `mut` only on macOS, where the CoreML block below reassigns it.
+        // Without the attribute this is a hard error under `-D warnings` on
+        // every other platform, which is how CI first caught it.
+        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
         let mut builder = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_intra_threads(num_cpus::get().max(1))?;

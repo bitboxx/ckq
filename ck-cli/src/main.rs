@@ -919,7 +919,10 @@ fn reset_sigpipe() {}
 
 /// Load the model in this process and serve embeddings over the socket until
 /// idle. Exits on its own; nothing supervises it.
-#[cfg(feature = "llamacpp")]
+///
+/// Unix only, like the socket it serves. Windows has no daemon at all: every
+/// process there loads its own copy.
+#[cfg(all(feature = "llamacpp", unix))]
 fn run_embed_daemon(alias: &str, options: &ck_embed::EmbedderOptions) -> anyhow::Result<()> {
     let registry = ck_models::ModelRegistry::default();
     let (_, config) = registry.resolve(Some(alias))?;
@@ -1041,7 +1044,8 @@ async fn run_main(cli: Cli, embed_options: ck_embed::EmbedderOptions) -> Result<
     }
 
     // The daemon loads the model in-process; everything else talks to it.
-    #[cfg(feature = "llamacpp")]
+    // Unix only: the flag is hidden and the socket does not exist on Windows.
+    #[cfg(all(feature = "llamacpp", unix))]
     if let Some(model) = cli.embed_daemon.as_deref() {
         return run_embed_daemon(model, &embed_options);
     }

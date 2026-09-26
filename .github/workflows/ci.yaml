@@ -51,9 +51,16 @@ jobs:
         toolchain: ${{ matrix.rust }}
     - uses: Swatinem/rust-cache@v2
     - uses: taiki-e/install-action@cargo-hack
-    - name: Build and Test
+    # The library crates' features are additive, so sweeping them is meaningful.
+    # ck-search's are not: every embedding model in the registry is served by
+    # llamacpp, so a build without that feature has no model, cannot index, and
+    # fails every integration test. It has one supported configuration and is
+    # tested in it.
+    - name: Build and Test (libraries, each feature)
       # `vulkan` needs the Vulkan SDK at build time; the runners have none.
-      run: cargo hack test --each-feature --exclude-features vulkan --workspace
+      run: cargo hack test --each-feature --exclude-features vulkan --workspace --exclude ck-search
+    - name: Test (CLI, default features)
+      run: cargo test -p ck-search
   msrv:
     name: "Check MSRV"
     runs-on: ubuntu-latest
@@ -68,7 +75,10 @@ jobs:
     - uses: taiki-e/install-action@cargo-hack
     - name: Default features
       # `vulkan` needs the Vulkan SDK at build time; the runners have none.
-      run: cargo hack check --each-feature --exclude-features vulkan --locked --rust-version --ignore-private --workspace --all-targets --keep-going
+      # ck-search is excluded for the reason given in the test job.
+      run: cargo hack check --each-feature --exclude-features vulkan --locked --rust-version --ignore-private --workspace --exclude ck-search --all-targets --keep-going
+    - name: MSRV of the CLI
+      run: cargo check -p ck-search --locked --rust-version --all-targets --keep-going
   minimal-versions:
     name: Minimal versions
     # Temporarily disabled due to issue building sharded-slab in CI

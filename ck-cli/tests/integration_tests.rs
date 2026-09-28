@@ -1417,3 +1417,155 @@ fn test_hidden_flag_lexical_index() {
         "file in hidden dir SHOULD be in the lexical index with --hidden; stdout: {stdout}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Several directories in one session
+//
+// ckq keeps one index per directory, in a `.ck` beside the corpus, and one
+// embed daemon per model. The corpus is deliberately absent from the daemon's
+// socket key, so a single resident model serves every directory. That makes a
+// session which searches corpus A and then corpus B the normal case rather
+// than an edge case, and these cover the three ways it can break: an index
+// written to the wrong place, a result from the wrong corpus, and state
+// carried over so the second visit to a directory differs from the first.
+// ---------------------------------------------------------------------------
+
+/// Two corpora with no vocabulary in common. Each carries a nonsense marker so
+/// a leak is unambiguous: the word cannot occur in the other corpus by chance,
+/// and it cannot be stemmed into the other's vocabulary.
+fn write_two_corpora(a: &Path, b: &Path) {
+    fs::write(
+        a.join("sailing.md"),
+        "# Sailing\n\nHarbours, tides and moorings for small boats. Marker zephyrquux.\n",
+    )
+    .unwrap();
+    fs::write(
+        b.join("baking.md"),
+        "# Baking\n\nSourdough starters, proving and ovens. Marker quibblewomp.\n",
+    )
+    .unwrap();
+}
+
+/// Run a search and hand back stdout, or `None` when the search did not
+/// succeed. Semantic and lexical search need a model and an index that the
+/// test environment may not have, and the suite already treats that as a skip
+/// rather than a failure.
+fn search_stdout(mode: &str, query: &str, dir: &Path) -> Option<String> {
+    let output = ck_command()
+        .args([mode, query, dir.to_str().unwrap()])
+        .output()
+        .expect("Failed to run ck search");
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8(output.stdout).unwrap())
+}
+
+#[test]
+#[serial]
+fn test_each_directory_gets_its_own_index() {
+    let a = TempDir::new().unwrap();
+    let b = TempDir::new().unwrap();
+    let elsewhere = TempDir::new().unwrap();
+    write_two_corpora(a.path(), b.path());
+
+    // Index both by path argument, from a directory that is neither of them.
+    for corpus in [a.path(), b.path()] {
+        let output = ck_command()
+            .args(["--index", corpus.to_str().unwrap()])
+            .current_dir(elsewhere.path())
+            .output()
+            .expect("Failed to run ck index");
+        assert!(output.status.success());
+    }
+
+    // The path argument decides where the index lands, not the current directory.
+    assert!(a.path().join(".ck").is_dir());
+    assert!(b.path().join(".ck").is_dir());
+    assert!(
+        !elsewhere.path().join(".ck").exists(),
+        "indexing by path argument must not index the current directory"
+    );
+
+    // Each manifest lists its own corpus and nothing from the other.
+    let manifest_a = fs::read_to_string(a.path().join(".ck").join("manifest.json")).unwrap();
+    let manifest_b = fs::read_to_string(b.path().join(".ck").join("manifest.json")).unwrap();
+    assert!(manifest_a.contains("sailing.md"));
+    assert!(
+        !manifest_a.contains("baking.md"),
+        "corpus A's manifest must not carry corpus B's files"
+    );
+    assert!(manifest_b.contains("baking.md"));
+    assert!(
+        !manifest_b.contains("sailing.md"),
+        "corpus B's manifest must not carry corpus A's files"
+    );
+}
+
+#[test]
+#[serial]
+fn test_lexical_search_does_not_leak_between_directories() {
+    let a = TempDir::new().unwrap();
+    let b = TempDir::new().unwrap();
+    write_two_corpora(a.path(), b.path());
+
+    for corpus in [a.path(), b.path()] {
+        let output = ck_command()
+            .args(["--index", corpus.to_str().unwrap()])
+            .output()
+            .expect("Failed to run ck index");
+        assert!(output.status.success());
+    }
+
+    // Positive control. Without this, an empty result below would prove nothing:
+    // a stale or missing index also returns nothing.
+    let Some(own) = search_stdout("--lex", "zephyrquux", a.path()) else {
+        return;
+    };
+    assert!(
+        own.contains("sailing.md"),
+        "corpus A must find its own marker, otherwise the leak check is vacuous"
+    );
+
+    // The leak itself: A must not answer with B's content.
+    let Some(foreign) = search_stdout("--lex", "quibblewomp", a.path()) else {
+        return;
+    };
+    assert!(
+        !foreign.contains("baking.md"),
+        "searching corpus A returned a file from corpus B: {foreign}"
+    );
+}
+
+#[test]
+#[serial]
+fn test_alternating_semantic_searches_stay_scoped() {
+    let a = TempDir::new().unwrap();
+    let b = TempDir::new().unwrap();
+    write_two_corpora(a.path(), b.path());
+
+    for corpus in [a.path(), b.path()] {
+        let output = ck_command()
+            .args(["--index", corpus.to_str().unwrap()])
+            .output()
+            .expect("Failed to run ck index");
+        assert!(output.status.success());
+    }
+
+    // Two rounds, so the second visit to each corpus meets a daemon that has
+    // since served the other one. One round would not catch carried-over state.
+    for round in 1..=2 {
+        if let Some(hits) = search_stdout("--sem", "boats and the sea", a.path()) {
+            assert!(
+                !hits.contains("baking.md"),
+                "round {round}: corpus A returned a file from corpus B"
+            );
+        }
+        if let Some(hits) = search_stdout("--sem", "bread and yeast", b.path()) {
+            assert!(
+                !hits.contains("sailing.md"),
+                "round {round}: corpus B returned a file from corpus A"
+            );
+        }
+    }
+}

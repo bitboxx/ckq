@@ -50,6 +50,16 @@ fn ctx_tokens(max_length: usize) -> u32 {
     (max_length as u32).clamp(1, PER_SEQ) * MAX_SEQ as u32
 }
 
+/// Context for a single short text: a search query. The indexing context above
+/// is 8192 tokens for EmbeddingGemma, and a decode in it cost 150-200 ms even
+/// for a ten-token query, because the encoder attends over the whole KV cache
+/// size. A query never needs that, so it gets its own small context.
+const QUERY_CTX: u32 = 512;
+
+fn query_ctx_tokens(max_length: usize) -> u32 {
+    (max_length as u32).clamp(1, QUERY_CTX)
+}
+
 /// Talks to the shared daemon so the model is loaded once per machine rather
 /// than once per process. `LlamaCppEmbedder::new_in_process` is the daemon's own
 /// path, and the escape hatch if the socket cannot be used.
@@ -214,6 +224,7 @@ impl LlamaCppEmbedder {
 
 /// One job: tokenize, pack sequences into as few decodes as the context allows,
 /// read the pooled vector back per sequence.
+#[allow(clippy::too_many_arguments)]
 fn run(
     model: &LlamaModel,
     ctx: &mut llama_cpp_2::context::LlamaContext<'_>,
@@ -221,6 +232,8 @@ fn run(
     max_length: usize,
     dim: usize,
     pooling: LlamaPoolingType,
+    budget: usize,
+    max_seq: usize,
 ) -> Result<Vec<Vec<f32>>> {
     let mut encoded: Vec<Vec<_>> = Vec::with_capacity(texts.len());
     let mut truncated = 0usize;
@@ -247,8 +260,7 @@ fn run(
         let mut total = 0usize;
         while end < encoded.len() {
             let len = encoded[end].len().max(1);
-            if end > start
-                && (total + len > ctx_tokens(max_length) as usize || end - start >= MAX_SEQ)
+            if end > start && (total + len > budget || end - start >= max_seq)
             {
                 break;
             }
@@ -440,6 +452,17 @@ fn start_worker(
                     return;
                 }
             };
+            let q_budget = query_ctx_tokens(max_length);
+            let q_params = LlamaContextParams::default()
+                .with_n_ctx(Some(NonZeroU32::new(q_budget).expect("non-zero context")))
+                .with_n_threads_batch(num_cpus::get().max(1) as i32)
+                .with_embeddings(true)
+                .with_n_seq_max(1)
+                .with_n_batch(q_budget)
+                .with_n_ubatch(q_budget)
+                .with_pooling_type(pooling);
+            // Optional: without it every text goes through the large context, as before.
+            let mut qctx = model.new_context(backend, q_params).ok();
             register_exit_hook();
             let _ = ready_tx.send(Ok(dim));
 
@@ -447,7 +470,21 @@ fn start_worker(
             while let Ok(job) = rx.recv() {
                 match job {
                     Job::Embed(texts, reply) => {
-                        let _ = reply.send(run(&model, &mut ctx, &texts, max_length, dim, pooling));
+                        let short = texts.len() == 1
+                            && model
+                                .str_to_token(&texts[0], AddBos::Always)
+                                .map(|t| t.len() <= q_budget as usize)
+                                .unwrap_or(false);
+                        let result = match qctx.as_mut() {
+                            Some(q) if short => run(
+                                &model, q, &texts, max_length, dim, pooling, q_budget as usize, 1,
+                            ),
+                            _ => run(
+                                &model, &mut ctx, &texts, max_length, dim, pooling,
+                                ctx_budget as usize, MAX_SEQ,
+                            ),
+                        };
+                        let _ = reply.send(result);
                     }
                     Job::Quit(done) => {
                         stopping = Some(done);
@@ -461,6 +498,7 @@ fn start_worker(
             // leaves ggml's device with nothing outstanding. Skipping it is
             // what used to abort the process at exit, in a static destructor
             // asserting that the resource set count was zero.
+            drop(qctx);
             drop(ctx);
             drop(model);
             if let Some(done) = stopping {

@@ -51,6 +51,8 @@ pub async fn semantic_search_v3_with_progress(
 
     // Collect all sidecar files and their embeddings
     let mut file_chunks: Vec<(std::path::PathBuf, ck_index::ChunkEntry)> = Vec::new();
+    let timing = std::env::var_os("CKQ_TIMING").is_some();
+    let t0 = std::time::Instant::now();
 
     for entry in WalkDir::new(&index_dir) {
         let entry = entry?;
@@ -78,6 +80,10 @@ pub async fn semantic_search_v3_with_progress(
         }
     }
 
+    if timing {
+        eprintln!("timing: sidecar load {:?} ({} chunks)", t0.elapsed(), file_chunks.len());
+    }
+    let t1 = std::time::Instant::now();
     if file_chunks.is_empty() {
         return Err(CkError::Index(
             "No embeddings found. Run 'ckq --index' first with embeddings.".to_string(),
@@ -134,6 +140,9 @@ pub async fn semantic_search_v3_with_progress(
     }
 
     let query_embedding = &query_embeddings[0];
+    if timing {
+        eprintln!("timing: embed query {:?}", t1.elapsed());
+    }
 
     if let Some(ref callback) = progress_callback {
         callback("Computing similarity scores...");

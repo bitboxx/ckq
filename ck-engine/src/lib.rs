@@ -413,6 +413,9 @@ pub async fn search_enhanced_with_outcome(
             duration_ms: started.elapsed().as_millis() as u64,
         });
     }
+    if std::env::var_os("CKQ_TIMING").is_some() {
+        eprintln!("timing: index update {:?}", index_update.as_ref().map(|u| u.duration_ms));
+    }
 
     let search_results = match options.mode {
         SearchMode::Regex => {

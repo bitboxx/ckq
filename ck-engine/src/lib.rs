@@ -979,7 +979,7 @@ struct LexicalRanking {
     contents: HashMap<PathBuf, String>,
 }
 
-/// Rank files by BM25F. Locating each hit's span runs the chunker over the
+/// Rank files by BM25 over content and path. Locating each hit's span runs the chunker over the
 /// whole file, several milliseconds per hit, so `locate: false` skips it and
 /// reports the file's first line instead.
 async fn lexical_ranked(options: &SearchOptions, locate: bool) -> Result<LexicalRanking> {
@@ -1070,10 +1070,12 @@ async fn lexical_ranked(options: &SearchOptions, locate: bool) -> Result<Lexical
         .map_err(|e| CkError::Index(format!("Failed to create index reader: {e}")))?;
 
     let searcher = reader.searcher();
-    // BM25F: the path is a second field, so a file named or filed under a query
-    // term ranks above one that merely mentions it. Half weight, because a path
-    // is a few words and one hit there would otherwise outscore a body full of
-    // them.
+    // The path is a second field, so a file named or filed under a query term
+    // ranks above one that merely mentions it. Half weight, because a path is a
+    // few words and one hit there would otherwise outscore a body full of them.
+    // tantivy scores BM25 per field and adds the boosted scores. That is not
+    // BM25F, which pools the weighted counts and saturates once, so a term in
+    // both fields counts a little more here than BM25F would give it.
     let mut query_parser = QueryParser::for_index(&index, vec![content_field, path_field]);
     query_parser.set_field_boost(path_field, LEXICAL_PATH_BOOST);
     let query_text = lexical_query_text(options);
@@ -1262,7 +1264,7 @@ const QUERY_LEXICAL_WEIGHT: f32 = 0.15;
 /// semantic method is asked for this many times the candidates it must supply.
 const CHUNKS_PER_FILE: usize = 3;
 
-/// Hybrid search: the lexical method (BM25F) and the semantic method
+/// Hybrid search: the lexical method (BM25 over content and path) and the semantic method
 /// (embeddings), each ranking files, fused by reciprocal rank.
 ///
 /// The two fail on different queries: the lexical method cannot match a

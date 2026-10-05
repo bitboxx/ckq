@@ -551,6 +551,7 @@ impl TuiApp {
         );
 
         let options = SearchOptions {
+            terms: Vec::new(),
             mode: self.state.mode.clone(),
             query: self.state.query.clone(),
             path: self.state.search_path.clone(),

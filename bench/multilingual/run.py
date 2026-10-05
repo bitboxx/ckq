@@ -8,6 +8,12 @@ matches the subject but not the aspect lands near the answer without hitting it.
 
     python3 run.py                      # the default model
     python3 run.py granite-gguf gemma-q4   # compare models
+    python3 run.py --hybrid gemma-q4    # through --hybrid instead of --sem
+
+With --hybrid the lexical method runs on the query as well. It can only add
+noise here, since no query shares words with its answer, so the check is that
+fusion costs the semantic ranking little. Its scores are fused ranks, not
+similarities, so the score columns do not apply.
 
 Reports rank-1 accuracy, MRR@5 and the score range of the correct hits, which
 is what decides whether ck's default --threshold 0.6 keeps them.
@@ -23,6 +29,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 CORPUS = json.loads((HERE / "corpus.json").read_text(encoding="utf-8"))
 TOPK = 5
+MODE = "--sem"
 
 
 def materialise(root: Path) -> None:
@@ -35,7 +42,7 @@ def materialise(root: Path) -> None:
 def search(root: Path, query: str) -> list[str]:
     """Document ids in rank order, one entry per document."""
     out = subprocess.run(
-        ["ckq", "--jsonl", "--no-snippet", "--sem", "-q", query,
+        ["ckq", "--jsonl", "--no-snippet", MODE, "-q", query,
          "--topk", str(TOPK * 3), "--threshold", "0.0", str(root)],
         capture_output=True, text=True,
     ).stdout
@@ -86,7 +93,12 @@ def evaluate(model: str) -> dict:
 
 
 def main() -> None:
-    models = sys.argv[1:] or ["granite-gguf"]
+    global MODE
+    args = sys.argv[1:]
+    if "--hybrid" in args:
+        args.remove("--hybrid")
+        MODE = "--hybrid"
+    models = args or ["granite-gguf"]
     results = [evaluate(m) for m in models]
     print()
     print(f"{'model':<16} {'rank 1':>10} {'MRR@5':>7} {'score range':>14} {'>= 0.60':>9}")

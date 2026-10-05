@@ -260,8 +260,7 @@ fn run(
         let mut total = 0usize;
         while end < encoded.len() {
             let len = encoded[end].len().max(1);
-            if end > start && (total + len > budget || end - start >= max_seq)
-            {
+            if end > start && (total + len > budget || end - start >= max_seq) {
                 break;
             }
             total += len;
@@ -477,11 +476,24 @@ fn start_worker(
                                 .unwrap_or(false);
                         let result = match qctx.as_mut() {
                             Some(q) if short => run(
-                                &model, q, &texts, max_length, dim, pooling, q_budget as usize, 1,
+                                &model,
+                                q,
+                                &texts,
+                                max_length,
+                                dim,
+                                pooling,
+                                q_budget as usize,
+                                1,
                             ),
                             _ => run(
-                                &model, &mut ctx, &texts, max_length, dim, pooling,
-                                ctx_budget as usize, MAX_SEQ,
+                                &model,
+                                &mut ctx,
+                                &texts,
+                                max_length,
+                                dim,
+                                pooling,
+                                ctx_budget as usize,
+                                MAX_SEQ,
                             ),
                         };
                         let _ = reply.send(result);

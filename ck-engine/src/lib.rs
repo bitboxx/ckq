@@ -414,7 +414,10 @@ pub async fn search_enhanced_with_outcome(
         });
     }
     if std::env::var_os("CKQ_TIMING").is_some() {
-        eprintln!("timing: index update {:?}", index_update.as_ref().map(|u| u.duration_ms));
+        eprintln!(
+            "timing: index update {:?}",
+            index_update.as_ref().map(|u| u.duration_ms)
+        );
     }
 
     let search_results = match options.mode {
@@ -591,6 +594,7 @@ fn search_file_in_memory(
             };
 
             results.push(SearchResult {
+                signals: None,
                 file: file_path.to_path_buf(),
                 span: Span {
                     byte_start: byte_offset,
@@ -625,6 +629,7 @@ fn search_file_in_memory(
                 };
 
                 results.push(SearchResult {
+                    signals: None,
                     file: file_path.to_path_buf(),
                     span: Span {
                         byte_start: byte_offset + mat.start(),
@@ -759,6 +764,7 @@ fn process_streaming_line(
 ) {
     if regex.as_str().is_empty() {
         results.push(SearchResult {
+            signals: None,
             file: file_path.to_path_buf(),
             span: Span {
                 byte_start: byte_offset,
@@ -776,6 +782,7 @@ fn process_streaming_line(
     } else {
         for mat in regex.find_iter(line) {
             results.push(SearchResult {
+                signals: None,
                 file: file_path.to_path_buf(),
                 span: Span {
                     byte_start: byte_offset + mat.start(),
@@ -924,7 +931,60 @@ fn locate_lexical_span(
     }
 }
 
+/// Weight of the path field against the content field in lexical search.
+const LEXICAL_PATH_BOOST: f32 = 0.5;
+
+/// The query string the lexical method parses. With `--term`s, each term is a
+/// quoted phrase, so `max-age` and `out of office` match as written, and the words
+/// of a multi-word term also count on their own, since an exact phrase is rare.
+/// The terms are OR'd and BM25 does the weighting, so no stop-word list is needed.
+/// Without terms the query is used as typed, query syntax included.
+fn lexical_query_text(options: &SearchOptions) -> String {
+    if options.terms.is_empty() {
+        return options.query.clone();
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for term in &options.terms {
+        let clean = term.replace(['"', '\\'], " ");
+        let clean = clean.trim();
+        if clean.is_empty() {
+            continue;
+        }
+        parts.push(format!("\"{clean}\""));
+        let words: Vec<&str> = clean.split_whitespace().collect();
+        if words.len() > 1 {
+            parts.extend(
+                words
+                    .into_iter()
+                    .filter(|w| w.chars().count() > 3)
+                    .map(|w| format!("\"{w}\"")),
+            );
+        }
+    }
+    parts.join(" ")
+}
+
 async fn lexical_search(options: &SearchOptions) -> Result<Vec<SearchResult>> {
+    Ok(lexical_ranked(options, true).await?.results)
+}
+
+/// A lexical ranking, and what is needed to locate spans in it later.
+struct LexicalRanking {
+    results: Vec<SearchResult>,
+    /// The content-field terms the query matched on (see locate_lexical_span).
+    span_terms: Vec<String>,
+    /// Indexed text per file, kept only when spans were not located, so a
+    /// caller can locate them for the few results it keeps. Indexed rather than
+    /// re-read, because for a PDF the file on disk is not the text.
+    contents: HashMap<PathBuf, String>,
+}
+
+/// Rank files by BM25F. Locating each hit's span runs the chunker over the
+/// whole file, several milliseconds per hit, so `locate: false` skips it and
+/// reports the file's first line instead.
+async fn lexical_ranked(options: &SearchOptions, locate: bool) -> Result<LexicalRanking> {
+    let timing = std::env::var_os("CKQ_TIMING").is_some();
+    let t0 = std::time::Instant::now();
     // Handle both files and directories and reuse nearest existing .ck index up the tree
     let index_root = find_nearest_index_root(&options.path).unwrap_or_else(|| {
         if options.path.is_file() {
@@ -962,6 +1022,13 @@ async fn lexical_search(options: &SearchOptions) -> Result<Vec<SearchResult>> {
     };
     let corpus = ck_index::collect_files(&index_root, &file_options)?;
     let fingerprint = lexical_corpus_fingerprint(&corpus);
+    if timing {
+        eprintln!(
+            "timing: lexical collect+fingerprint {:?} ({} files)",
+            t0.elapsed(),
+            corpus.len()
+        );
+    }
     let meta_path = index_dir.join(TANTIVY_META_FILE);
     let is_fresh = tantivy_index_path.exists()
         && fs::read_to_string(&meta_path)
@@ -1003,19 +1070,25 @@ async fn lexical_search(options: &SearchOptions) -> Result<Vec<SearchResult>> {
         .map_err(|e| CkError::Index(format!("Failed to create index reader: {e}")))?;
 
     let searcher = reader.searcher();
-    let query_parser = QueryParser::for_index(&index, vec![content_field]);
+    // BM25F: the path is a second field, so a file named or filed under a query
+    // term ranks above one that merely mentions it. Half weight, because a path
+    // is a few words and one hit there would otherwise outscore a body full of
+    // them.
+    let mut query_parser = QueryParser::for_index(&index, vec![content_field, path_field]);
+    query_parser.set_field_boost(path_field, LEXICAL_PATH_BOOST);
+    let query_text = lexical_query_text(options);
 
     // Parse leniently so any string is a valid query: syntax tantivy can't
     // interpret (unbalanced quotes, stray field colons, bare boolean operators)
     // degrades to the terms it can parse instead of erroring. A query that
     // already parses cleanly yields the same query object with no errors, so
     // its results and scores are unchanged.
-    let (query, parse_errors) = query_parser.parse_query_lenient(&options.query);
+    let (query, parse_errors) = query_parser.parse_query_lenient(&query_text);
+    if timing {
+        eprintln!("timing: lexical open+parse {:?}", t0.elapsed());
+    }
     for error in &parse_errors {
-        tracing::debug!(
-            "lenient parse of lexical query {:?}: {error:?}",
-            options.query
-        );
+        tracing::debug!("lenient parse of lexical query {query_text:?}: {error:?}");
     }
 
     // The content-field terms tantivy will actually match on, used only to
@@ -1042,6 +1115,7 @@ async fn lexical_search(options: &SearchOptions) -> Result<Vec<SearchResult>> {
 
     // First, collect all results with raw scores
     let mut raw_results = Vec::new();
+    let mut contents = HashMap::new();
     for (_score, doc_address) in top_docs {
         let retrieved_doc: TantivyDocument = searcher.doc(doc_address)?;
         let path_text = retrieved_doc
@@ -1057,12 +1131,23 @@ async fn lexical_search(options: &SearchOptions) -> Result<Vec<SearchResult>> {
         if !path_matches_include(&file_path, &options.include_patterns) {
             continue;
         }
-        let (span, preview) =
-            locate_lexical_span(&file_path, content_text, &span_terms, options.full_section);
+        let (span, preview) = if locate {
+            locate_lexical_span(&file_path, content_text, &span_terms, options.full_section)
+        } else {
+            contents.insert(file_path.clone(), content_text.to_string());
+            let span = Span {
+                byte_start: 0,
+                byte_end: content_text.len(),
+                line_start: 1,
+                line_end: 1,
+            };
+            (span, String::new())
+        };
 
         raw_results.push((
             _score,
             SearchResult {
+                signals: None,
                 file: file_path,
                 span,
                 score: _score,
@@ -1075,6 +1160,9 @@ async fn lexical_search(options: &SearchOptions) -> Result<Vec<SearchResult>> {
         ));
     }
 
+    if timing {
+        eprintln!("timing: lexical search+spans {:?}", t0.elapsed());
+    }
     // Normalize scores to 0-1 range and apply threshold
     let mut results = Vec::new();
     if !raw_results.is_empty() {
@@ -1099,7 +1187,11 @@ async fn lexical_search(options: &SearchOptions) -> Result<Vec<SearchResult>> {
         }
     }
 
-    Ok(results)
+    Ok(LexicalRanking {
+        results,
+        span_terms,
+        contents,
+    })
 }
 
 /// (Re)build the tantivy index at `tantivy_index_path` over `files`.
@@ -1150,229 +1242,158 @@ async fn hybrid_search(options: &SearchOptions) -> Result<Vec<SearchResult>> {
     hybrid_search_with_progress(options, None).await
 }
 
-/// English filler words excluded from the keyword arm of hybrid search.
-/// The keyword arm has no relevance scoring of its own, so terms like "the"
-/// or "does" would flood it with matches that pollute the fused ranking.
-const HYBRID_STOPWORDS: &[&str] = &[
-    "the", "and", "for", "with", "that", "this", "from", "into", "when", "where", "how", "what",
-    "why", "who", "which", "does", "are", "was", "were", "has", "have", "had", "can", "could",
-    "should", "would", "will", "its", "use", "uses", "used", "using", "between", "over", "under",
-    "than", "then", "them", "they", "their", "there", "your", "our", "not", "but", "all", "any",
-    "each", "other", "some", "such", "only", "own", "same", "more", "most", "very", "happen",
-    "happens", "get", "gets", "code", "function", "where", "place",
-];
+/// Reciprocal rank fusion constant. The original paper uses 60, which flattens
+/// the top of each list so far that two weak agreements (ranks 6 and 5) outscore
+/// one method's clear first place. 3 keeps agreement worth something without
+/// letting it bury a strong single-method hit; 1 to 5 performed the same.
+const RRF_K: f32 = 3.0;
 
-/// Distinct meaningful terms from a hybrid query, for keyword matching.
-fn hybrid_query_terms(query: &str) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    query
-        .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .map(str::to_lowercase)
-        .filter(|t| t.len() >= 3 && !HYBRID_STOPWORDS.contains(&t.as_str()))
-        .filter(|t| seen.insert(t.clone()))
-        .collect()
-}
+/// Weight of the lexical method in hybrid search when it has only the query to
+/// work with. A question is not the words its answer contains: across languages
+/// it matches documents on the same subject in the question's own language,
+/// which are by construction the wrong ones. On bench/multilingual, gemma-q4
+/// ranks 35 of 40 answers first alone; fused at full weight, 15. At 0.15 it is
+/// back to 35, and the lexical method still orders near-ties and fills the list
+/// when the semantic threshold leaves it short. Terms given with `--term` are
+/// chosen to be in the answer, so they get full weight.
+const QUERY_LEXICAL_WEIGHT: f32 = 0.15;
 
-/// The keyword arm of hybrid search. Natural-language queries ("how are stale
-/// entries cleaned up") almost never match the corpus as a literal regex,
-/// which previously degraded hybrid search to semantic-only exactly when the
-/// keyword boost mattered most. When the literal pattern finds nothing, retry
-/// with a case-insensitive alternation of the query's meaningful terms and
-/// rank the matches by how many distinct terms each line covers (the regex
-/// engine itself has no scoring — raw traversal order would rank a line
-/// matching one common term above a line matching all of them).
-fn hybrid_keyword_search(options: &SearchOptions) -> Result<(Vec<SearchResult>, bool)> {
-    let literal = regex_search(options)?;
-    if !literal.is_empty() || options.fixed_string {
-        return Ok((literal, false));
-    }
+/// Semantic results are chunks and several can come from one file, so the
+/// semantic method is asked for this many times the candidates it must supply.
+const CHUNKS_PER_FILE: usize = 3;
 
-    let terms = hybrid_query_terms(&options.query);
-    if terms.len() < 2 {
-        return Ok((literal, false));
-    }
-
-    let mut keyword_options = options.clone();
-    keyword_options.query = terms
-        .iter()
-        .map(|t| regex::escape(t))
-        .collect::<Vec<_>>()
-        .join("|");
-    keyword_options.case_insensitive = true;
-    // The fallback pattern matches single terms, so it can hit far more lines
-    // than the literal pattern would; don't let regex_search's internal top_k
-    // cut them in traversal order before we rank them below.
-    keyword_options.top_k = None;
-    let matches = regex_search(&keyword_options)?;
-
-    // Rank matches by the rarity of the terms they contain (IDF over the
-    // match set): a line containing a term that matched 3 lines corpus-wide
-    // says far more than one containing a term that matched 500. Without
-    // this, filler-adjacent terms ("results", "semantic" in a search tool's
-    // own repo) drown the discriminative ones.
-    let lowered: Vec<String> = matches.iter().map(|r| r.preview.to_lowercase()).collect();
-    let doc_freq: Vec<usize> = terms
-        .iter()
-        .map(|t| {
-            lowered
-                .iter()
-                .filter(|line| line.contains(String::as_str(t)))
-                .count()
-        })
-        .collect();
-    let total = matches.len() as f32;
-    // String::as_str fully qualified above and below: tantivy's `Value`
-    // trait is in scope and its `as_str(&self) -> Option<&str>` would win
-    // method resolution.
-    let mut scored: Vec<(f32, SearchResult)> = matches
-        .into_iter()
-        .zip(lowered)
-        .map(|(r, line)| {
-            let weight: f32 = terms
-                .iter()
-                .zip(&doc_freq)
-                .filter(|(t, _)| line.contains(String::as_str(t)))
-                .map(|(_, &df)| ((total + 1.0) / (df as f32 + 1.0)).ln())
-                .sum();
-            (weight, r)
-        })
-        .collect();
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    if let Some(top_k) = options.top_k {
-        scored.truncate(top_k);
-    }
-    Ok((scored.into_iter().map(|(_, r)| r).collect(), true))
-}
-
-/// Fuse keyword and semantic rankings with Reciprocal Rank Fusion:
-/// RRFscore(d) = Σ(r∈R) 1/(k + r(d)), k = 60 (original paper's constant).
+/// Hybrid search: the lexical method (BM25F) and the semantic method
+/// (embeddings), each ranking files, fused by reciprocal rank.
 ///
-/// Results are keyed by logical location: a semantic chunk owns every keyword
-/// hit whose line falls inside its span. (The previous exact `file:line` key
-/// meant chunk-level semantic results and line-level keyword results never
-/// shared a key, so nothing ever actually fused.) Each ranking contributes at
-/// most one rank per key — its best. Fused entries keep the semantic chunk's
-/// content, which carries more context than a single matched line.
-/// `keyword_weight` scales the keyword arm's contribution. Literal matches
-/// (the user's pattern actually occurs in the corpus) deserve full weight;
-/// the synthesized term-OR fallback is a much weaker signal — at full weight
-/// its noise demotes results the semantic ranking already had right.
-fn rrf_fuse(
-    keyword_results: &[SearchResult],
-    semantic_results: &[SearchResult],
-    keyword_weight: f32,
-) -> Vec<SearchResult> {
-    const RRF_K: f32 = 60.0;
-
-    struct Fused {
-        result: SearchResult,
-        keyword_rank: Option<usize>,
-        semantic_rank: Option<usize>,
-    }
-
-    // Per-file semantic spans, for mapping keyword hits into chunks
-    let mut sem_spans: HashMap<String, Vec<(usize, usize, String)>> = HashMap::new();
-    let mut combined: HashMap<String, Fused> = HashMap::new();
-
-    for (rank, result) in semantic_results.iter().enumerate() {
-        let file = result.file.display().to_string();
-        let key = format!(
-            "{}:{}-{}",
-            file, result.span.line_start, result.span.line_end
-        );
-        sem_spans.entry(file).or_default().push((
-            result.span.line_start,
-            result.span.line_end,
-            key.clone(),
-        ));
-        combined.entry(key).or_insert(Fused {
-            result: result.clone(),
-            keyword_rank: None,
-            semantic_rank: Some(rank + 1),
-        });
-    }
-
-    for (rank, result) in keyword_results.iter().enumerate() {
-        let file = result.file.display().to_string();
-        let key = sem_spans
-            .get(&file)
-            .and_then(|spans| {
-                spans
-                    .iter()
-                    .find(|(start, end, _)| (*start..=*end).contains(&result.span.line_start))
-                    .map(|(_, _, key)| key.clone())
-            })
-            .unwrap_or_else(|| format!("{}:{}", file, result.span.line_start));
-        combined
-            .entry(key)
-            .and_modify(|fused| {
-                if fused.keyword_rank.is_none() {
-                    fused.keyword_rank = Some(rank + 1);
-                }
-            })
-            .or_insert(Fused {
-                result: result.clone(),
-                keyword_rank: Some(rank + 1),
-                semantic_rank: None,
-            });
-    }
-
-    combined
-        .into_values()
-        .map(|fused| {
-            let mut result = fused.result;
-            let rank_score = |rank: Option<usize>| rank.map_or(0.0, |r| 1.0 / (RRF_K + r as f32));
-            result.score =
-                keyword_weight * rank_score(fused.keyword_rank) + rank_score(fused.semantic_rank);
-            result
-        })
-        .collect()
-}
-
+/// The two fail on different queries: the lexical method cannot match a
+/// paraphrase, and the semantic method misses an exact term it has never seen,
+/// such as a name or a word in another language. Fusing by rank, not score,
+/// sidesteps that BM25 scores and cosine similarities are not comparable.
+///
+/// The unit is the file. A file's span and preview come from its best semantic
+/// chunk when it has one, otherwise from the lexical hit. `--term` feeds the
+/// lexical method and the query feeds the semantic one, so a natural-language
+/// question can be paired with the keywords a matching file would contain.
+/// `--threshold` filters the semantic method only, as it does in `--sem`.
 async fn hybrid_search_with_progress(
     options: &SearchOptions,
     progress_callback: Option<SearchProgressCallback>,
 ) -> Result<Vec<SearchResult>> {
-    // Fetch more candidates from each arm than the final cut: fusion can
-    // only promote results it sees, and both regex_search and the semantic
-    // ranking truncate to top_k internally — at the original top_k, a result
-    // boosted by the other arm would never reach the fusion stage at all.
-    let mut arm_options = options.clone();
-    arm_options.top_k = options.top_k.map(|k| (k * 5).max(50));
+    let top_k = options.top_k.unwrap_or(10);
+    // Fusion can only promote what it sees, so each method supplies more
+    // candidates than the final cut.
+    let depth = (top_k * 3).max(30);
 
     if let Some(ref callback) = progress_callback {
-        callback("Running keyword search...");
+        callback("Running lexical search...");
     }
-    let (keyword_results, keyword_is_fallback) = hybrid_keyword_search(&arm_options)?;
+    let mut lexical_options = options.clone();
+    lexical_options.top_k = Some(depth);
+    lexical_options.threshold = None;
+    let lexical = lexical_ranked(&lexical_options, false).await?;
 
     if let Some(ref callback) = progress_callback {
         callback("Running semantic search...");
     }
-    let semantic_results =
-        semantic_search_v3_with_progress(&arm_options, progress_callback).await?;
+    let mut semantic_options = options.clone();
+    semantic_options.top_k = Some(depth * CHUNKS_PER_FILE);
+    let semantic = semantic_search_v3_with_progress(&semantic_options, progress_callback).await?;
 
-    let keyword_weight = if keyword_is_fallback { 0.3 } else { 1.0 };
-    let mut rrf_results = rrf_fuse(&keyword_results, &semantic_results.matches, keyword_weight);
+    let lexical_weight = if options.terms.is_empty() {
+        QUERY_LEXICAL_WEIGHT
+    } else {
+        1.0
+    };
+    let mut fused = fuse_by_file(&lexical.results, &semantic.matches, lexical_weight);
+    fused.retain(|result| path_matches_include(&result.file, &options.include_patterns));
+    fused.truncate(top_k);
+    // A file only the lexical method found has no semantic chunk to show, so
+    // locate its span now, for the few that made the cut.
+    for result in &mut fused {
+        let lexical_only = result
+            .signals
+            .as_ref()
+            .is_some_and(|s| s.vec_rank.is_none());
+        if let (true, Some(content)) = (lexical_only, lexical.contents.get(&result.file)) {
+            (result.span, result.preview) = locate_lexical_span(
+                &result.file,
+                content,
+                &lexical.span_terms,
+                options.full_section,
+            );
+        }
+    }
+    Ok(fused)
+}
 
-    // Apply threshold filtering to raw RRF scores
-    if let Some(threshold) = options.threshold {
-        rrf_results.retain(|result| result.score >= threshold);
+/// Reciprocal rank fusion of two rankings at file level, the lexical one scaled
+/// by `lexical_weight`. Each list contributes its best rank per file; the
+/// semantic list arrives as chunks, best first, so a file's first chunk sets its
+/// rank. Ties break on path, for stable output.
+fn fuse_by_file(
+    lexical: &[SearchResult],
+    semantic: &[SearchResult],
+    lexical_weight: f32,
+) -> Vec<SearchResult> {
+    struct Entry {
+        result: SearchResult,
+        lex_rank: Option<usize>,
+        vec_rank: Option<usize>,
+    }
+    let mut entries: HashMap<PathBuf, Entry> = HashMap::new();
+
+    let mut vec_rank = 0;
+    for chunk in semantic {
+        if entries.contains_key(&chunk.file) {
+            continue;
+        }
+        vec_rank += 1;
+        entries.insert(
+            chunk.file.clone(),
+            Entry {
+                result: chunk.clone(),
+                lex_rank: None,
+                vec_rank: Some(vec_rank),
+            },
+        );
     }
 
-    rrf_results.retain(|result| path_matches_include(&result.file, &options.include_patterns));
+    let mut lex_rank = 0;
+    for hit in lexical {
+        let rank = lex_rank + 1;
+        let entry = entries.entry(hit.file.clone()).or_insert_with(|| Entry {
+            result: hit.clone(),
+            lex_rank: None,
+            vec_rank: None,
+        });
+        if entry.lex_rank.is_none() {
+            lex_rank = rank;
+            entry.lex_rank = Some(rank);
+        }
+    }
 
-    // Sort by RRF score (highest first)
-    rrf_results.sort_by(|a, b| {
+    let rank_score = |rank: Option<usize>| rank.map_or(0.0, |r| 1.0 / (RRF_K + r as f32));
+    let mut fused: Vec<SearchResult> = entries
+        .into_values()
+        .map(|entry| {
+            let score = lexical_weight * rank_score(entry.lex_rank) + rank_score(entry.vec_rank);
+            let mut result = entry.result;
+            result.score = score;
+            result.signals = Some(ck_core::SearchSignals {
+                lex_rank: entry.lex_rank,
+                vec_rank: entry.vec_rank,
+                rrf_score: score,
+            });
+            result
+        })
+        .collect();
+    fused.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.file.cmp(&b.file))
     });
-
-    if let Some(top_k) = options.top_k {
-        rrf_results.truncate(top_k);
-    }
-
-    Ok(rrf_results)
+    fused
 }
 
 fn build_globset(patterns: &[String]) -> GlobSet {
@@ -1608,6 +1629,7 @@ mod tests {
 
     fn make_result(file: &str, line_start: usize, line_end: usize, preview: &str) -> SearchResult {
         SearchResult {
+            signals: None,
             file: PathBuf::from(file),
             span: Span {
                 byte_start: 0,
@@ -1625,76 +1647,86 @@ mod tests {
     }
 
     #[test]
-    fn test_hybrid_query_terms_filters_stopwords_and_dedupes() {
-        let terms =
-            hybrid_query_terms("How does the RRF rank fusion merge rank results from regex?");
+    fn test_lexical_query_text_quotes_terms_and_splits_phrases() {
+        let options = SearchOptions {
+            query: "how are sessions expired".to_string(),
+            terms: vec![
+                "ttl".into(),
+                "max-age".into(),
+                "out of office".into(),
+                "say \"hi\"".into(),
+            ],
+            ..Default::default()
+        };
         assert_eq!(
-            terms,
-            vec!["rrf", "rank", "fusion", "merge", "results", "regex"]
+            lexical_query_text(&options),
+            "\"ttl\" \"max-age\" \"out of office\" \"office\" \"say  hi\""
         );
-
-        // Single short/stopword-only queries produce nothing
-        assert!(hybrid_query_terms("how does the it").is_empty());
+        let plain = SearchOptions {
+            query: "error AND handler".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(lexical_query_text(&plain), "error AND handler");
     }
 
     #[test]
-    fn test_rrf_fuse_merges_keyword_hit_into_containing_semantic_chunk() {
-        // Semantic chunk spans lines 10-50; keyword hit lands on line 20
+    fn test_fuse_by_file_one_rank_per_file_and_signals() {
         let semantic = vec![
-            make_result("src/a.rs", 10, 50, "fn fuse() { /* rrf */ }"),
-            make_result("src/b.rs", 1, 5, "unrelated chunk"),
+            make_result("a.md", 10, 20, "a chunk 1"),
+            make_result("a.md", 30, 40, "a chunk 2"),
+            make_result("b.md", 1, 5, "b chunk"),
         ];
-        let keyword = vec![make_result("src/a.rs", 20, 20, "let rrf_score = ranks")];
-
-        let fused = rrf_fuse(&keyword, &semantic, 1.0);
-
-        // The keyword hit fused into the chunk: 3 inputs, 2 outputs
-        assert_eq!(fused.len(), 2);
-        let chunk = fused
-            .iter()
-            .find(|r| r.file.as_path() == Path::new("src/a.rs"))
-            .unwrap();
-        // Chunk-level span retained, score = both lists at rank 1
-        assert_eq!((chunk.span.line_start, chunk.span.line_end), (10, 50));
-        let expected = 1.0 / 61.0 + 1.0 / 61.0;
-        assert!((chunk.score - expected).abs() < 1e-6);
-
-        // The fused result must outrank the semantic-only one
-        let other = fused
-            .iter()
-            .find(|r| r.file.as_path() == Path::new("src/b.rs"))
-            .unwrap();
-        assert!(chunk.score > other.score);
+        let lexical = vec![
+            make_result("c.md", 3, 3, "c"),
+            make_result("a.md", 33, 33, "a"),
+        ];
+        let fused = fuse_by_file(&lexical, &semantic, 1.0);
+        assert_eq!(fused.len(), 3);
+        assert_eq!(fused[0].file, PathBuf::from("a.md"));
+        // The semantic chunk supplies the span and preview of a file both methods found.
+        assert_eq!(fused[0].span.line_start, 10);
+        let signals = fused[0].signals.as_ref().unwrap();
+        assert_eq!((signals.lex_rank, signals.vec_rank), (Some(2), Some(1)));
+        let b = fused.iter().find(|r| r.file == Path::new("b.md")).unwrap();
+        assert_eq!(b.signals.as_ref().unwrap().vec_rank, Some(2));
+        let c = fused.iter().find(|r| r.file == Path::new("c.md")).unwrap();
+        assert_eq!(c.signals.as_ref().unwrap().lex_rank, Some(1));
+        assert_eq!(c.signals.as_ref().unwrap().vec_rank, None);
     }
 
     #[test]
-    fn test_rrf_fuse_keyword_only_hit_keeps_own_identity() {
-        let semantic = vec![make_result("src/a.rs", 10, 50, "chunk")];
-        let keyword = vec![make_result("src/z.rs", 7, 7, "standalone line")];
-
-        let fused = rrf_fuse(&keyword, &semantic, 1.0);
-        assert_eq!(fused.len(), 2);
-        let standalone = fused
-            .iter()
-            .find(|r| r.file.as_path() == Path::new("src/z.rs"))
-            .unwrap();
-        assert!((standalone.score - 1.0 / 61.0).abs() < 1e-6);
+    fn test_fuse_by_file_single_first_place_beats_two_weak_agreements() {
+        let names = |prefix: &str, n: usize| -> Vec<SearchResult> {
+            (0..n)
+                .map(|i| make_result(&format!("{prefix}{i}.md"), 1, 1, ""))
+                .collect()
+        };
+        // "top.md" is first for the lexical method only; "weak.md" is sixth in
+        // the lexical list and fifth in the semantic one.
+        let mut lexical = vec![make_result("top.md", 1, 1, "")];
+        lexical.extend(names("lex", 4));
+        lexical.push(make_result("weak.md", 1, 1, ""));
+        let mut semantic = names("sem", 4);
+        semantic.push(make_result("weak.md", 1, 1, ""));
+        let fused = fuse_by_file(&lexical, &semantic, 1.0);
+        let pos = |f: &str| fused.iter().position(|r| r.file == Path::new(f)).unwrap();
+        assert!(pos("top.md") < pos("weak.md"));
     }
 
     #[test]
-    fn test_rrf_fuse_counts_each_list_once_per_key() {
-        // Two keyword hits inside the same semantic chunk: only the best
-        // keyword rank contributes, not both.
-        let semantic = vec![make_result("src/a.rs", 10, 50, "chunk")];
-        let keyword = vec![
-            make_result("src/a.rs", 12, 12, "first hit"),
-            make_result("src/a.rs", 40, 40, "second hit"),
+    fn test_fuse_by_file_low_lexical_weight_cannot_overturn_semantic() {
+        let semantic = vec![
+            make_result("right.md", 1, 1, ""),
+            make_result("b.md", 1, 1, ""),
         ];
-
-        let fused = rrf_fuse(&keyword, &semantic, 1.0);
-        assert_eq!(fused.len(), 1);
-        let expected = 1.0 / 61.0 + 1.0 / 61.0; // sem rank 1 + best keyword rank 1
-        assert!((fused[0].score - expected).abs() < 1e-6);
+        let lexical = vec![
+            make_result("wrong.md", 1, 1, ""),
+            make_result("b.md", 1, 1, ""),
+        ];
+        let fused = fuse_by_file(&lexical, &semantic, QUERY_LEXICAL_WEIGHT);
+        assert_eq!(fused[0].file, Path::new("right.md"));
+        let full = fuse_by_file(&lexical, &semantic, 1.0);
+        assert_ne!(full[0].file, Path::new("right.md"));
     }
 
     #[test]

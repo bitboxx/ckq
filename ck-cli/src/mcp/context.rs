@@ -64,6 +64,7 @@ impl McpContext {
         }
 
         let default_search_options = SearchOptions {
+            terms: Vec::new(),
             mode: ck_core::SearchMode::Semantic,
             query: String::new(),
             path: cwd.clone(),

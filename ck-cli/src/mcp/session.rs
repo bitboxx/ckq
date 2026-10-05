@@ -346,6 +346,11 @@ impl SessionManager {
         hasher.update(options.case_insensitive.to_string().as_bytes());
         hasher.update(options.whole_word.to_string().as_bytes());
         hasher.update(options.context_lines.to_string().as_bytes());
+        // A separator per term, so ["a b"] and ["a", "b"] hash differently.
+        for term in &options.terms {
+            hasher.update(term.as_bytes());
+            hasher.update([0u8]);
+        }
 
         format!("{:x}", hasher.finalize())
     }
@@ -439,6 +444,7 @@ mod tests {
 
     fn create_test_search_options() -> SearchOptions {
         SearchOptions {
+            terms: Vec::new(),
             mode: SearchMode::Semantic,
             query: "test query".to_string(),
             path: PathBuf::from("/test/path"),
@@ -475,6 +481,7 @@ mod tests {
     fn create_test_results(count: usize) -> Vec<SearchResult> {
         (0..count)
             .map(|i| SearchResult {
+                signals: None,
                 file: PathBuf::from(format!("/test/file_{i}.rs")),
                 preview: format!("Test result {i} content"),
                 span: ck_core::Span {

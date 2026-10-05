@@ -40,14 +40,14 @@ QUICK START EXAMPLES:
     ckq --sem --limit 5 "authentication"   # Limit to top 5 results
     ckq --sem --threshold 0.8 "auth"   # Higher precision filtering
 
-  Lexical search (BM25 full-text search):
+  Lexical search (BM25 over file content and path):
     ckq --lex "user authentication"    # Full-text search with ranking
-    ckq --lex "http client request"    # Better than regex for phrases
+    ckq --lex "x" --term auth --term "session token"   # Rank by these terms instead
 
-  Hybrid search (combines regex + semantic):
-    ckq --hybrid "async function"      # Best of both worlds
-    ckq --hybrid "error" --limit 10    # Top 10 most relevant results (--limit is alias for --topk)
-    ckq --hybrid "bug" --threshold 0.02 # Only results with RRF score >= 0.02
+  Hybrid search (lexical + semantic, fused per file):
+    ckq --hybrid "how are sessions expired"            # The query drives both methods
+    ckq --hybrid "how are sessions expired" --term ttl --term expiry
+                                       # The query drives semantic, the terms drive lexical
     ckq --sem "auth" --scores          # Show similarity scores in output
 
   Index management:
@@ -95,14 +95,16 @@ QUICK START EXAMPLES:
 
   SEARCH MODES:
   --regex   : Classic grep behavior (default, no index needed)
-  --lex     : BM25 lexical search (auto-indexed before it runs)
+  --lex     : BM25 over content and path, ranked by file (auto-indexed before it runs)
   --sem     : Semantic/embedding search (auto-indexed, defaults: top 10, threshold from the model)
-  --hybrid  : Combines regex and semantic (shares the auto-indexing path)
+  --hybrid  : --lex and --sem fused by reciprocal rank, one result per file
+              (defaults as --sem). --json and --jsonl report each method's rank
+  --term T  : A keyword for the lexical method, in place of the query. Repeat it.
 
 RESULT FILTERING:
-  --topk, --limit N : Limit to top N results (default: 10 for semantic search)
+  --topk, --limit N : Limit to top N results (default: 10 for semantic and hybrid search)
   --threshold SCORE : Filter by minimum score (default: the model's own, see --help)
-                      (0.0-1.0 semantic/lexical, 0.01-0.05 hybrid RRF)
+                      (0.0-1.0; in --hybrid it filters the semantic method)
   --scores          : Show scores in output [0.950] file:line:match
 
 The semantic search understands meaning - searching for "error handling"
@@ -191,15 +193,22 @@ struct Cli {
 
     #[arg(
         long = "lex",
-        help = "Lexical search - BM25 full-text search with ranking"
+        help = "Lexical search - BM25 over file content and path, one result per file"
     )]
     lexical: bool,
 
     #[arg(
         long = "hybrid",
-        help = "Hybrid search - combines regex and semantic results"
+        help = "Hybrid search - lexical and semantic search fused by reciprocal rank, one result per file"
     )]
     hybrid: bool,
+
+    #[arg(
+        long = "term",
+        value_name = "TERM",
+        help = "A keyword for the lexical method of --lex and --hybrid, used in place of the query and matched as a phrase. Repeat for more. In --hybrid the query still drives the semantic method"
+    )]
+    terms: Vec<String>,
 
     #[arg(long = "regex", help = "Regex search mode (default, grep-compatible)")]
     regex: bool,
@@ -208,14 +217,14 @@ struct Cli {
         long = "topk",
         alias = "limit",
         value_name = "N",
-        help = "Limit results to top N matches (alias: --limit) [default: 10 for semantic search]"
+        help = "Limit results to top N matches (alias: --limit) [default: 10 for semantic and hybrid search]"
     )]
     top_k: Option<usize>,
 
     #[arg(
         long = "threshold",
         value_name = "SCORE",
-        help = "Minimum score threshold (0.0-1.0 for semantic/lexical, 0.01-0.05 for hybrid RRF) [default: the model's own]"
+        help = "Minimum score threshold, 0.0-1.0; in --hybrid it filters the semantic method [default: the model's own]"
     )]
     threshold: Option<f32>,
 
@@ -372,7 +381,7 @@ struct Cli {
             "pattern", "files", "line_numbers", "no_filenames", "with_filenames",
             "files_with_matches", "files_without_matches", "ignore_case", "word_regexp",
             "fixed_strings", "recursive", "context", "after_context", "before_context",
-            "semantic", "lexical", "hybrid", "regex", "top_k", "threshold", "show_scores",
+            "semantic", "lexical", "hybrid", "terms", "regex", "top_k", "threshold", "show_scores",
             "json", "json_v1", "jsonl", "no_snippet", "reindex", "exclude", "no_default_excludes",
             "no_ignore", "full_section", "index", "clean", "clean_orphans", "switch_model",
             "force", "add", "status", "status_verbose", "inspect", "dump_chunks", "model", "rerank", "rerank_model", "tui"
@@ -394,7 +403,7 @@ struct Cli {
             "line_numbers", "no_filenames", "with_filenames",
             "files_with_matches", "files_without_matches", "ignore_case", "word_regexp",
             "fixed_strings", "recursive", "context", "after_context", "before_context",
-            "semantic", "lexical", "hybrid", "regex", "top_k", "threshold", "show_scores",
+            "semantic", "lexical", "hybrid", "terms", "regex", "top_k", "threshold", "show_scores",
             "json", "json_v1", "jsonl", "no_snippet", "reindex", "exclude", "no_default_excludes",
             "no_ignore", "full_section", "index", "clean", "clean_orphans", "switch_model",
             "force", "add", "status", "status_verbose", "inspect", "dump_chunks", "model", "rerank", "rerank_model", "serve"
@@ -1436,6 +1445,10 @@ async fn run_cli_mode(cli: Cli) -> Result<()> {
     }
 
     // Validate conflicting flags
+    if !cli.terms.is_empty() && !cli.lexical && !cli.hybrid {
+        eprintln!("Error: --term applies to --lex and --hybrid only");
+        std::process::exit(1);
+    }
     if cli.files_with_matches && cli.files_without_matches {
         eprintln!("Error: Cannot use -l and -L together");
         std::process::exit(1);
@@ -1593,7 +1606,7 @@ fn build_options(cli: &Cli, reindex: bool, _repo_root: Option<&Path>) -> SearchO
 
     // Set intelligent defaults for semantic search
     let default_topk = match mode {
-        SearchMode::Semantic => Some(10),
+        SearchMode::Semantic | SearchMode::Hybrid => Some(10),
         _ => None,
     };
     // The model's own number, not a shared constant: scores do not mean the
@@ -1602,7 +1615,7 @@ fn build_options(cli: &Cli, reindex: bool, _repo_root: Option<&Path>) -> SearchO
     // same ones between 0.42 and 0.74, so upstream's flat 0.6 threw away most
     // of what EmbeddingGemma got right and read as an empty corpus.
     let default_threshold = match mode {
-        SearchMode::Semantic => Some(
+        SearchMode::Semantic | SearchMode::Hybrid => Some(
             ck_models::ModelRegistry::default()
                 .resolve(cli.model.as_deref())
                 .map(|(_, config)| config.default_threshold)
@@ -1612,6 +1625,7 @@ fn build_options(cli: &Cli, reindex: bool, _repo_root: Option<&Path>) -> SearchO
     };
 
     SearchOptions {
+        terms: cli.terms.clone(),
         mode,
         query: String::new(),
         path: PathBuf::from("."),
@@ -1911,11 +1925,11 @@ async fn run_search(
                 lang: result.lang,
                 symbol: result.symbol.clone(),
                 score: result.score,
-                signals: ck_core::SearchSignals {
+                signals: result.signals.clone().unwrap_or(ck_core::SearchSignals {
                     lex_rank: None,
                     vec_rank: None,
                     rrf_score: result.score,
-                },
+                }),
                 preview: result.preview.clone(),
                 model: "none".to_string(),
             };

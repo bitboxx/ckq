@@ -238,6 +238,9 @@ pub struct SearchResult {
     pub chunk_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index_epoch: Option<u64>,
+    /// Hybrid search only: where each method ranked this file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signals: Option<SearchSignals>,
 }
 
 /// Enhanced search results that include near-miss information for threshold queries
@@ -273,8 +276,13 @@ pub struct JsonlSearchResult {
     pub chunk_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index_epoch: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signals: Option<SearchSignals>,
 }
 
+/// Where each method of a hybrid search ranked a file, 1-based. `None` means that
+/// method did not return the file at all, so a result with both ranks set is one
+/// the two methods corroborate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchSignals {
     pub lex_rank: Option<usize>,
@@ -367,6 +375,10 @@ pub struct SearchOptions {
     pub rerank: bool,
     pub rerank_model: Option<String>,
     pub embedding_model: Option<String>,
+    /// Terms for the lexical method (`--lex`, and the lexical half of `--hybrid`),
+    /// in place of the query. Each is matched as a phrase. The query still drives
+    /// the semantic half, so a question and its keywords can be given separately.
+    pub terms: Vec<String>,
 }
 
 impl JsonlSearchResult {
@@ -387,6 +399,7 @@ impl JsonlSearchResult {
             },
             chunk_hash: result.chunk_hash.clone(),
             index_epoch: result.index_epoch,
+            signals: result.signals.clone(),
         }
     }
 }
@@ -425,6 +438,7 @@ impl Default for SearchOptions {
             rerank: false,
             rerank_model: None,
             embedding_model: None,
+            terms: Vec::new(),
         }
     }
 }
@@ -1072,6 +1086,7 @@ mod tests {
     #[test]
     fn test_search_result_serialization() {
         let result = SearchResult {
+            signals: None,
             file: PathBuf::from("test.txt"),
             span: Span {
                 byte_start: 0,
@@ -1102,6 +1117,7 @@ mod tests {
     #[test]
     fn test_jsonl_search_result_conversion() {
         let result = SearchResult {
+            signals: None,
             file: PathBuf::from("src/auth.rs"),
             span: Span {
                 byte_start: 1203,

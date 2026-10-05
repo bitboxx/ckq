@@ -81,7 +81,11 @@ pub async fn semantic_search_v3_with_progress(
     }
 
     if timing {
-        eprintln!("timing: sidecar load {:?} ({} chunks)", t0.elapsed(), file_chunks.len());
+        eprintln!(
+            "timing: sidecar load {:?} ({} chunks)",
+            t0.elapsed(),
+            file_chunks.len()
+        );
     }
     let t1 = std::time::Instant::now();
     if file_chunks.is_empty() {
@@ -194,6 +198,7 @@ pub async fn semantic_search_v3_with_progress(
         };
 
         let search_result = SearchResult {
+            signals: None,
             file: file_path.clone(),
             span: chunk.span.clone(),
             score: similarity,

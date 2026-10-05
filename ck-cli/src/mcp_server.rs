@@ -177,9 +177,23 @@ pub struct RegexSearchRequest {
     pub snippet_length: Option<usize>,
 }
 
+/// The default model's own score threshold, as the CLI uses. Scores do not mean
+/// the same thing across models, so upstream's flat 0.6 dropped most correct
+/// hits for a model that scores lower.
+fn model_default_threshold() -> f32 {
+    ck_models::ModelRegistry::default()
+        .resolve(None)
+        .map(|(_, config)| config.default_threshold)
+        .unwrap_or(0.6)
+}
+
 #[derive(Serialize, Deserialize, JsonSchema, Default)]
 pub struct HybridSearchRequest {
+    /// Drives the semantic method, and the lexical one when `terms` is empty.
     pub query: String,
+    /// Keywords for the lexical method, each matched as a phrase.
+    #[schemars(with = "Vec<String>")]
+    pub terms: Option<Vec<String>>,
     pub path: String,
     pub top_k: Option<usize>,
     pub threshold: Option<f32>,
@@ -191,9 +205,6 @@ pub struct HybridSearchRequest {
     pub use_default_excludes: Option<bool>,
     pub rerank: Option<bool>,
     pub rerank_model: Option<String>,
-    pub case_insensitive: Option<bool>,
-    pub whole_word: Option<bool>,
-    pub fixed_string: Option<bool>,
     pub before_context_lines: Option<usize>,
     pub after_context_lines: Option<usize>,
     // Pagination parameters
@@ -338,12 +349,10 @@ impl PaginationParams for HybridSearchRequest {
     fn get_search_params(&self) -> serde_json::Value {
         json!({
             "top_k": self.top_k,
-            "threshold": self.threshold.unwrap_or(0.02),
+            "threshold": self.threshold.unwrap_or_else(model_default_threshold),
             "rerank": self.rerank.unwrap_or(false),
             "rerank_model": self.rerank_model,
-            "case_insensitive": self.case_insensitive.unwrap_or(false),
-            "whole_word": self.whole_word.unwrap_or(false),
-            "fixed_string": self.fixed_string.unwrap_or(false),
+            "terms": self.terms,
             "include_patterns": self.include_patterns,
             "exclude_patterns": self.exclude_patterns,
             "respect_gitignore": self.respect_gitignore.unwrap_or(true),
@@ -423,7 +432,7 @@ impl ServerHandler for CkMcpServer {
 
 - **semantic_search**: Find code by describing what it does, not exact text. Best for conceptual searches like "function that handles authentication" or "code that processes payments"
 - **regex_search**: Traditional pattern matching. Use for exact text, symbols, or specific code patterns
-- **hybrid_search**: Combines semantic and regex search with RRF ranking. Best when you want both conceptual matches and specific keywords
+- **hybrid_search**: Lexical (BM25 over content and path) and semantic search, fused by reciprocal rank, one result per file. Pass the question as `query` and the keywords a matching file would contain as `terms`
 - **index_status**: Check if a directory is indexed and ready for semantic search
 - **reindex**: Force rebuild of the semantic index when code has changed
 - **health_check**: Verify the server is running and responsive
@@ -433,7 +442,7 @@ impl ServerHandler for CkMcpServer {
 1. Semantic search works best with natural language queries describing functionality
 2. The first semantic search in a directory triggers automatic indexing
 3. Use regex_search for exact matches, variable names, or specific syntax
-4. Hybrid search is ideal when you know some keywords but want related code too
+4. Hybrid search is ideal when you know some keywords but want related code too. Each result reports the rank each method gave it; a file both methods found is corroborated
 5. All searches respect .gitignore by default
 6. Use pagination parameters to control result size and prevent large token responses
 
@@ -450,7 +459,7 @@ All search tools support:
 
 - Semantic: "error handling for database connections"
 - Regex: "async fn.*handle_request"
-- Hybrid: "authentication login" (finds both exact matches and conceptually related code)
+- Hybrid: query "how are sessions expired", terms ["ttl", "expiry"]
 - Paginated: Use page_size=25 and follow next_cursor for large result sets"#)
     }
 
@@ -1029,11 +1038,12 @@ impl CkMcpServer {
         let after_context_lines = request.after_context_lines.unwrap_or(context_lines);
 
         let options = SearchOptions {
+            terms: Vec::new(),
             mode: SearchMode::Semantic,
             query,
             path: path_buf,
             top_k: top_k.or(Some(DEFAULT_MCP_TOP_K)),
-            threshold: threshold.or(Some(0.6)),
+            threshold: threshold.or(Some(model_default_threshold())),
             case_insensitive: request.case_insensitive.unwrap_or(false),
             whole_word: request.whole_word.unwrap_or(false),
             fixed_string: request.fixed_string.unwrap_or(false),
@@ -1239,6 +1249,7 @@ impl CkMcpServer {
         let after_context_lines = request.after_context_lines.unwrap_or(context_lines);
 
         let options = SearchOptions {
+            terms: Vec::new(),
             mode: SearchMode::Lexical,
             query,
             path: path_buf,
@@ -1373,6 +1384,7 @@ impl CkMcpServer {
         let include_snippet = request.include_snippet.unwrap_or(true);
 
         let options = SearchOptions {
+            terms: Vec::new(),
             mode: SearchMode::Regex,
             query: pattern,
             path: path_buf,
@@ -1508,14 +1520,16 @@ impl CkMcpServer {
         let after_context_lines = request.after_context_lines.unwrap_or(context_lines);
 
         let options = SearchOptions {
+            terms: request.terms.clone().unwrap_or_default(),
             mode: SearchMode::Hybrid,
             query,
             path: path_buf,
             top_k: top_k.or(Some(DEFAULT_MCP_TOP_K)), // User-defined or MCP default
-            threshold: threshold.or(Some(0.02)),      // Lower threshold for hybrid (RRF scores)
-            case_insensitive: request.case_insensitive.unwrap_or(false),
-            whole_word: request.whole_word.unwrap_or(false),
-            fixed_string: request.fixed_string.unwrap_or(false),
+            // Filters the semantic method, as in semantic_search.
+            threshold: threshold.or(Some(model_default_threshold())),
+            case_insensitive: false,
+            whole_word: false,
+            fixed_string: false,
             line_numbers: false,
             context_lines,
             before_context_lines,
@@ -1793,6 +1807,7 @@ impl CkMcpServer {
 
         // Create search options for reindexing
         let options = SearchOptions {
+            terms: Vec::new(),
             mode: SearchMode::Semantic, // Use semantic mode to ensure embeddings are computed
             query: String::new(),       // Empty query for reindexing only
             path: path_buf.clone(),

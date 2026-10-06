@@ -685,6 +685,12 @@ async fn run_index_workflow(
         }
     };
 
+    // Repack the vectors now, so the first search after an index run reads one
+    // file instead of every sidecar. Failure only costs that search the slow path.
+    if let Err(e) = ck_engine::refresh_vector_cache(path) {
+        tracing::debug!("vector cache refresh failed: {e}");
+    }
+
     let elapsed = start_time.elapsed();
     let files_per_sec = if elapsed.as_secs_f64() > 0.0 {
         stats.files_indexed as f64 / elapsed.as_secs_f64()

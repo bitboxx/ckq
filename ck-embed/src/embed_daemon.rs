@@ -123,7 +123,10 @@ pub fn bind(path: &Path) -> Result<Option<UnixListener>> {
         let _ = std::fs::remove_file(path);
     }
     match UnixListener::bind(path) {
-        Ok(l) => Ok(Some(l)),
+        Ok(l) => {
+            reap_stale(path, LOG_KEEP);
+            Ok(Some(l))
+        }
         // Lost the race to another invocation starting at the same moment; it won.
         Err(_) if try_connect(path).is_some() => Ok(None),
         Err(e) => Err(e).context("binding the embed daemon socket"),
@@ -174,6 +177,53 @@ pub fn request(stream: &mut UnixStream, texts: &[String], pin: bool) -> Result<V
         );
     }
     Ok(out)
+}
+
+/// How long a log with no socket beside it is kept: long enough to read why a
+/// daemon failed to start, short enough that the directory does not grow.
+const LOG_KEEP: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Clear what dead daemons left in the socket directory. The socket key carries
+/// the binary's stamp, so every rebuild and every model trial leaves a new socket
+/// and log, and `bind` only ever clears a dead socket at its own key; without
+/// this the directory grew by a pair per build and buried the one log worth
+/// reading. A socket goes when nothing answers on it, since a live daemon always
+/// accepts; a log goes with its socket, or alone once it is older than `log_keep`.
+/// Only `ckq-embed-*` files are touched, and never the caller's own.
+fn reap_stale(own: &Path, log_keep: Duration) {
+    let Some(dir) = own.parent() else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let own_log = log_path(own);
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == own || path == own_log {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with("ckq-embed-") {
+            continue;
+        }
+        if name.ends_with(".sock") {
+            if try_connect(&path).is_none() {
+                let _ = std::fs::remove_file(&path);
+                let _ = std::fs::remove_file(log_path(&path));
+            }
+        } else if let Some(socket) = name.strip_suffix(".log") {
+            let orphan = !dir.join(socket).exists();
+            let old = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > log_keep);
+            if orphan && old {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
 }
 
 /// Where a daemon's stderr goes. One per socket, so two models do not share.
@@ -331,7 +381,9 @@ where
             Err(e) => return Err(e).context("accepting on the embed daemon socket"),
         }
     }
+    // An idle exit is a clean one, so its log holds nothing worth keeping.
     let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(log_path(&path));
     Ok(())
 }
 
@@ -401,5 +453,56 @@ where
     }
     if conn_pinned {
         pinned.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ckq-reap-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn reap_clears_dead_sockets_and_old_orphan_logs_only() {
+        let dir = scratch("mixed");
+        let own = dir.join("ckq-embed-0000000000000001.sock");
+        let _own_listener = UnixListener::bind(&own).unwrap();
+        std::fs::write(log_path(&own), "own").unwrap();
+
+        // Still listening: another live daemon.
+        let live = dir.join("ckq-embed-0000000000000002.sock");
+        let _live_listener = UnixListener::bind(&live).unwrap();
+        std::fs::write(log_path(&live), "live").unwrap();
+
+        // A socket whose daemon was killed: the file stays, nothing answers.
+        let dead = dir.join("ckq-embed-0000000000000003.sock");
+        drop(UnixListener::bind(&dead).unwrap());
+        std::fs::write(log_path(&dead), "dead").unwrap();
+
+        // A log with no socket: a failed start. Fresh, so kept.
+        let failed = dir.join("ckq-embed-0000000000000004.sock.log");
+        std::fs::write(&failed, "failed").unwrap();
+
+        // Not ours to touch.
+        let other = dir.join("unrelated.sock.log");
+        std::fs::write(&other, "x").unwrap();
+
+        reap_stale(&own, LOG_KEEP);
+        assert!(own.exists() && log_path(&own).exists());
+        assert!(live.exists() && log_path(&live).exists());
+        assert!(!dead.exists() && !log_path(&dead).exists());
+        assert!(failed.exists());
+        assert!(other.exists());
+
+        // With no grace period the orphan log goes too.
+        reap_stale(&own, Duration::ZERO);
+        assert!(!failed.exists());
+        assert!(other.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

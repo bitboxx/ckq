@@ -14,7 +14,7 @@ use tantivy::{Index, ReloadPolicy, TantivyDocument, doc};
 use walkdir::WalkDir;
 
 mod semantic_v3;
-pub use semantic_v3::{semantic_search_v3, semantic_search_v3_with_progress};
+pub use semantic_v3::{refresh_vector_cache, semantic_search_v3, semantic_search_v3_with_progress};
 
 pub type SearchProgressCallback = Box<dyn Fn(&str) + Send + Sync>;
 pub type IndexingProgressCallback = Box<dyn Fn(&str) + Send + Sync>;

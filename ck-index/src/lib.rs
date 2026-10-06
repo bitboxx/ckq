@@ -1,3 +1,5 @@
+pub mod vector_cache;
+
 use anyhow::Result;
 use ck_core::{
     FileMetadata, Language, Span, compute_chunk_hash, compute_file_hash, get_sidecar_path,
@@ -2401,6 +2403,7 @@ mod cleanup_validation {
         if sidecar_path.exists() {
             fs::remove_file(&sidecar_path)?;
             stats.orphaned_sidecars_removed += 1;
+            vector_cache::invalidate(index_dir);
         }
 
         // Remove content cache for PDFs
@@ -2445,6 +2448,7 @@ mod cleanup_validation {
                     {
                         fs::remove_file(sidecar_path)?;
                         stats.orphaned_sidecars_removed += 1;
+                        vector_cache::invalidate(index_dir);
                     }
                 }
             }

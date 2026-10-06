@@ -38,53 +38,46 @@ pub async fn semantic_search_v3_with_progress(
     ck_core::check_index_root_marker(&index_root)?;
 
     if let Some(ref callback) = progress_callback {
-        callback("Loading embeddings from sidecar files...");
+        callback("Loading embeddings...");
     }
 
     // Build the path scope filter once, up front. Previously this was
     // applied AFTER top_k inside the iteration loop, so a whole-codebase
     // index plus a narrow `path=` query could return zero matches when
     // the global top_k results all lived outside the requested scope.
-    // Filtering at collection time fixes that and skips embedding loads
-    // for chunks we'd discard anyway.
-    let scope = PathScope::new(&options.path);
-
-    // Collect all sidecar files and their embeddings
-    let mut file_chunks: Vec<(std::path::PathBuf, ck_index::ChunkEntry)> = Vec::new();
+    let scope = PathScope::new(&options.path, &index_root);
     let timing = std::env::var_os("CKQ_TIMING").is_some();
     let t0 = std::time::Instant::now();
 
-    for entry in WalkDir::new(&index_dir) {
-        let entry = entry?;
-        if entry.file_type().is_file() {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("ck") {
-                // Load the sidecar file
-                if let Ok(index_entry) = ck_index::load_index_entry(path) {
-                    let original_file = reconstruct_original_path(path, &index_dir, &index_root);
-                    if let Some(original_file) = original_file {
-                        if !super::path_matches_include(&original_file, &options.include_patterns) {
-                            continue;
-                        }
-                        if !scope.contains(&original_file) {
-                            continue;
-                        }
-                        for chunk in index_entry.chunks {
-                            if chunk.embedding.is_some() {
-                                file_chunks.push((original_file.clone(), chunk));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let (vectors, cache_hit) = load_all_chunks(&index_dir, &index_root)?;
+    // The include and scope checks run once per file, not once per chunk. An
+    // include pattern that covers the whole index matches every file, so skip
+    // the check: it canonicalizes each path, a system call per indexed file.
+    let root = index_root
+        .canonicalize()
+        .unwrap_or_else(|_| index_root.clone());
+    let includes_everything = options
+        .include_patterns
+        .iter()
+        .any(|pattern| pattern.is_dir && root.starts_with(&pattern.path));
+    let keep: Vec<bool> = vectors
+        .files
+        .iter()
+        .map(|file| {
+            (includes_everything || super::path_matches_include(file, &options.include_patterns))
+                && scope.contains(file)
+        })
+        .collect();
+    let file_chunks: Vec<usize> = (0..vectors.len())
+        .filter(|&i| keep[vectors.chunks[i].0 as usize])
+        .collect();
 
     if timing {
         eprintln!(
-            "timing: sidecar load {:?} ({} chunks)",
+            "timing: vector load {:?} ({} chunks, {})",
             t0.elapsed(),
-            file_chunks.len()
+            file_chunks.len(),
+            if cache_hit { "cache" } else { "sidecars" }
         );
     }
     let t1 = std::time::Instant::now();
@@ -153,14 +146,10 @@ pub async fn semantic_search_v3_with_progress(
     }
 
     // Compute similarities
-    let mut similarities: Vec<(f32, &std::path::PathBuf, &ck_index::ChunkEntry)> = Vec::new();
-
-    for (file_path, chunk) in &file_chunks {
-        if let Some(ref embedding) = chunk.embedding {
-            let similarity = cosine_similarity(query_embedding, embedding);
-            similarities.push((similarity, file_path, chunk));
-        }
-    }
+    let mut similarities: Vec<(f32, usize)> = file_chunks
+        .iter()
+        .map(|&i| (cosine_similarity(query_embedding, vectors.embedding(i)), i))
+        .collect();
 
     // Sort by similarity (highest first)
     similarities.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -170,14 +159,16 @@ pub async fn semantic_search_v3_with_progress(
     let mut closest_below_threshold: Option<SearchResult> = None;
     let limit = options.top_k.unwrap_or(similarities.len());
 
-    for (similarity, file_path, chunk) in similarities.into_iter().take(limit) {
+    for (similarity, i) in similarities.into_iter().take(limit) {
+        let (file, span) = &vectors.chunks[i];
+        let file_path = &vectors.files[*file as usize];
         let is_below_threshold = options
             .threshold
             .is_some_and(|threshold| similarity < threshold);
 
         // Extract content from the file using the span, skip if file doesn't exist
         let content = if options.full_section {
-            match extract_content_from_span(file_path, &chunk.span).await {
+            match extract_content_from_span(file_path, span).await {
                 Ok(content) => content,
                 Err(_) => {
                     // Skip files that no longer exist (stale index entries)
@@ -185,7 +176,7 @@ pub async fn semantic_search_v3_with_progress(
                 }
             }
         } else {
-            match extract_content_from_span(file_path, &chunk.span).await {
+            match extract_content_from_span(file_path, span).await {
                 Ok(full_content) => {
                     // Take first 3 lines for preview
                     full_content.lines().take(3).collect::<Vec<_>>().join("\n")
@@ -200,7 +191,7 @@ pub async fn semantic_search_v3_with_progress(
         let search_result = SearchResult {
             signals: None,
             file: file_path.clone(),
-            span: chunk.span.clone(),
+            span: span.clone(),
             score: similarity,
             preview: content,
             lang: ck_core::Language::from_path(file_path),
@@ -290,6 +281,57 @@ pub async fn semantic_search_v3_with_progress(
     })
 }
 
+/// Every chunk with an embedding in the index, from the packed cache when it is
+/// current, otherwise from the sidecars, which then refresh the cache. The bool
+/// says whether the cache was used.
+fn load_all_chunks(
+    index_dir: &Path,
+    index_root: &Path,
+) -> Result<(ck_index::vector_cache::VectorSet, bool)> {
+    use ck_index::vector_cache;
+    if let Some(chunks) = vector_cache::load(index_dir) {
+        return Ok((chunks, true));
+    }
+    // Taken before the walk: if the index changes while the sidecars are being
+    // read, the save below sees a different manifest and writes nothing.
+    let stamp = vector_cache::manifest_stamp(index_dir);
+    let mut chunks = vector_cache::VectorSet::default();
+    for entry in WalkDir::new(index_dir) {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type().is_file() || path.extension().and_then(|s| s.to_str()) != Some("ck") {
+            continue;
+        }
+        let Ok(index_entry) = ck_index::load_index_entry(path) else {
+            continue;
+        };
+        let Some(original_file) = reconstruct_original_path(path, index_dir, index_root) else {
+            continue;
+        };
+        for chunk in index_entry.chunks {
+            if let Some(embedding) = chunk.embedding {
+                chunks.push(&original_file, chunk.span, &embedding);
+            }
+        }
+    }
+    if let Some(stamp) = stamp
+        && let Err(e) = vector_cache::save(index_dir, stamp, &chunks)
+    {
+        tracing::debug!("could not write the vector cache: {e}");
+    }
+    Ok((chunks, false))
+}
+
+/// Rebuild the packed vector cache for the index at or above `path`, if it is
+/// stale. Run after indexing, so the next search finds it current.
+pub fn refresh_vector_cache(path: &Path) -> Result<()> {
+    let Some(index_root) = find_nearest_index_root(path) else {
+        return Ok(());
+    };
+    let index_dir = ck_core::index_dir(&index_root);
+    load_all_chunks(&index_dir, &index_root).map(|_| ())
+}
+
 /// Scope a semantic query to a file, a directory, or the whole index.
 ///
 /// Cached canonical form of `options.path` so per-chunk membership
@@ -301,11 +343,16 @@ enum PathScope {
 }
 
 impl PathScope {
-    fn new(path: &Path) -> Self {
+    fn new(path: &Path, index_root: &Path) -> Self {
         if path == Path::new(".") {
             return Self::All;
         }
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        // Searching the whole index is the common case; it needs no per-file
+        // canonicalize, which is a system call per indexed file.
+        if index_root.canonicalize().ok().as_deref() == Some(canonical.as_path()) {
+            return Self::All;
+        }
         if path.is_file() {
             Self::File(canonical)
         } else {
@@ -375,7 +422,7 @@ mod path_scope_tests {
 
     #[test]
     fn all_matches_anything() {
-        let scope = PathScope::new(Path::new("."));
+        let scope = PathScope::new(Path::new("."), Path::new("/nonexistent-root"));
         assert!(scope.contains(Path::new("/tmp/whatever")));
         assert!(scope.contains(Path::new("./relative")));
     }
@@ -392,9 +439,16 @@ mod path_scope_tests {
         fs::write(&inside_file, "x").unwrap();
         fs::write(&outside_file, "y").unwrap();
 
-        let scope = PathScope::new(&scoped);
+        let scope = PathScope::new(&scoped, tmp.path());
         assert!(scope.contains(&inside_file));
         assert!(!scope.contains(&outside_file));
+    }
+
+    #[test]
+    fn the_index_root_itself_is_all() {
+        let tmp = TempDir::new().unwrap();
+        let scope = PathScope::new(tmp.path(), tmp.path());
+        assert!(matches!(scope, PathScope::All));
     }
 
     #[test]
@@ -405,7 +459,7 @@ mod path_scope_tests {
         fs::write(&target, "x").unwrap();
         fs::write(&other, "y").unwrap();
 
-        let scope = PathScope::new(&target);
+        let scope = PathScope::new(&target, &tmp.path().join("elsewhere"));
         assert!(scope.contains(&target));
         assert!(!scope.contains(&other));
     }

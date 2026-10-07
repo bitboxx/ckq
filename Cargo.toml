@@ -70,7 +70,7 @@ ignore = "0.4"
 ctrlc = "3.5"
 pdf-extract = "0.9"
 uuid = { version = "1.23", features = ["v4", "serde"] }
-base64 = "0.22"
+base64 = "0.23"
 sha2 = "0.10"
 hf-hub = { version = "0.5.0", default-features = false, features = ["ureq"] }
 # default-features off drops `esaxx_fast`, and with it the esaxx-rs C++ that

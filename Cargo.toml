@@ -46,7 +46,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rayon = "1.12"
 walkdir = "2.4"
 fs4 = "0.13"
-tantivy = "0.24"
+tantivy = "0.26"
 tree-sitter = "0.25"
 tree-sitter-python = "0.25"
 tree-sitter-typescript = "0.23"

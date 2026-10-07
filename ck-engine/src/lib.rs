@@ -1110,9 +1110,9 @@ async fn lexical_ranked(options: &SearchOptions, locate: bool) -> Result<Lexical
     });
 
     let top_docs = if let Some(top_k) = options.top_k {
-        searcher.search(&query, &TopDocs::with_limit(top_k))?
+        searcher.search(&query, &TopDocs::with_limit(top_k).order_by_score())?
     } else {
-        searcher.search(&query, &TopDocs::with_limit(100))?
+        searcher.search(&query, &TopDocs::with_limit(100).order_by_score())?
     };
 
     // First, collect all results with raw scores
@@ -2457,8 +2457,8 @@ mod tests {
         let (lenient, errors) = query_parser.parse_query_lenient("zebra");
         assert!(errors.is_empty(), "valid query must parse without errors");
 
-        let strict_hits = searcher.search(&strict, &TopDocs::with_limit(10)).unwrap();
-        let lenient_hits = searcher.search(&lenient, &TopDocs::with_limit(10)).unwrap();
+        let strict_hits = searcher.search(&strict, &TopDocs::with_limit(10).order_by_score()).unwrap();
+        let lenient_hits = searcher.search(&lenient, &TopDocs::with_limit(10).order_by_score()).unwrap();
         assert_eq!(strict_hits.len(), lenient_hits.len());
         for ((s_score, s_addr), (l_score, l_addr)) in strict_hits.iter().zip(lenient_hits.iter()) {
             assert_eq!(s_addr, l_addr, "same documents in the same order");

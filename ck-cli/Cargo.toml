@@ -46,7 +46,7 @@ glob = { workspace = true }
 globset = { workspace = true }
 regex = { workspace = true }
 indicatif = "0.17"
-console = "0.15"
+console = "0.16"
 owo-colors = "4.3"
 walkdir = "2.3"
 ratatui = "0.26"

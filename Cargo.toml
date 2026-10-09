@@ -68,7 +68,7 @@ glob = "0.3"
 globset = "0.4"
 ignore = "0.4"
 ctrlc = "3.5"
-pdf-extract = "0.9"
+pdf-extract = "0.12"
 uuid = { version = "1.23", features = ["v4", "serde"] }
 base64 = "0.23"
 sha2 = "0.10"

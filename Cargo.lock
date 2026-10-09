@@ -558,7 +558,7 @@ dependencies = [
  "ck-models",
  "ck-tui",
  "clap",
- "console 0.15.11",
+ "console 0.16.3",
  "crossterm",
  "dirs",
  "glob",

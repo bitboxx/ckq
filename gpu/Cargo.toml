@@ -1,0 +1,21 @@
+# Not a real crate: a feature forwarder. Cargo cannot make one crate's default
+# feature platform-specific, and it refuses the same crate twice under two
+# names, so ckq cannot turn llama-cpp-2's `vulkan` on by default for Linux and
+# Windows only through its own [features]. It depends on this path crate
+# instead, target-gated to non-macOS and optional; enabling ckq's `vulkan` or
+# `cuda` feature pulls it in, and feature unification with ckq's own
+# llama-cpp-2 dependency forwards the backend to the one copy of the crate.
+[package]
+name = "ckq-gpu"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88.0"
+publish = false
+
+[dependencies]
+# Same version as ckq's own dependency: one resolved copy, one build.
+llama-cpp-2 = "0.1.157"
+
+[features]
+vulkan = ["llama-cpp-2/vulkan"]
+cuda = ["llama-cpp-2/cuda"]

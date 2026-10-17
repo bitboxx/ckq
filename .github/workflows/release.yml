@@ -1,5 +1,12 @@
 # A release is a tag X.Y.Z (no v prefix) that matches the version in
 # Cargo.toml. Binaries only: no crates.io, no npm.
+#
+# Linux and Windows binaries build with Vulkan on (the cargo default away
+# from macOS), so the runners need the Vulkan build dependencies: apt
+# packages on Linux (native x86_64 and arm runners alike) and the LunarG SDK
+# on Windows. macOS builds on Metal and is unchanged. The Windows binary
+# links vulkan-1.dll and the Linux ones libvulkan.so.1; the README documents
+# that a Vulkan loader is a runtime requirement of the release binaries.
 name: Release
 
 permissions:
@@ -53,19 +60,16 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            use-cross: false
-          - os: ubuntu-latest
+          # Native arm runner: cross-compiling would need the Vulkan
+          # dependencies inside the cross image, out of our control.
+          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            use-cross: true
           - os: macos-latest
             target: x86_64-apple-darwin
-            use-cross: false
           - os: macos-latest
             target: aarch64-apple-darwin
-            use-cross: false
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            use-cross: false
 
     steps:
       - uses: actions/checkout@v7
@@ -74,27 +78,29 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      # llama-cpp-sys-2 builds llama.cpp from source. The cross images ship
-      # their own cmake; the hosted runners get it here.
+      # llama-cpp-sys-2 builds llama.cpp from source; the hosted runners
+      # get cmake here (every target is built natively now).
       - name: Install CMake
-        if: matrix.use-cross != true
+        if: runner.os != 'Linux'
         uses: lukka/get-cmake@latest
 
-      - name: Install cross
-        if: matrix.use-cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
-
-      - name: Set up cargo command
+      - name: Install Vulkan build dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
-          if [ "${{ matrix.use-cross }}" = "true" ]; then
-            echo "CARGO_CMD=cross" >> "$GITHUB_ENV"
-          else
-            echo "CARGO_CMD=cargo" >> "$GITHUB_ENV"
-          fi
-        shell: bash
+          sudo apt-get update
+          sudo apt-get install -y cmake libvulkan-dev glslc spirv-headers
+
+      # llama-cpp-sys-2's build script expects VULKAN_SDK on Windows and
+      # links vulkan-1 from it; the action also puts the SDK's glslc on PATH.
+      - name: Install Vulkan SDK (Windows)
+        if: runner.os == 'Windows'
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          cache: true
+          stripdown: true
 
       - name: Build release binary
-        run: ${{ env.CARGO_CMD }} build --locked --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Sign macOS binary (ad-hoc)
         if: startsWith(matrix.target, 'x86_64-apple-darwin') || startsWith(matrix.target, 'aarch64-apple-darwin')

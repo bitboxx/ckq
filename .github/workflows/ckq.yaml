@@ -1,6 +1,14 @@
 # The one CI workflow. `cargo test` stays offline: the e2e suites are
 # #[ignore]d with an `e2e:` reason and run in the e2e job, which restores
 # the default embedding model from the cache.
+#
+# Vulkan is a default cargo feature on every platform but macOS (see gpu/),
+# so the Linux and Windows jobs must give llama.cpp's Vulkan backend what it
+# needs at build time: headers, loader and the glslc shader compiler (plus
+# SPIRV-Headers) from apt on Ubuntu, the LunarG SDK on Windows. The Linux
+# runners get no Vulkan device (no ICD is installed), which llama.cpp handles
+# by falling back to the CPU at runtime; the Windows runners get the Vulkan
+# loader (vulkan-1.dll) so the binary, which links it, can start.
 name: ckq
 
 permissions:
@@ -8,7 +16,7 @@ permissions:
 
 on:
   push:
-    branches: [main, v2]
+    branches: [main, v2, build/**]
   pull_request:
 
 env:
@@ -39,6 +47,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # llama-cpp-sys-2 builds llama.cpp from source.
       - uses: lukka/get-cmake@latest
+      - name: Install Vulkan build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev glslc spirv-headers
       - run: cargo clippy --release --all-targets -- -D warnings
 
   test:
@@ -53,6 +65,28 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: lukka/get-cmake@latest
+      - name: Install Vulkan build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev glslc spirv-headers
+      # llama-cpp-sys-2's build script expects VULKAN_SDK on Windows and
+      # links vulkan-1 from it; the action also puts the SDK's glslc on PATH.
+      - name: Install Vulkan SDK (Windows)
+        if: runner.os == 'Windows'
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          cache: true
+          stripdown: true
+      # The binary links vulkan-1.dll; the SDK ships it in runtime/x64.
+      - name: Put vulkan-1.dll on PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem "$env:VULKAN_SDK\runtime" -Recurse -Filter vulkan-1.dll | Select-Object -First 1
+          if ($null -eq $dll) { throw "vulkan-1.dll not found under $env:VULKAN_SDK\runtime" }
+          Write-Host "vulkan-1.dll: $($dll.FullName)"
+          Add-Content $env:GITHUB_PATH ($dll.DirectoryName)
       - name: Test (offline)
         run: cargo test --release
 
@@ -64,6 +98,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
       - uses: lukka/get-cmake@latest
+      - name: Install Vulkan build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev glslc spirv-headers
       - run: cargo check --locked --all-targets
 
   # The end-to-end suites run the real binary against real corpora with the
@@ -81,6 +119,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: lukka/get-cmake@latest
+      - name: Install Vulkan build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev glslc spirv-headers
 
       # A cache miss is fine: the first run downloads the model and the
       # cache is saved for the next one.

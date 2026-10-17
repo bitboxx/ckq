@@ -34,6 +34,24 @@ cargo fmt && cargo clippy --release --all-targets -- -D warnings
 
 The default model (about 280 MB) downloads once into `~/.cache/ckq/models` on first use. Run `cargo e2e` before any change to the model registry, the prompts, the chunker, the store, the fusion or the ranking: it holds the ranking gate on `bench/multilingual` (gemma-q4: 35/40 rank 1, MRR@5 0.927).
 
+## GPU backends
+
+macOS builds on Metal. Everywhere else the `vulkan` cargo feature is on by
+default, `cuda` is opt-in, and `--no-default-features` is CPU-only. The
+feature reaches `llama-cpp-2` through the `gpu/` path crate (`ckq-gpu`, an
+empty lib that exists only because cargo cannot make a default feature
+platform-specific and refuses one crate twice under two names); on macOS that
+crate is not in the graph at all, so the default feature is inert there.
+Building with Vulkan needs the Vulkan headers, loader, `glslc` and
+SPIRV-Headers (`libvulkan-dev glslc spirv-headers` on Ubuntu; the LunarG SDK,
+with `VULKAN_SDK` set, on Windows). The resulting binary needs a Vulkan
+loader at runtime (`libvulkan1` / `vulkan-1.dll`) and falls back to the CPU
+when there is a loader but no device.
+
+## Release
+
+A release is a tag `X.Y.Z` (no `v` prefix) that matches the `version` in `Cargo.toml`. `release.yml` verifies the match, builds the binary for x86_64 Linux and aarch64 Linux (native `ubuntu-24.04-arm` runner, both with Vulkan), x86_64 and aarch64 macOS, and x86_64 Windows (Vulkan), and attaches the archives to a GitHub release. Nothing is published to crates.io or npm: `Cargo.toml` has `publish = false`.
+
 ## Test conventions
 
 - End-to-end tests live in `tests/` at the root (`e2e_*.rs`), use `tests/common`, and carry `#[ignore = "e2e: ..."]` so a plain `cargo test` stays offline; `cargo e2e` includes them.

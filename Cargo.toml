@@ -20,6 +20,16 @@ publish = false
 # by default: a normal build downloads models on first use, as before.
 embedded-model = []
 
+# The GPU backend: Vulkan by default everywhere but macOS, where these
+# features resolve to nothing — ckq-gpu is a dependency only under
+# cfg(not(target_os = "macos")), so the Mac keeps its Metal build untouched.
+# The shim exists because cargo cannot make a default feature
+# platform-specific (and refuses one crate twice under two names);
+# --no-default-features builds CPU-only, --features cuda swaps in CUDA.
+default = ["vulkan"]
+vulkan = ["dep:ckq-gpu", "ckq-gpu?/vulkan"]
+cuda = ["dep:ckq-gpu", "ckq-gpu?/cuda"]
+
 [[bin]]
 name = "ckq"
 path = "src/main.rs"
@@ -42,6 +52,7 @@ llama-cpp-2 = { version = "0.1.157", features = ["metal"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 llama-cpp-2 = { version = "0.1.157" }
+ckq-gpu = { path = "gpu", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

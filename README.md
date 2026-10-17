@@ -17,6 +17,26 @@ The binary is `target/release/ckq`. The default embedding model (about 280 MB)
 downloads on first use to `~/.cache/ckq/models`; building or running regex and
 lexical search needs no model at all.
 
+## GPU
+
+The embedder runs on the GPU through llama.cpp, and the backend is chosen at
+build time by cargo features:
+
+- **macOS**: Metal, always — no feature to turn on or off.
+- **Linux and Windows**: Vulkan, on by default. The binary then needs a
+  Vulkan loader at runtime: `libvulkan1` on Linux (any GPU driver brings it)
+  or `vulkan-1.dll` on Windows. A machine with a loader but no usable device
+  falls back to the CPU on its own.
+- `--no-default-features` builds a CPU-only binary for machines with no
+  Vulkan loader at all.
+- `--features cuda` builds with CUDA instead, which needs the CUDA toolkit
+  at build time and an NVIDIA driver at runtime.
+
+The default feature reaches `llama-cpp-2` through the tiny `gpu/` path crate
+(package `ckq-gpu`), because cargo cannot make a default feature
+platform-specific and will not accept the same crate twice under two names.
+On macOS the crate is not even in the dependency graph.
+
 ## One file
 
 `scripts/build-onefile.sh <alias>` builds a ckq with that model's GGUF inside

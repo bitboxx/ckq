@@ -27,7 +27,14 @@ Always check existing tags first: `git tag --sort=-version:refname`
 
 1. **Linting**: `cargo clippy` - Fix all warnings
 2. **Formatting**: `cargo fmt` - Format all code  
-3. **Testing**: `cargo test` - Ensure all tests pass
+3. **Testing**: `cargo test` - Ensure all tests pass. It runs the offline tests only.
+   `cargo e2e` also runs the end-to-end tests, which need the default model (about
+   280 MB, downloaded once into `~/.cache/ck/models`). Run it before any change to the
+   model, the prompts, the chunker, the index, the vector store or the fusion: it holds
+   the ranking gate on `bench/multilingual` (34/40 rank 1, MRR@5 0.90). New model tests
+   go in `ck-cli/tests/e2e_*.rs`, use `ck-cli/tests/common`, and carry
+   `#[ignore = "e2e: ..."]`. A test must fail when the search fails: never put its
+   assertions inside `if output.status.success()`.
 
 ### Version Bump Process
 

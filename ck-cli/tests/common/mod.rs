@@ -309,3 +309,21 @@ pub fn read_manifest(root: &Path) -> Value {
         .expect(".ck/manifest.json should exist after --index");
     serde_json::from_slice(&data).expect(".ck/manifest.json should be valid JSON")
 }
+
+/// Run a command that must fail, and return its exit code with both streams,
+/// for tests that pin an exact exit status and message rather than just
+/// failure.
+pub fn run_exit(cmd: &mut Command) -> (Option<i32>, String, String) {
+    let out = cmd.output().expect("ckq should start");
+    assert!(
+        !out.status.success(),
+        "ckq {:?} should have failed\n--- stdout\n{}",
+        cmd.get_args().collect::<Vec<_>>(),
+        String::from_utf8_lossy(&out.stdout),
+    );
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}

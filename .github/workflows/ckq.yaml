@@ -31,8 +31,41 @@ jobs:
       - name: Build (default features)
         run: cargo build --release -p ck-search
 
-      - name: Test
-        run: cargo test --release -p ck-models -p ck-chunk -p ck-embed
+      # The whole workspace, on every OS the binaries ship for. The e2e suites
+      # that need the embedding model run in the `e2e` job instead.
+      - name: Test (whole workspace)
+        run: cargo test --release --workspace
+
+  # The end-to-end suites (`#[ignore]d` with an `e2e:` reason) run the real
+  # binary against real corpora with the real default model. Windows is left
+  # out: it has no daemon, and the suites assert unix behaviour (sockets,
+  # permissions) that does not apply there.
+  e2e:
+    name: e2e (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install CMake
+        uses: lukka/get-cmake@latest
+
+      # Restoring the model cache means the suites embed instead of each
+      # downloading gemma-q4. A miss is fine: the first run downloads it and
+      # the cache is saved for the next one.
+      - name: Restore embedding models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ck/models
+          key: ck-models-gemma-q4
+
+      - name: Test (e2e, include ignored)
+        run: cargo test --release -p ck-search -- --include-ignored
 
   lint:
     runs-on: ubuntu-latest

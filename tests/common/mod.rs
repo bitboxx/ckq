@@ -216,7 +216,7 @@ pub struct Bench {
 }
 
 pub fn bench() -> Bench {
-    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("../bench/multilingual/corpus.json");
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("bench/multilingual/corpus.json");
     let data: Value =
         serde_json::from_str(&fs::read_to_string(&file).expect("read bench corpus")).unwrap();
     let corpus = Corpus::new();

@@ -1,92 +1,46 @@
-[workspace]
-resolver = "2"
-members = [
-    "ck-cli",
-    "ck-core",
-    "ck-index",
-    "ck-engine",
-    "ck-chunk",
-    "ck-embed",
-    "ck-models",
-    "ck-tui",
-]
-
-[workspace.package]
-version = "0.7.11"
+[package]
+name = "ckq"
+version = "2.0.0-dev"
 edition = "2024"
 authors = ["Mike Renwick", "ckq contributors"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/bitboxx/ckq"
 rust-version = "1.88.0"
+description = "Multilingual search over a folder of text: BM25 and embeddings, fused"
+publish = false
 
+# One crate. The eight upstream crates (ck-*) are being retired; until the last
+# step of the rewrite removes them they stay in the tree, unbuilt, as a source
+# to port from. Nothing here may depend on them.
 
-[workspace.dependencies]
-# Intra-workspace crates — defined here so a version bump only touches
-# workspace.package.version and these eight lines, not every Cargo.toml.
-ck-core = { path = "ck-core", version = "0.7.11" }
-ck-models = { path = "ck-models", version = "0.7.11" }
-ck-embed = { path = "ck-embed", version = "0.7.11", default-features = false }
-ck-chunk = { path = "ck-chunk", version = "0.7.11", default-features = false }
-ck-index = { path = "ck-index", version = "0.7.11", default-features = false }
-ck-engine = { path = "ck-engine", version = "0.7.11", default-features = false }
-ck-tui = { path = "ck-tui", version = "0.7.11", default-features = false }
+[[bin]]
+name = "ckq"
+path = "src/main.rs"
 
+[dependencies]
 anyhow = "1.0"
-thiserror = "1.0"
+blake3 = "1.8"
+clap = { version = "4.6", features = ["derive"] }
+dirs = "6.0"
+half = "2.6"
+hf-hub = { version = "0.5.0", default-features = false, features = ["ureq"] }
+ignore = "0.4"
+regex = "1.12"
+rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.50", features = ["full"] }
-clap = { version = "4.6", features = ["derive"] }
-regex = "1.12"
-blake3 = "1.8"
-memmap2 = "0.9"
-bincode = "1.3"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-rayon = "1.12"
-walkdir = "2.4"
-fs4 = "0.13"
-tantivy = "0.26"
-tree-sitter = "0.25"
-tree-sitter-python = "0.25"
-tree-sitter-typescript = "0.23"
-tree-sitter-haskell = "0.23"
-tree-sitter-rust = "0.24"
-tree-sitter-ruby = "0.23"
-tree-sitter-go = "0.25"
-tree-sitter-c = "0.24"
-tree-sitter-cpp = "0.23"
-tree-sitter-c-sharp = "0.23"
-tree-sitter-zig = "1.1"
-tree-sitter-dart = "0.2.0"
-tree-sitter-elixir = "0.3"
-tree-sitter-md = "0.5.3"
-fastembed = { version = "5.13", default-features = false, features = ["hf-hub-rustls-tls", "ort-download-binaries"] }
-openssl = { version = "0.10" }
-tempfile = "3.27"
-glob = "0.3"
-globset = "0.4"
-ignore = "0.4"
-ctrlc = "3.5"
-pdf-extract = "0.9"
-uuid = { version = "1.23", features = ["v4", "serde"] }
-base64 = "0.23"
-sha2 = "0.10"
-hf-hub = { version = "0.5.0", default-features = false, features = ["ureq"] }
-# default-features off drops `esaxx_fast`, and with it the esaxx-rs C++ that
-# hardcodes .static_crt(true). That is the half of the Windows link mismatch
-# this repo controls. ck only tokenizes; esaxx_fast accelerates BPE *training*.
-tokenizers = { version = "0.20.1", default-features = false, features = ["onig"] }
-# Pinned exactly to rc.11. ort 2.0.0-rc.12 made SessionOptionsPointer
-# !Sync, which removes Send+Sync from ort::Error<SessionBuilder> and
-# breaks `?`-conversion into anyhow::Error throughout ck-embed::mixedbread.
-# Without the `=` pin, a fresh `cargo install ck-search` (no --locked)
-# upgrades to rc.12 and 36 errors cascade. See:
-# https://github.com/BeaconBay/ck/pull/<TODO> for follow-up to evaluate rc.12.
-# llama.cpp backend: the only path to the Apple GPU from Rust, and it knows the
-# model architectures so pooling, position ids and the KV cache are its problem.
+
+[target.'cfg(target_os = "macos")'.dependencies]
+llama-cpp-2 = { version = "0.1.157", features = ["metal"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
 llama-cpp-2 = { version = "0.1.157" }
-ort = { version = "=2.0.0-rc.11", default-features = false, features = ["download-binaries", "tls-native", "ndarray", "std", "coreml"] }   # coreml: ckq runs embedders on the ANE/GPU, not just CPU
-once_cell = "1.21"
-ndarray = { version = "0.17", default-features = false, features = ["std"] }
-num_cpus = "1.16"
+
+[dev-dependencies]
+serial_test = "2.0"
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = "symbols"

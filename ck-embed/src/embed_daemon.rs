@@ -6,7 +6,7 @@
 //! they contended for the GPU. So the first invocation starts a daemon and every
 //! later one connects to it.
 //!
-//! Lifetime: the daemon exits after `IDLE_TIMEOUT` with no requests. A client
+//! Lifetime: the daemon exits after `idle_timeout()` with no requests. A client
 //! can pin it with `"pin": true`; the pin lasts exactly as long as that client's
 //! connection stays open, so a client that dies or moves on cannot leave the
 //! machine with an immortal daemon.
@@ -22,7 +22,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-pub const IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// How long the daemon waits with no request before it exits: 15 minutes, or
+/// `CKQ_DAEMON_IDLE_SECS`. The end-to-end tests set it low, because every test
+/// build is a new executable and so a new daemon, and each one would otherwise
+/// keep a model resident for a quarter of an hour after the run.
+pub fn idle_timeout() -> Duration {
+    std::env::var("CKQ_DAEMON_IDLE_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(15 * 60))
+}
 /// How long a connection may sit with no request before the daemon drops it.
 /// Real clients write their request immediately; the timeout exists so a client
 /// that connects and then goes silent cannot hold its thread (and its pin)
@@ -300,13 +310,6 @@ pub fn spawn(model_alias: &str, path: &Path) -> Result<UnixStream> {
     }
 }
 
-/// Run as the daemon on an already-bound listener. Exits after `IDLE_TIMEOUT`
-/// with no requests and no pinned connection left.
-///
-/// Each connection runs on its own thread, so one stuck client cannot stall
-/// every other ckq on the machine; the model itself is not thread-safe, so
-/// generation is serialised on a mutex around `embed` instead of on the
-/// accept loop.
 /// Whether the shared daemon can be reached, starting it if it is not running.
 ///
 /// The daemon is this same executable re-run with `--embed-daemon`, which only
@@ -343,11 +346,19 @@ pub fn pin_for_process(stream: UnixStream) {
     std::mem::forget(stream);
 }
 
+/// Run as the daemon on an already-bound listener. Exits after `idle_timeout()`
+/// with no requests and no pinned connection left.
+///
+/// Each connection runs on its own thread, so one stuck client cannot stall
+/// every other ckq on the machine; the model itself is not thread-safe, so
+/// generation is serialised on a mutex around `embed` instead of on the
+/// accept loop.
 pub fn serve_on<F>(listener: UnixListener, path: PathBuf, embed: F) -> Result<()>
 where
     F: FnMut(&[String]) -> Result<Vec<Vec<f32>>> + Send + 'static,
 {
     listener.set_nonblocking(true)?;
+    let idle = idle_timeout();
 
     let embed = Arc::new(Mutex::new(embed));
     let last = Arc::new(Mutex::new(Instant::now()));
@@ -373,7 +384,7 @@ where
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                if pinned.load(Ordering::SeqCst) == 0 && last.lock().elapsed() > IDLE_TIMEOUT {
+                if pinned.load(Ordering::SeqCst) == 0 && last.lock().elapsed() > idle {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(200));

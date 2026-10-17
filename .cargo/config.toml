@@ -1,5 +1,8 @@
 [alias]
 # The end-to-end tests need the default model (about 280 MB, downloaded once
 # into ~/.cache/ck/models), so they are #[ignore]d and a plain `cargo test`
-# stays offline. This runs them too.
-e2e = "test --release -p ck-search -- --include-ignored"
+# stays offline. `cargo e2e` runs them too, minus the tests that pin a known,
+# still-open bug: those are named known_bug_* and run with `cargo known-bugs`.
+# When a bug is fixed, drop the prefix and the "bug:" ignore from its test.
+e2e = "test --release -p ck-search -- --include-ignored --skip known_bug_"
+known-bugs = "test --release -p ck-search --no-fail-fast -- --ignored known_bug_"

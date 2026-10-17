@@ -530,7 +530,7 @@ fn the_same_search_twice_is_identical() {
 #[test]
 #[serial]
 #[ignore = "bug: CKQ_IN_PROCESS=1 puts a WARN line on stdout and its --sem scores differ from the daemon's by ~0.07, not 1e-4"]
-fn daemon_and_in_process_agree() {
+fn known_bug_daemon_and_in_process_agree() {
     let (corpus, query) = fusion_corpus();
     corpus.index();
 
@@ -779,4 +779,66 @@ fn all_stems(hits: &[Hit]) -> Vec<String> {
 /// directly where order matters.
 fn stems(hits: &[Hit]) -> Vec<String> {
     all_stems(&uniq_hits(hits))
+}
+
+// ---------------------------------------------------------------------------
+// The working directory must not matter
+// ---------------------------------------------------------------------------
+
+/// A caller that passes an absolute path from some other directory must get
+/// what a caller inside the corpus gets. Found 17 Oct 2026: `--sem` returned
+/// "No matches found" from any working directory outside the searched one,
+/// so `--hybrid` silently fell back to keyword hits only.
+#[test]
+#[serial]
+#[ignore = "bug: --sem returns nothing when the working directory is outside the searched directory, even with an absolute path"]
+fn known_bug_semantic_search_is_the_same_from_another_directory() {
+    let corpus = Corpus::new();
+    corpus.write(
+        "volcano.md",
+        "# Volcanoes\n\nMagma rises from the mantle and dissolved gases expand until the vent \
+fractures and the volcano erupts.\n",
+    );
+    corpus.write(
+        "sourdough.md",
+        "# Sourdough\n\nFeed the starter every morning and let the dough rise overnight.\n",
+    );
+    corpus.write(
+        "chess.md",
+        "# Chess\n\nThe Sicilian defence answers the king's pawn with a pawn of your own.\n",
+    );
+    corpus.index();
+    let root = corpus.path().to_str().unwrap().to_string();
+    let args = [
+        "--sem",
+        "what makes a volcano erupt",
+        "--threshold",
+        "0.0",
+        "--jsonl",
+        "-q",
+    ];
+
+    let inside = common::parse_jsonl(&common::run_ok(corpus.ckq().args(args).arg(&root)).stdout);
+    let elsewhere = tempfile::TempDir::new().unwrap();
+    let outside = common::parse_jsonl(
+        &common::run_ok(
+            common::ckq()
+                .current_dir(elsewhere.path())
+                .args(args)
+                .arg(&root),
+        )
+        .stdout,
+    );
+
+    assert_eq!(
+        rank_of(&inside, "volcano"),
+        Some(1),
+        "inside: {:?}",
+        stems(&inside)
+    );
+    assert_eq!(
+        stems(&uniq_hits(&outside)),
+        stems(&uniq_hits(&inside)),
+        "the same search from another working directory returned different files"
+    );
 }

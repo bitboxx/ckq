@@ -601,7 +601,7 @@ fn symlink_loop_does_not_hang_indexing() {
 #[test]
 #[serial]
 #[ignore = "bug: --lex (any search) hangs on a corpus with a symlink loop; run with --include-ignored"]
-fn lexical_search_survives_a_symlink_loop() {
+fn known_bug_lexical_search_survives_a_symlink_loop() {
     use std::os::unix::fs::symlink;
     let corpus = Corpus::new();
     corpus.write(

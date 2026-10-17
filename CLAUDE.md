@@ -34,7 +34,9 @@ Always check existing tags first: `git tag --sort=-version:refname`
    the ranking gate on `bench/multilingual` (34/40 rank 1, MRR@5 0.90). New model tests
    go in `ck-cli/tests/e2e_*.rs`, use `ck-cli/tests/common`, and carry
    `#[ignore = "e2e: ..."]`. A test must fail when the search fails: never put its
-   assertions inside `if output.status.success()`.
+   assertions inside `if output.status.success()`. A test that pins a known, still-open
+   bug is named `known_bug_*` with `#[ignore = "bug: ..."]`; `cargo e2e` skips those and
+   `cargo known-bugs` runs them. Fixing the bug means dropping both.
 
 ### Version Bump Process
 

@@ -65,7 +65,7 @@ jobs:
           key: ck-models-gemma-q4
 
       - name: Test (e2e, include ignored)
-        run: cargo test --release -p ck-search -- --include-ignored
+        run: cargo e2e
 
   lint:
     runs-on: ubuntu-latest

@@ -523,7 +523,7 @@ fn sem_lex_hybrid_json_schema_fields() {
 #[test]
 #[serial]
 #[ignore = "bug: --hybrid emits one entry per method so a file both find appears twice with split ranks instead of one fused entry; also needs the default model (run with --include-ignored)"]
-fn hybrid_jsonl_one_fused_result_per_file() {
+fn known_bug_hybrid_jsonl_one_fused_result_per_file() {
     let corpus = semantic_corpus();
     corpus.index();
 
@@ -903,7 +903,7 @@ impl Drop for McpStdio {
 #[test]
 #[serial]
 #[ignore = "bug: ckq --serve panics at startup ('chunk size must be non-zero', ck-embed/src/embed_daemon.rs:182) so the stdio server never comes up; also needs the default model (run with --include-ignored)"]
-fn mcp_stdio_end_to_end() {
+fn known_bug_mcp_stdio_end_to_end() {
     let corpus = semantic_corpus();
     corpus.index();
     const TIMEOUT: Duration = Duration::from_secs(300);

@@ -82,7 +82,7 @@ This file tracks instances where ck behaves unexpectedly during testing or usage
 **Actual:** Never returns; killed after 60 s with no output. `sample` shows the main thread spinning in `ckq::path_utils::run_glob` → `glob::Paths::next` → `fill_todo` → `stat`: the search path expands its target with the `glob` crate, which follows the looped directory symlinks forever.
 **Date:** 2026-10-17
 **Status:** Open
-**Notes:** Found by the `lexical_search_survives_a_symlink_loop` e2e test in `ck-cli/tests/e2e_index.rs` (kept, `#[ignore = "bug: ..."]`). Any search mode that goes through glob expansion of the target path hangs the same way, not just `--lex`.
+**Notes:** Found by the `known_bug_lexical_search_survives_a_symlink_loop` e2e test in `ck-cli/tests/e2e_index.rs` (kept, `#[ignore = "bug: ..."]`). Any search mode that goes through glob expansion of the target path hangs the same way, not just `--lex`.
 
 
 ## Instructions

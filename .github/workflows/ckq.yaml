@@ -1,47 +1,176 @@
-# ckq's own CI. Upstream's ci.yaml still runs and covers the inherited crates;
-# this exists because the llamacpp backend and the embedding daemon are new here
-# and the daemon is unix-only, so Windows needs proving rather than assuming.
+# The one CI workflow. `cargo test` stays offline: the e2e suites are
+# #[ignore]d with an `e2e:` reason and run in the e2e job, which restores
+# the default embedding model from the cache.
+#
+# Vulkan is a default cargo feature on every platform but macOS (see gpu/),
+# so the Linux and Windows jobs must give llama.cpp's Vulkan backend what it
+# needs at build time: headers, loader and the glslc shader compiler (plus
+# SPIRV-Headers) from apt on Ubuntu, the LunarG SDK on Windows. The Linux
+# runners get no Vulkan device (no ICD is installed), which llama.cpp handles
+# by falling back to the CPU at runtime; the Windows runners get the Vulkan
+# loader (vulkan-1.dll) so the binary, which links it, can start.
 name: ckq
+
+permissions:
+  contents: read
 
 on:
   push:
-    branches: [main]
+    branches: [main, v2, build/**]
   pull_request:
 
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
 jobs:
-  build:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      # llama-cpp-sys-2 builds llama.cpp from source.
-      - name: Install CMake
-        uses: lukka/get-cmake@latest
-
-      # Default features include llamacpp. On Windows the daemon is compiled out
-      # and each process loads its own model; this job is what proves that path
-      # still builds.
-      - name: Build (default features)
-        run: cargo build --release -p ck-search
-
-      - name: Test
-        run: cargo test --release -p ck-models -p ck-chunk -p ck-embed
-
-  lint:
+  fmt:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # llama-cpp-sys-2 builds llama.cpp from source.
+      - uses: lukka/get-cmake@latest
+      - name: Install Vulkan build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev glslc spirv-headers
+      - run: cargo clippy --release --all-targets -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: lukka/get-cmake@latest
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --release -p ck-models -p ck-embed -p ck-chunk --all-targets -- -D warnings
+      - name: Install Vulkan build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev glslc spirv-headers
+      # llama-cpp-sys-2's build script expects VULKAN_SDK on Windows and
+      # links vulkan-1 from it; the action also puts the SDK's glslc on PATH.
+      - name: Install Vulkan SDK (Windows)
+        if: runner.os == 'Windows'
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          cache: true
+          stripdown: true
+      # The binary links vulkan-1.dll. Recent SDKs install it straight into
+      # System32 (already on the DLL search path); older layouts keep it in
+      # the SDK, which then needs to be on PATH.
+      - name: Locate vulkan-1.dll (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "$env:VULKAN_SDK\runtime\x64\vulkan-1.dll",
+            "$env:VULKAN_SDK\Bin\vulkan-1.dll",
+            "C:\Windows\System32\vulkan-1.dll"
+          )
+          $found = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $found) { throw "vulkan-1.dll not found in any of: $($candidates -join ', ')" }
+          Write-Host "vulkan-1.dll: $found"
+          if ($found -notlike 'C:\Windows\*') {
+            Add-Content $env:GITHUB_PATH (Split-Path $found)
+            Write-Host "Added $(Split-Path $found) to PATH"
+          }
+      # The Visual Studio generator's multi-config handling breaks the
+      # vulkan-shaders-gen ExternalProject install step (cmake_install.cmake
+      # not generated where the install rule looks for it, MSB8066). Build
+      # llama.cpp with Ninja in an MSVC developer environment instead.
+      - name: Set up MSVC environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Build llama.cpp with the Ninja generator (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          choco install -y ninja
+          echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
+      - name: Test (offline)
+        run: cargo test --release
+      # Prove the default feature reached the backend: the resolved feature
+      # graph, the loader the binary links, and the compiled SPIR-V shaders
+      # (vulkan-shaders-gen only runs with GGML_VULKAN on).
+      - name: Prove the Vulkan backend was built (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cargo tree -e features -i llama-cpp-2 | grep 'feature "vulkan"'
+          ldd target/release/ckq | grep libvulkan
+          find target -path '*llama-cpp-sys-2*' -name '*.spv' | head -3
+      - name: Prove the Vulkan backend was built (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo tree -e features -i llama-cpp-2 | Select-String 'feature "vulkan"'
+          $spv = Get-ChildItem target -Recurse -Filter '*.spv' | Select-Object -First 3
+          if (-not $spv) { throw 'no SPIR-V shaders under target: GGML_VULKAN was off' }
+          $spv | ForEach-Object { Write-Host "shader: $($_.FullName)" }
+
+  msrv:
+    name: msrv (Rust 1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - uses: lukka/get-cmake@latest
+      - name: Install Vulkan build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev glslc spirv-headers
+      - run: cargo check --locked --all-targets
+
+  # The end-to-end suites run the real binary against real corpora with the
+  # real default model. Windows is left out: the suites assert unix behaviour
+  # (sockets, permissions) that does not apply there.
+  e2e:
+    name: e2e (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: lukka/get-cmake@latest
+      - name: Install Vulkan build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev glslc spirv-headers
+
+      # A cache miss is fine: the first run downloads the model and the
+      # cache is saved for the next one.
+      - name: Restore embedding models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ckq/models
+          key: ckq-models-gemma-q4
+
+      - run: cargo e2e

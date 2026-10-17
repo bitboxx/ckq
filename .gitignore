@@ -1,3 +1,4 @@
 target/
-.ck/
-.ckignore
+.ckq/
+.ckqignore
+.DS_Store

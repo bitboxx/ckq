@@ -54,7 +54,6 @@ const CONN_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// slow exec, not the load; the load is waited out on the request itself.
 const STARTUP_WAIT: Duration = Duration::from_secs(30);
 const CONNECT_POLL: Duration = Duration::from_millis(50);
-const ACCEPT_POLL: Duration = Duration::from_millis(200);
 /// How long a log with no socket beside it is kept: long enough to read why
 /// a daemon failed to start, short enough that the directory does not grow.
 const LOG_KEEP: Duration = Duration::from_secs(24 * 60 * 60);
@@ -312,26 +311,60 @@ pub fn serve(alias: &str) -> Result<()> {
         }
     };
 
+    // Nonblocking only so a wake with no client behind it cannot hang in
+    // `accept`; the waiting itself is `poll`, which returns the moment a
+    // client connects. A sleep-and-retry loop here added up to its whole
+    // interval to every search.
     listener.set_nonblocking(true)?;
     let mut last = Instant::now();
     loop {
+        let remaining = idle_timeout().saturating_sub(last.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
+        if !wait_for_client(&listener, remaining)? {
+            continue; // timed out or interrupted: the idle check decides
+        }
         match listener.accept() {
             Ok((stream, _)) => {
                 let _ = serve_conn(stream, &mut embedder); // one client's failure is not the daemon's
                 last = Instant::now();
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                if last.elapsed() > idle_timeout() {
-                    break;
-                }
-                std::thread::sleep(ACCEPT_POLL);
-            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) => {}
             Err(e) => return Err(e).context("accepting on the query daemon socket"),
         }
     }
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(log_path(&path));
     Ok(())
+}
+
+/// Block until a client is waiting on `listener` or `timeout` passes. `false`
+/// on a timeout or a signal, so the caller re-checks its idle clock.
+fn wait_for_client(listener: &UnixListener, timeout: Duration) -> Result<bool> {
+    use std::os::fd::AsRawFd;
+    let mut fd = libc::pollfd {
+        fd: listener.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let ms = timeout.as_millis().clamp(1, libc::c_int::MAX as u128) as libc::c_int;
+    match unsafe { libc::poll(&mut fd, 1, ms) } {
+        -1 => {
+            let e = std::io::Error::last_os_error();
+            if e.kind() == std::io::ErrorKind::Interrupted {
+                Ok(false)
+            } else {
+                Err(e).context("waiting on the query daemon socket")
+            }
+        }
+        0 => Ok(false),
+        _ => Ok(true),
+    }
 }
 
 /// Claim the socket without loading anything. `Ok(None)` means another daemon
@@ -412,5 +445,30 @@ fn reap_stale(own: &Path) {
                 let _ = std::fs::remove_file(&path);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wait_for_client_times_out_with_nobody_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = UnixListener::bind(dir.path().join("s.sock")).unwrap();
+        let start = Instant::now();
+        assert!(!wait_for_client(&listener, Duration::from_millis(50)).unwrap());
+        assert!(start.elapsed() >= Duration::from_millis(40));
+    }
+
+    #[test]
+    fn wait_for_client_wakes_as_soon_as_a_client_connects() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let _client = UnixStream::connect(&path).unwrap();
+        let start = Instant::now();
+        assert!(wait_for_client(&listener, Duration::from_secs(10)).unwrap());
+        assert!(start.elapsed() < Duration::from_secs(1));
     }
 }

@@ -925,3 +925,24 @@ fractures and the volcano erupts.\n",
         "the same search from another working directory returned different files"
     );
 }
+
+/// A `CKQ_GGUF_FILE` override must get its own daemon. With the override left
+/// out of the key, a daemon already holding the registry's weights answered
+/// queries for the trial file, so the query and the document vectors came from
+/// different weights. Offline: it only compares the two socket paths.
+#[test]
+#[cfg(unix)]
+fn a_gguf_override_gets_its_own_daemon_socket() {
+    let plain = common::daemon_socket("gemma-q4");
+    let out = common::run_ok(
+        common::ckq()
+            .env("CKQ_GGUF_FILE", "/nonexistent/trial.gguf")
+            .args(["--daemon-socket", "gemma-q4"]),
+    );
+    let overridden = std::path::PathBuf::from(String::from_utf8(out.stdout).unwrap().trim());
+    assert_ne!(
+        plain, overridden,
+        "an override must not share the plain daemon"
+    );
+    assert_eq!(plain.parent(), overridden.parent());
+}

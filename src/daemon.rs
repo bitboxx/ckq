@@ -159,8 +159,19 @@ fn socket_dir() -> PathBuf {
 /// changes it, so a client never talks to a daemon still running the code the
 /// rebuild replaced — and a stale daemon never serves a new chunker or prompt
 /// it predates.
+/// Identity of this build and of the weights it would load: the executable's
+/// path, size and mtime, plus `CKQ_GGUF_FILE` when set. The override has to be
+/// in the key: without it a daemon already holding the registry's GGUF would
+/// answer queries for a trial file, and the query and document vectors would
+/// come from different weights. The daemon inherits the variable from the
+/// client that spawns it, so both sides derive the same socket.
 fn exe_stamp() -> String {
     let mut hasher = blake3::Hasher::new();
+    if let Some(gguf) = std::env::var_os("CKQ_GGUF_FILE") {
+        hasher.update(b"gguf:");
+        hasher.update(gguf.to_string_lossy().as_bytes());
+        hasher.update(b"\0");
+    }
     if let Ok(exe) = std::env::current_exe() {
         hasher.update(exe.to_string_lossy().as_bytes());
         if let Ok(meta) = std::fs::metadata(&exe) {

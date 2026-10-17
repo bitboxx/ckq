@@ -198,8 +198,14 @@ impl Store {
             } = meta;
             // One statement, so a concurrent reader never meets a half-written
             // meta and mistakes it for an index built by another model.
+            // OR IGNORE, because two first `--index` runs can both see an
+            // empty meta and both insert; a plain INSERT failed the loser
+            // with a raw UNIQUE error after it had already walked the corpus.
+            // SQLite serialises the writers, so whichever row lost the race
+            // reads back committed after the no-op — and if it is not the
+            // signature this run assumed, that is the refusal below.
             store.conn.execute(
-                "INSERT INTO meta (key, value) VALUES \
+                "INSERT OR IGNORE INTO meta (key, value) VALUES \
                  ('schema_version', ?1), ('model_alias', ?2), ('model_repo', ?3), \
                  ('dims', ?4), ('signature', ?5)",
                 params![
@@ -210,6 +216,18 @@ impl Store {
                     signature.clone()
                 ],
             )?;
+            let raced: String = store.conn.query_row(
+                "SELECT value FROM meta WHERE key = 'signature'",
+                [],
+                |r| r.get(0),
+            )?;
+            if raced != *signature {
+                bail!(
+                    "the index at {} was built with a different embedding signature \
+                     ({raced} != {signature}); run `ckq --clean` and index again",
+                    corpus.index_dir().display()
+                );
+            }
         }
         Ok(store)
     }
@@ -701,6 +719,73 @@ mod tests {
         let err = Store::open_write(&c, &other).unwrap_err().to_string();
         assert!(err.contains("different embedding signature"), "{err}");
         assert!(err.contains("--clean"), "{err}");
+    }
+
+    /// Two first writes race the meta insert: both see an empty table and
+    /// both insert. The loser used to die on a raw UNIQUE constraint error;
+    /// now the winner's row stands and a same-signature loser proceeds.
+    /// The schema is pre-created so the race is exactly the insert; through
+    /// `open_write` the WAL pragma would serialise the threads instead and
+    /// drown the round in busy retries.
+    #[test]
+    fn concurrent_first_writes_initialize_meta_once() {
+        for _ in 0..200 {
+            let dir = TempDir::new().unwrap();
+            let c = Corpus::for_index(dir.path()).unwrap();
+            std::fs::create_dir_all(c.index_dir()).unwrap();
+            let setup = Connection::open(c.index_dir().join(DB_FILE)).unwrap();
+            setup.execute_batch(SCHEMA).unwrap();
+            drop(setup);
+            let barrier = std::sync::Barrier::new(2);
+            let (a, b) = std::thread::scope(|s| {
+                let a = s.spawn(|| {
+                    barrier.wait();
+                    Store::open_write(&c, &meta())
+                });
+                let b = s.spawn(|| {
+                    barrier.wait();
+                    Store::open_write(&c, &meta())
+                });
+                (a.join().unwrap(), b.join().unwrap())
+            });
+            assert!(a.is_ok() && b.is_ok(), "{a:?} {b:?}");
+        }
+    }
+
+    /// The same race between two different models must not let the loser
+    /// index into a store whose meta names the winner's model: exactly one
+    /// side wins, and the loser is refused by name, not by SQLite.
+    #[test]
+    fn a_concurrent_first_write_of_another_signature_is_refused_by_name() {
+        for _ in 0..20 {
+            let dir = TempDir::new().unwrap();
+            let c = Corpus::for_index(dir.path()).unwrap();
+            std::fs::create_dir_all(c.index_dir()).unwrap();
+            let setup = Connection::open(c.index_dir().join(DB_FILE)).unwrap();
+            setup.execute_batch(SCHEMA).unwrap();
+            drop(setup);
+            let m = meta();
+            let mut other = m.clone();
+            other.signature = "tampered-signature".to_string();
+            let barrier = std::sync::Barrier::new(2);
+            let (a, b) = std::thread::scope(|s| {
+                let a = s.spawn(|| {
+                    barrier.wait();
+                    Store::open_write(&c, &m)
+                });
+                let b = s.spawn(|| {
+                    barrier.wait();
+                    Store::open_write(&c, &other)
+                });
+                (a.join().unwrap(), b.join().unwrap())
+            });
+            assert!(a.is_ok() ^ b.is_ok(), "both: {a:?} {b:?}");
+            let err = [a.err(), b.err()].into_iter().flatten().next().unwrap();
+            assert!(
+                err.to_string().contains("different embedding signature"),
+                "{err:#}"
+            );
+        }
     }
 
     #[test]

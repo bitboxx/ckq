@@ -167,3 +167,33 @@ fn add_refuses_a_file_the_walk_excludes() {
         serde_json::json!(2)
     );
 }
+
+// ---------------------------------------------------------------------------
+// --threshold is validated at parse time (b-F6)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn threshold_nan_and_out_of_range_are_rejected_at_parse_time() {
+    // NaN used to parse, make every score comparison false, and end in a
+    // bare "No matches found"; 5.0 behaved the same, and on --lex NaN
+    // silently disabled the filter instead.
+    for bad in ["nan", "NaN", "5", "-1.5"] {
+        let corpus = Corpus::new();
+        let mut cmd = corpus.ckq();
+        cmd.args(["--lex"])
+            .arg(format!("--threshold={bad}"))
+            .args(["query", "."]);
+        let (code, _, stderr) = run_exit(&mut cmd);
+        assert_eq!(code, Some(1), "{bad}: {stderr}");
+        assert!(stderr.contains("--threshold must be"), "{bad}: {stderr}");
+    }
+
+    // The ends of the range are accepted (finding nothing is fine).
+    let (_code, _, stderr) =
+        run_exit(
+            Corpus::new()
+                .ckq()
+                .args(["--lex", "--threshold=-1.0", "query", "."]),
+        );
+    assert!(stderr.contains("No ckq index found"), "{stderr}");
+}

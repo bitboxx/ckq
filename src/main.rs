@@ -79,7 +79,7 @@ struct Cli {
     /// Number of results (default 10 for ranked modes).
     #[arg(long, visible_alias = "limit", value_name = "N")]
     topk: Option<usize>,
-    /// Minimum semantic score, 0.0 to 1.0 (default: the model's own).
+    /// Minimum semantic score, -1.0 to 1.0 (default: the model's own).
     #[arg(long)]
     threshold: Option<f32>,
     /// Show scores in text output.
@@ -185,6 +185,16 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         no_ckqignore: cli.no_ckqignore,
         no_ignore: cli.no_ignore,
     };
+
+    // NaN parses as f32 and then compares false against everything, so a
+    // bogus threshold used to end in a bare "No matches found" (or silently
+    // disabled the filter on --lex).
+    if cli.threshold.is_some_and(|t| !(-1.0..=1.0).contains(&t)) {
+        anyhow::bail!(
+            "--threshold must be a number between -1.0 and 1.0 (got {})",
+            cli.threshold.unwrap()
+        );
+    }
 
     // ---- Daemon ----------------------------------------------------------
     #[cfg(unix)]

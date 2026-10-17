@@ -1,3 +1,4 @@
 target/
 .ck/
 .ckignore
+.DS_Store

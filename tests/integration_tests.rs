@@ -1142,3 +1142,29 @@ fn test_status_on_an_empty_index_reports_the_index() {
     assert!(!stderr.contains("No index found"), "stderr: {stderr}");
     assert!(stderr.contains("Files indexed: 0"), "stderr: {stderr}");
 }
+
+/// `--index --no-ckqignore` must leave a corpus without a `.ckqignore`
+/// untouched: the flag exists to keep ckq's hands off that file, and a file
+/// written anyway would be read by every later flag-less run.
+#[test]
+fn test_no_ckqignore_does_not_write_one() {
+    let quiet = TempDir::new().unwrap();
+    let out = ckq_command()
+        .args(["--index", "-q", "--no-ckqignore", quiet.path().to_str().unwrap()])
+        .output()
+        .expect("Failed to run ckq index");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        !quiet.path().join(".ckqignore").exists(),
+        "--no-ckqignore wrote a default .ckqignore"
+    );
+
+    // Without the flag the default file is still written, by design.
+    let plain = TempDir::new().unwrap();
+    let out = ckq_command()
+        .args(["--index", "-q", plain.path().to_str().unwrap()])
+        .output()
+        .expect("Failed to run ckq index");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(plain.path().join(".ckqignore").exists());
+}

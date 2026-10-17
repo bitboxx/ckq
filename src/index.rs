@@ -72,7 +72,13 @@ fn resolve_model(corpus: &Corpus, opts: &IndexOptions) -> Result<(&'static Model
 pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
     let timing = std::env::var_os("CKQ_TIMING").is_some();
     let t0 = Instant::now();
-    crate::walk::ensure_ckqignore(corpus)?;
+    // --no-ckqignore means the run ignores .ckqignore files; writing a
+    // default one into a corpus that has none would mutate the very tree
+    // the flag asked to leave alone, and later runs would read a file the
+    // user never authored.
+    if !opts.walk.no_ckqignore {
+        crate::walk::ensure_ckqignore(corpus)?;
+    }
     let walked = crate::walk::walk(corpus, &opts.walk)?;
     let t_walk = t0.elapsed();
 

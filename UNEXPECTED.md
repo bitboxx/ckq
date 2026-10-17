@@ -76,6 +76,15 @@ This file tracks instances where ck behaves unexpectedly during testing or usage
 
 ---
 
+
+**Command:** `ckq --lex "anchor" --jsonl -q .` in a directory whose tree contains a symlink loop (`mkdir loopdir; ln -s ../loopdir loopdir/self; ln -s .. loopdir/up`)
+**Expected:** Search returns (the indexing walker, `ck_index::collect_files`, does not follow the looped directory symlinks and `ckq --index .` on the same tree completes in under a second)
+**Actual:** Never returns; killed after 60 s with no output. `sample` shows the main thread spinning in `ckq::path_utils::run_glob` → `glob::Paths::next` → `fill_todo` → `stat`: the search path expands its target with the `glob` crate, which follows the looped directory symlinks forever.
+**Date:** 2026-10-17
+**Status:** Open
+**Notes:** Found by the `lexical_search_survives_a_symlink_loop` e2e test in `ck-cli/tests/e2e_index.rs` (kept, `#[ignore = "bug: ..."]`). Any search mode that goes through glob expansion of the target path hangs the same way, not just `--lex`.
+
+
 ## Instructions
 
 When you encounter unexpected behavior while using ck:

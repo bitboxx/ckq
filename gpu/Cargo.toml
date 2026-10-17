@@ -14,7 +14,7 @@ publish = false
 
 [dependencies]
 # Same version as ckq's own dependency: one resolved copy, one build.
-llama-cpp-2 = "0.1.157"
+llama-cpp-2 = "0.1.159"
 
 [features]
 vulkan = ["llama-cpp-2/vulkan"]

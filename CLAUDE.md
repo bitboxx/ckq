@@ -11,6 +11,16 @@ One crate at the repository root: `ckq`, a CLI for multilingual search over a fo
 3. Search never writes the index. `--index`, `--add` and `--clean` do.
 4. One store: `.ck/index.db` (SQLite, WAL, contentless FTS5 for BM25, f16 vectors).
 5. stdout carries results only; progress and banners go to stderr.
+6. The query daemon (`src/daemon.rs`, unix only) embeds queries and nothing
+   else: the client sends bare query text, the daemon calls
+   `embed::Embedder::embed_query` on its side (invariant 2 holds through it),
+   and indexing never uses it. One model per daemon, socket at
+   `~/.cache/ck/sockets/ckq2-<alias>-<16 hex of blake3 over the binary's path,
+   size and mtime>.sock` so a rebuilt binary never talks to a stale daemon.
+   It binds before loading the model (two starting clients load it once) and
+   exits after `CKQ_DAEMON_IDLE_SECS` idle (default 900; the tests set 60 in
+   `tests/common`). `CKQ_IN_PROCESS=1` skips the daemon; an unreachable one
+   falls back to in-process embedding with one stderr warning.
 
 ## Build and test
 

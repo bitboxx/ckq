@@ -12,11 +12,18 @@
 //! 4. One store: `.ck/index.db`.
 //! 5. stdout carries results only.
 //!
+//! `--sem` and `--hybrid` embed their query through a resident daemon (unix):
+//! the first search starts it, later ones connect, `CKQ_IN_PROCESS=1` embeds
+//! in the process instead. Indexing never uses it — it embeds documents in
+//! the process that runs `--index`.
+//!
 //! Exit codes: 0 when something was found or a command succeeded, 1 for no
 //! match ("No matches found" on stderr) and for errors (message on stderr).
 
 mod chunk;
 mod corpus;
+#[cfg(unix)]
+mod daemon;
 mod embed;
 mod grep;
 mod index;
@@ -133,6 +140,16 @@ struct Cli {
     /// Embedding model alias for --index (default: the index's own, else gemma-q4).
     #[arg(long, value_name = "ALIAS")]
     model: Option<String>,
+
+    // Daemon (unix); hidden: started by ckq itself, not by users
+    /// Run as the query daemon for `--sem`/`--hybrid` (started by ckq itself).
+    #[cfg(unix)]
+    #[arg(long, hide = true, value_name = "ALIAS", group = "command")]
+    query_daemon: Option<String>,
+    /// Print the query daemon's socket path for ALIAS and exit.
+    #[cfg(unix)]
+    #[arg(long, hide = true, value_name = "ALIAS", group = "command")]
+    daemon_socket: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -160,6 +177,18 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         no_ckignore: cli.no_ckignore,
         no_ignore: cli.no_ignore,
     };
+
+    // ---- Daemon ----------------------------------------------------------
+    #[cfg(unix)]
+    if let Some(alias) = &cli.query_daemon {
+        daemon::serve(alias)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    #[cfg(unix)]
+    if let Some(alias) = &cli.daemon_socket {
+        println!("{}", daemon::socket_path(alias).display());
+        return Ok(ExitCode::SUCCESS);
+    }
 
     // ---- Index commands -------------------------------------------------
     if cli.index {
@@ -300,12 +329,13 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             };
             let hits = if cli.lex {
                 search::lexical(&store, &corpus, &query)?
-            } else if cli.sem {
-                let mut embedder = embed::LlamaEmbedder::load(spec, embed::query_device())?;
-                search::semantic(&store, &mut embedder, &query, spec.threshold)?
             } else {
-                let mut embedder = embed::LlamaEmbedder::load(spec, embed::query_device())?;
-                search::hybrid(&store, &corpus, &mut embedder, &query, spec.threshold)?
+                let mut embedder = query_embedder(spec)?;
+                if cli.sem {
+                    search::semantic(&store, &mut *embedder, &query, spec.threshold)?
+                } else {
+                    search::hybrid(&store, &corpus, &mut *embedder, &query, spec.threshold)?
+                }
             };
             found += output::print_hits(&corpus, &hits, &out_opts)?;
         } else {
@@ -405,4 +435,21 @@ fn status(cli: &Cli) -> anyhow::Result<ExitCode> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The embedder a `--sem`/`--hybrid` search embeds its query with: the query
+/// daemon's (unix), which applies the query prompt on its side in `embed`, or
+/// the model loaded in this process when there is no daemon to reach or
+/// `CKQ_IN_PROCESS=1` asks for none.
+#[cfg(unix)]
+fn query_embedder(spec: &'static models::ModelSpec) -> anyhow::Result<Box<dyn embed::Embedder>> {
+    daemon::embedder(spec)
+}
+
+#[cfg(not(unix))]
+fn query_embedder(spec: &'static models::ModelSpec) -> anyhow::Result<Box<dyn embed::Embedder>> {
+    Ok(Box::new(embed::LlamaEmbedder::load(
+        spec,
+        embed::query_device(),
+    )?))
 }

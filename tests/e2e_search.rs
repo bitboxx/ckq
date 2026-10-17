@@ -1,9 +1,10 @@
 //! Search behaviour end to end, through the real binary and the real default
 //! model: what each mode ranks first, how `--term`, `--threshold` and
-//! `--topk` shape the results, that a search is deterministic, that two runs
-//! of the now single (daemonless) path agree, that concurrent searches agree,
-//! and that the index follows an edited file. These replace the three old
-//! integration tests that asserted nothing whenever the command failed.
+//! `--topk` shape the results, that a search is deterministic, that the query
+//! daemon and the in-process path agree, that the daemon is reused rather
+//! than respawned and survives dead socket files, that concurrent searches
+//! agree, and that the index follows an edited file. These replace the three
+//! old integration tests that asserted nothing whenever the command failed.
 
 mod common;
 
@@ -521,41 +522,115 @@ fn the_same_search_twice_is_identical() {
     }
 }
 
-/// There is no daemon any more: every search runs the same in-process path,
-/// so two runs of the same query must agree exactly — same order, same scores
-/// — and stdout must be clean JSONL with no log lines mixed in (a llama.cpp
-/// WARN used to land there in the old in-process path). `parse_jsonl` fails
-/// the test on any line that is not one JSON object.
+/// The same `--sem` search through the query daemon and with
+/// `CKQ_IN_PROCESS=1` must return the same files in the same order, scores
+/// within 1e-4: the daemon embeds the query with the same `embed_query` the
+/// process would, so the ranking cannot move. Catches a daemon that applies
+/// the query prompt itself (the old engine's double-prefix bug) or returns
+/// vectors of another model, and `parse_jsonl` fails the test on any line of
+/// stdout that is not one JSON object, for either path.
 #[test]
 #[serial]
 #[ignore = "e2e: needs the default model; run with --include-ignored"]
-fn two_runs_of_the_single_path_agree_and_stdout_is_clean_jsonl() {
+#[cfg(unix)]
+fn daemon_and_in_process_agree() {
     let (corpus, query) = fusion_corpus();
     corpus.index();
 
-    let first = corpus.search(&["--sem", query]);
-    let second = corpus.search(&["--sem", query]);
-    assert!(!first.is_empty(), "the corpus must answer");
+    let mut in_process = corpus.ckq();
+    in_process
+        .args(["--sem", query, "--jsonl", "--no-snippet", "-q", "."])
+        .env("CKQ_IN_PROCESS", "1");
+    let out = common::run_ok(&mut in_process);
+    let theirs = common::parse_jsonl(&out.stdout);
 
-    let a = uniq_hits(&first);
-    let b = uniq_hits(&second);
+    let mine = corpus.search(&["--sem", query]);
+    assert!(!mine.is_empty(), "the corpus must answer");
+    assert!(!theirs.is_empty(), "the in-process run must answer too");
+
     assert_eq!(
-        a.iter().map(|h| h.stem()).collect::<Vec<_>>(),
-        b.iter().map(|h| h.stem()).collect::<Vec<_>>(),
-        "two identical runs returned different orders"
+        stems(&mine),
+        stems(&theirs),
+        "the daemon and the in-process path returned different orders"
     );
-    for (x, y) in a.iter().zip(&b) {
-        assert_eq!(
-            x.score,
-            y.score,
-            "two identical runs disagree on the score of {}",
-            x.stem()
+    for (x, y) in uniq_hits(&mine).iter().zip(uniq_hits(&theirs)) {
+        let (x, y) = (x.score.unwrap_or(0.0), y.score.unwrap_or(0.0));
+        assert!(
+            (x - y).abs() <= 1e-4,
+            "the daemon and the in-process path disagree on the score of a file: {x} vs {y}"
         );
     }
 }
 
+/// A second search reuses the running daemon: after one search the socket
+/// exists at the path the binary computes, and a second search leaves the
+/// count of that model's sockets unchanged — a client that respawned per
+/// search would add one.
+#[test]
+#[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+#[cfg(unix)]
+fn a_second_search_reuses_the_running_daemon() {
+    let (corpus, query) = fusion_corpus();
+    corpus.index();
+
+    let socket = common::daemon_socket("gemma-q4");
+    let before = common::daemon_socket_count("gemma-q4");
+    let first = corpus.search(&["--sem", query]);
+    assert!(!first.is_empty(), "the corpus must answer");
+    assert!(
+        socket.exists(),
+        "the daemon's socket {} must exist after a search",
+        socket.display()
+    );
+    let after_first = common::daemon_socket_count("gemma-q4");
+    let second = corpus.search(&["--sem", query]);
+    assert!(!second.is_empty(), "the corpus must answer twice");
+    assert_eq!(
+        common::daemon_socket_count("gemma-q4"),
+        after_first,
+        "a second search spawned another daemon (the count was {before} before the first)"
+    );
+}
+
+/// A dead socket file at the daemon's path must not break search: a socket
+/// nobody listens on, and a regular file, are both cleared and a fresh daemon
+/// started. The daemon is stopped by the exact pid it logged; nothing else is
+/// signalled.
+#[test]
+#[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+#[cfg(unix)]
+fn a_dead_socket_file_does_not_break_search() {
+    let (corpus, query) = fusion_corpus();
+    corpus.index();
+    let socket = common::daemon_socket("gemma-q4");
+
+    // Warm it, so there is a daemon to stop; stopping it leaves exactly the
+    // dead case behind.
+    corpus.search(&["--sem", query]);
+    common::kill_daemon(&socket);
+    let hits = corpus.search(&["--sem", query]);
+    assert!(
+        !hits.is_empty(),
+        "a socket nobody listens on must not break search"
+    );
+
+    common::kill_daemon(&socket);
+    std::fs::remove_file(&socket).unwrap();
+    std::fs::write(&socket, b"not a socket").unwrap();
+    let hits = corpus.search(&["--sem", query]);
+    assert!(
+        !hits.is_empty(),
+        "a regular file at the socket path must not break search"
+    );
+}
+
 /// Six searches started at once, as separate processes, must all succeed and
-/// agree. Catches concurrent readers racing on the store or the embedder.
+/// agree — now with the query daemon starting under them: whichever client
+/// loses the bind race must be served, not load its own model. Catches
+/// concurrent readers racing on the store, and a daemon start that two
+/// simultaneous clients turn into two models or a dropped request.
 #[test]
 #[serial]
 #[ignore = "e2e: needs the default model; run with --include-ignored"]

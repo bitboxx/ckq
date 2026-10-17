@@ -63,6 +63,15 @@ when one is present. Five model aliases exist — `gemma-q4` (the default),
 `gemma-gguf`, `granite-gguf`, `bge-m3-gguf` and `qwen3-gguf` — all GGUF,
 downloaded from Hugging Face on first use.
 
+Searches embed their query through a small resident daemon: the first `--sem`
+or `--hybrid` starts it and every later one connects, so a day of searching
+loads the model once instead of once per call (loading it costs about 0.4 s).
+One daemon per model, keyed to the exact binary, so a rebuild never talks to
+a stale one; it exits after 15 minutes without a query. The daemon does
+nothing but embed queries — indexing always loads the model in the process
+that runs it — and `CKQ_IN_PROCESS=1` embeds in the searching process instead.
+Sockets live in `~/.cache/ck/sockets` (unix only).
+
 Hybrid search fuses per file by CombMAX over weighted reciprocal ranks: each
 method contributes `weight / (3 + rank)`, a file keeps the better of its two
 scores, and agreement between the methods breaks near-ties. Summed RRF was

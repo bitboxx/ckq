@@ -29,10 +29,87 @@ pub fn ckq_bin() -> PathBuf {
 /// the defaults whatever the developer's shell exports.
 pub fn ckq() -> Command {
     let mut cmd = Command::new(ckq_bin());
-    for var in ["CKQ_GGUF_FILE", "CKQ_TIMING", "CKQ_QUERY_DEVICE"] {
+    for var in [
+        "CKQ_GGUF_FILE",
+        "CKQ_TIMING",
+        "CKQ_QUERY_DEVICE",
+        "CKQ_IN_PROCESS",
+    ] {
         cmd.env_remove(var);
     }
+    // A short query-daemon idle: every test build is a new executable and so
+    // a new daemon, and none of them should hold the model for a quarter of
+    // an hour after the run.
+    cmd.env("CKQ_DAEMON_IDLE_SECS", "60");
     cmd
+}
+
+/// The query daemon's socket path for `alias`, as the binary itself computes
+/// it (unix only). Asking the binary is the one way that cannot drift from
+/// what it actually uses.
+#[cfg(unix)]
+pub fn daemon_socket(alias: &str) -> PathBuf {
+    let out = run_ok(ckq().args(["--daemon-socket", alias]));
+    let path = String::from_utf8(out.stdout).expect("the socket path is utf-8");
+    PathBuf::from(path.trim())
+}
+
+/// How many daemon socket files for `alias` exist right now: one per daemon,
+/// live or dead-but-uncleared.
+#[cfg(unix)]
+pub fn daemon_socket_count(alias: &str) -> usize {
+    let dir = daemon_socket(alias)
+        .parent()
+        .expect("a socket path has a directory")
+        .to_path_buf();
+    let prefix = format!("ckq2-{alias}-");
+    fs::read_dir(&dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| {
+                    e.file_name()
+                        .to_str()
+                        .is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".sock"))
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Stop the daemon serving `socket`: signal the exact pid it logged — never a
+/// name pattern — and wait until its socket stops answering, so what it left
+/// behind is exactly a dead socket. Does nothing when no daemon answers.
+#[cfg(unix)]
+pub fn kill_daemon(socket: &Path) {
+    let mut log = socket.as_os_str().to_os_string();
+    log.push(".log");
+    let Ok(text) = fs::read_to_string(PathBuf::from(log)) else {
+        return;
+    };
+    let Some(pid) = text.lines().find_map(|l| {
+        l.split("pid ")
+            .nth(1)?
+            .split(' ')
+            .next()?
+            .parse::<i32>()
+            .ok()
+    }) else {
+        return;
+    };
+    let _ = std::process::Command::new("kill")
+        .arg(pid.to_string())
+        .status();
+    use std::os::unix::net::UnixStream;
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if UnixStream::connect(socket).is_err() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("daemon {pid} still answers on {}", socket.display());
 }
 
 /// Run a command and require success, with both streams in the failure message.

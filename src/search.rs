@@ -248,7 +248,32 @@ pub fn hybrid(
         text: q.text.clone(),
         terms: q.terms.clone(),
     };
-    let lexical = lexical(store, corpus, &lex_query)?;
+    // Fusion needs the lexical ranking, not its spans: `lexical` would read
+    // and re-chunk every ranked file, and for each one the semantic side
+    // also found, fusion keeps the semantic chunk and drops the lexical
+    // hit's. Rank here through the store alone; locate spans afterwards,
+    // only for the fused files that still lack one.
+    let expr = fts_query(&lex_query);
+    let ranked = if expr.is_empty() {
+        Vec::new()
+    } else {
+        store.bm25(&expr, &q.scope, depth)?
+    };
+    let no_span = || Chunk {
+        byte_start: 0,
+        byte_end: 0,
+        line_start: 1,
+        line_end: 1,
+    };
+    let lexical: Vec<Hit> = ranked
+        .into_iter()
+        .map(|(rel, _)| Hit {
+            rel,
+            chunk: no_span(),
+            score: 0.0,
+            signals: None,
+        })
+        .collect();
     let sem_query = Query {
         topk: depth * 3,
         threshold: q.threshold,
@@ -263,8 +288,16 @@ pub fn hybrid(
     } else {
         LEX_WEIGHT_WITH_TERMS
     };
-    let fused = fuse_by_file(&lexical, &semantic, lex_weight);
-    Ok(fused.into_iter().take(q.topk).collect())
+    let mut fused = fuse_by_file(&lexical, &semantic, lex_weight);
+    fused.truncate(q.topk);
+    let terms = span_terms(q);
+    for hit in &mut fused {
+        if hit.signals.is_some_and(|s| s.vec_rank.is_none()) {
+            let (chunk, _) = locate_span(corpus, &hit.rel, &terms);
+            hit.chunk = chunk;
+        }
+    }
+    Ok(fused)
 }
 
 /// Reciprocal rank fusion of two rankings at file level, the lexical one
@@ -454,5 +487,94 @@ mod tests {
             LEX_WEIGHT_WITH_TERMS,
         );
         assert_eq!(full[0].rel.as_str(), "wrong.md");
+    }
+
+    /// An embedder whose query vector is fixed: enough to drive `semantic`
+    /// against vectors the test wrote into the store itself.
+    struct FixedEmbedder(Vec<f32>);
+
+    impl crate::embed::Embedder for FixedEmbedder {
+        fn dims(&self) -> usize {
+            self.0.len()
+        }
+        fn embed_documents(&mut self, _: &[&str]) -> Result<Vec<Vec<f32>>> {
+            unreachable!("hybrid embeds only the query")
+        }
+        fn embed_query(&mut self, _: &str) -> Result<Vec<f32>> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[test]
+    fn hybrid_keeps_semantic_spans_and_locates_only_the_rest() {
+        use crate::models;
+        use crate::store::{FileRecord, IndexMeta, Store};
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let corpus = Corpus::for_index(dir.path()).unwrap();
+        // Real files, so a span that gets located is located in them.
+        std::fs::write(dir.path().join("sem.md"), "needle semantic home\n").unwrap();
+        std::fs::write(
+            dir.path().join("lex.md"),
+            "filler line\nneedle lexical span\n",
+        )
+        .unwrap();
+        let meta = IndexMeta::for_model(models::resolve(models::DEFAULT_ALIAS).unwrap());
+        let mut store = Store::open_write(&corpus, &meta).unwrap();
+        let rec = |rel: &str, hash: &str| FileRecord {
+            rel: RelPath::new(std::path::Path::new(rel)).unwrap(),
+            hash: hash.to_string(),
+            size: 10,
+            mtime_ns: 1,
+        };
+        let sem_chunk = Chunk {
+            byte_start: 0,
+            byte_end: 21,
+            line_start: 1,
+            line_end: 1,
+        };
+        let lex_chunk = Chunk {
+            byte_start: 0,
+            byte_end: 26,
+            line_start: 1,
+            line_end: 2,
+        };
+        // sem.md has a vector; lex.md is lexical-only.
+        store
+            .put_file(
+                &rec("sem.md", "h1"),
+                "needle semantic home\n",
+                &[sem_chunk],
+                &[vec![0.5; 768]],
+            )
+            .unwrap();
+        store
+            .put_file(
+                &rec("lex.md", "h2"),
+                "filler line\nneedle lexical span\n",
+                &[lex_chunk],
+                &[],
+            )
+            .unwrap();
+
+        let q = query("needle", &[]);
+        let mut embedder = FixedEmbedder(vec![1.0; 768]);
+        let hits = hybrid(&store, &corpus, &mut embedder, &q, -1.0).unwrap();
+        assert_eq!(hits.len(), 2, "{:?}", hits);
+
+        // The file the semantic side found keeps the store's span...
+        let sem = hits.iter().find(|h| h.rel.as_str() == "sem.md").unwrap();
+        assert_eq!(sem.chunk, sem_chunk);
+        // ...and the lexical-only file gets a span located in the real file
+        // that covers the needle (bytes 12..18 of "filler line\nneedle..."),
+        // not the empty placeholder.
+        let lex = hits.iter().find(|h| h.rel.as_str() == "lex.md").unwrap();
+        assert!(lex.signals.unwrap().vec_rank.is_none());
+        assert!(
+            lex.chunk.byte_start <= 12 && lex.chunk.byte_end >= 18,
+            "span {:?} does not cover the match",
+            lex.chunk
+        );
     }
 }

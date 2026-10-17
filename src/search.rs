@@ -9,10 +9,17 @@
 //!   file's chunk with the most matches.
 //! - Semantic ranks chunks by cosine similarity and keeps those at or above
 //!   the threshold (the model's own unless `--threshold`).
-//! - Hybrid fuses per file by reciprocal rank, k = 3: each method contributes
-//!   weight / (k + rank). The lexical weight is 1.0 with `--term` and 0.15
-//!   without (at full weight a question matched same-subject documents in its
-//!   own language and rank-1 hits on the bench fell from 35 to 15 of 40).
+//! - Hybrid fuses per file by CombMAX over weighted reciprocal ranks: a rank r
+//!   scores weight / (k + r) with k = 3, a file takes the better of its two
+//!   scores, and the other adds 0.01 of itself to break near-ties. Summed RRF
+//!   lost on the vault evaluation (17 Oct 2026, 48 questions): at every k from
+//!   3 to 60 and every lexical weight from 0.4 to 2.0 a note both methods
+//!   ranked second or third overtook the note one method ranked first, and
+//!   34 to 36 answers came first against 37 for CombMAX. The lexical weight is
+//!   1.05 with `--term`, so a keyword first place leads at equal rank (1.0
+//!   gave 34 first, 1.3 gave 37 with a lower MRR), and 0.15 without (at full
+//!   weight a question matched same-subject documents in its own language and
+//!   rank-1 hits on the bench fell from 35 to 15 of 40).
 //!   `--threshold` filters the semantic list before fusion. One result per
 //!   file, its span from the semantic method when it found the file. Each hit
 //!   carries both ranks and the fused score.
@@ -25,7 +32,8 @@ use anyhow::Result;
 use std::collections::HashMap;
 
 pub const RRF_K: f32 = 3.0;
-pub const LEX_WEIGHT_WITH_TERMS: f32 = 1.0;
+pub const LEX_WEIGHT_WITH_TERMS: f32 = 1.05;
+pub const AGREEMENT_WEIGHT: f32 = 0.01;
 pub const LEX_WEIGHT_QUERY_ONLY: f32 = 0.15;
 
 #[derive(Debug, Clone)]
@@ -306,7 +314,9 @@ fn fuse_by_file(lexical: &[Hit], semantic: &[Hit], lexical_weight: f32) -> Vec<H
     let mut fused: Vec<Hit> = entries
         .into_values()
         .map(|mut entry| {
-            let score = lexical_weight * rank_score(entry.lex_rank) + rank_score(entry.vec_rank);
+            let lex = lexical_weight * rank_score(entry.lex_rank);
+            let vec = rank_score(entry.vec_rank);
+            let score = lex.max(vec) + AGREEMENT_WEIGHT * lex.min(vec);
             entry.hit.score = score;
             entry.hit.signals = Some(Signals {
                 lex_rank: entry.lex_rank,
@@ -368,5 +378,81 @@ mod tests {
     #[test]
     fn punctuation_only_queries_match_nothing() {
         assert_eq!(fts_query(&query("?? --", &[])), "");
+    }
+
+    fn hits(names: &[&str]) -> Vec<Hit> {
+        names
+            .iter()
+            .map(|n| Hit {
+                rel: RelPath::new(std::path::Path::new(n)).unwrap(),
+                chunk: Chunk {
+                    byte_start: 0,
+                    byte_end: 1,
+                    line_start: 1,
+                    line_end: 1,
+                },
+                score: 1.0,
+                signals: None,
+            })
+            .collect()
+    }
+
+    fn position(fused: &[Hit], name: &str) -> usize {
+        fused.iter().position(|h| h.rel.as_str() == name).unwrap()
+    }
+
+    #[test]
+    fn fusion_gives_one_result_per_file_with_both_ranks() {
+        let fused = fuse_by_file(
+            &hits(&["a.md", "b.md"]),
+            &hits(&["b.md", "b.md", "c.md"]),
+            LEX_WEIGHT_WITH_TERMS,
+        );
+        assert_eq!(fused.len(), 3);
+        let b = &fused[position(&fused, "b.md")];
+        let s = b.signals.unwrap();
+        assert_eq!((s.lex_rank, s.vec_rank), (Some(2), Some(1)));
+        assert_eq!(s.rrf_score, b.score);
+    }
+
+    #[test]
+    fn a_keyword_first_place_beats_a_shared_second_place() {
+        // Summed RRF would put both.md first; CombMAX must not.
+        let fused = fuse_by_file(
+            &hits(&["top.md", "both.md"]),
+            &hits(&["sem.md", "both.md"]),
+            LEX_WEIGHT_WITH_TERMS,
+        );
+        assert_eq!(position(&fused, "top.md"), 0, "keywords lead at equal rank");
+        assert!(position(&fused, "sem.md") < position(&fused, "both.md"));
+        assert!(fused[position(&fused, "both.md")].score > 0.0);
+    }
+
+    #[test]
+    fn agreement_breaks_a_tie_between_equal_best_ranks() {
+        // x.md and y.md are third and fourth for the keywords; y.md is also
+        // third for the semantic method, which ties it with x.md and lifts it.
+        let fused = fuse_by_file(
+            &hits(&["l1.md", "l2.md", "x.md", "y.md"]),
+            &hits(&["s1.md", "s2.md", "y.md"]),
+            1.0,
+        );
+        assert!(position(&fused, "y.md") < position(&fused, "x.md"));
+    }
+
+    #[test]
+    fn a_low_lexical_weight_cannot_overturn_the_semantic_first_place() {
+        let fused = fuse_by_file(
+            &hits(&["wrong.md", "b.md"]),
+            &hits(&["right.md", "b.md"]),
+            LEX_WEIGHT_QUERY_ONLY,
+        );
+        assert_eq!(fused[0].rel.as_str(), "right.md");
+        let full = fuse_by_file(
+            &hits(&["wrong.md", "b.md"]),
+            &hits(&["right.md", "b.md"]),
+            LEX_WEIGHT_WITH_TERMS,
+        );
+        assert_eq!(full[0].rel.as_str(), "wrong.md");
     }
 }

@@ -99,6 +99,16 @@ pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
     let mut to_embed: Vec<(FileRecord, String, Vec<crate::chunk::Chunk>)> = Vec::new();
     let t_read = Instant::now();
     for file in &walked {
+        // Same size and mtime as indexed: trust it without reading. The hook
+        // that keeps a corpus current runs this after nearly every write, so
+        // reading and hashing every file each time would be the whole cost.
+        if indexed
+            .get(&file.rel)
+            .is_some_and(|p| p.size == file.size && p.mtime_ns == file.mtime_ns)
+        {
+            report.unchanged += 1;
+            continue;
+        }
         match std::fs::read(corpus.abs(&file.rel)) {
             Ok(bytes) => {
                 let hash = blake3::hash(&bytes).to_hex().to_string();

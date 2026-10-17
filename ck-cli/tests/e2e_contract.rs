@@ -516,14 +516,12 @@ fn sem_lex_hybrid_json_schema_fields() {
         "the lexical method's rank shows up: {hybrid:?}"
     );
 }
-/// The documented hybrid contract — "one result per file", with a file both
-/// methods find carrying both ranks — is not what the binary does today: it
-/// emits one entry per method, so the corroborating file appears twice, once as
-/// a relative and once as an absolute path, each with only one rank set.
+/// The documented hybrid contract: one entry per file, and a file both
+/// methods find carries both ranks. Corroboration must fuse, not duplicate.
 #[test]
 #[serial]
-#[ignore = "bug: --hybrid emits one entry per method so a file both find appears twice with split ranks instead of one fused entry; also needs the default model (run with --include-ignored)"]
-fn known_bug_hybrid_jsonl_one_fused_result_per_file() {
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn hybrid_jsonl_one_fused_result_per_file() {
     let corpus = semantic_corpus();
     corpus.index();
 

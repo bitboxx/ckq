@@ -786,13 +786,13 @@ fn stems(hits: &[Hit]) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// A caller that passes an absolute path from some other directory must get
-/// what a caller inside the corpus gets. Found 17 Oct 2026: `--sem` returned
-/// "No matches found" from any working directory outside the searched one,
-/// so `--hybrid` silently fell back to keyword hits only.
+/// what a caller inside the corpus gets: the same files, in the same order.
+/// Document paths are rooted on an absolute form of the index root, so neither
+/// arm's reads nor its results depend on the process working directory.
 #[test]
 #[serial]
-#[ignore = "bug: --sem returns nothing when the working directory is outside the searched directory, even with an absolute path"]
-fn known_bug_semantic_search_is_the_same_from_another_directory() {
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn semantic_search_is_the_same_from_another_directory() {
     let corpus = Corpus::new();
     corpus.write(
         "volcano.md",

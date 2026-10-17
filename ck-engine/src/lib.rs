@@ -138,6 +138,28 @@ fn split_lines_with_endings(content: &str) -> (Vec<String>, Vec<usize>) {
 
     (lines, endings)
 }
+/// The one identity of an indexed document: `stored` — the path as the
+/// lexical index or the vector cache recorded it, relative to the index root
+/// or carrying a root prefix in whatever form the process that wrote it used —
+/// re-rooted on the absolute form of `index_root`.
+///
+/// `std::path::absolute`, not `canonicalize`: it is purely lexical, so a root
+/// reached through a symlink yields the same form in every arm, it costs no
+/// filesystem call, and it works on paths of files that have since moved.
+/// Routing both hybrid arms through this one function is what makes their
+/// fusion keys meet, and re-rooting on an absolute root is what makes file
+/// reads independent of the process working directory. Output paths are
+/// absolute whenever the user passed an absolute path, and stay usable by a
+/// wrapper that strips the root prefix.
+pub(crate) fn rooted_document_path(index_root: &Path, stored: &Path) -> PathBuf {
+    let root = std::path::absolute(index_root).unwrap_or_else(|_| index_root.to_path_buf());
+    let relative = stored
+        .strip_prefix(index_root)
+        .or_else(|_| stored.strip_prefix(&root))
+        .unwrap_or(stored);
+    let relative = relative.strip_prefix(".").unwrap_or(relative);
+    root.join(relative)
+}
 
 fn canonicalize_for_matching(path: &Path) -> PathBuf {
     if let Ok(canonical) = path.canonicalize() {
@@ -1128,8 +1150,7 @@ async fn lexical_ranked(options: &SearchOptions, locate: bool) -> Result<Lexical
             .get_first(content_field)
             .map(|field_value| field_value.as_str().unwrap_or(""))
             .unwrap_or("");
-
-        let file_path = PathBuf::from(path_text);
+        let file_path = rooted_document_path(&index_root, Path::new(path_text));
         if !path_matches_include(&file_path, &options.include_patterns) {
             continue;
         }

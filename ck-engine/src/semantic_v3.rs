@@ -289,37 +289,49 @@ fn load_all_chunks(
     index_root: &Path,
 ) -> Result<(ck_index::vector_cache::VectorSet, bool)> {
     use ck_index::vector_cache;
-    if let Some(chunks) = vector_cache::load(index_dir) {
-        return Ok((chunks, true));
-    }
-    // Taken before the walk: if the index changes while the sidecars are being
-    // read, the save below sees a different manifest and writes nothing.
-    let stamp = vector_cache::manifest_stamp(index_dir);
-    let mut chunks = vector_cache::VectorSet::default();
-    for entry in WalkDir::new(index_dir) {
-        let entry = entry?;
-        let path = entry.path();
-        if !entry.file_type().is_file() || path.extension().and_then(|s| s.to_str()) != Some("ck") {
-            continue;
-        }
-        let Ok(index_entry) = ck_index::load_index_entry(path) else {
-            continue;
-        };
-        let Some(original_file) = reconstruct_original_path(path, index_dir, index_root) else {
-            continue;
-        };
-        for chunk in index_entry.chunks {
-            if let Some(embedding) = chunk.embedding {
-                chunks.push(&original_file, chunk.span, &embedding);
+    let (mut chunks, cache_hit) = if let Some(chunks) = vector_cache::load(index_dir) {
+        (chunks, true)
+    } else {
+        // Taken before the walk: if the index changes while the sidecars are being
+        // read, the save below sees a different manifest and writes nothing.
+        let stamp = vector_cache::manifest_stamp(index_dir);
+        let mut chunks = vector_cache::VectorSet::default();
+        for entry in WalkDir::new(index_dir) {
+            let entry = entry?;
+            let path = entry.path();
+            if !entry.file_type().is_file()
+                || path.extension().and_then(|s| s.to_str()) != Some("ck")
+            {
+                continue;
+            }
+            let Ok(index_entry) = ck_index::load_index_entry(path) else {
+                continue;
+            };
+            let Some(original_file) = sidecar_relative_path(path, index_dir) else {
+                continue;
+            };
+            for chunk in index_entry.chunks {
+                if let Some(embedding) = chunk.embedding {
+                    chunks.push(&original_file, chunk.span, &embedding);
+                }
             }
         }
+        if let Some(stamp) = stamp
+            && let Err(e) = vector_cache::save(index_dir, stamp, &chunks)
+        {
+            tracing::debug!("could not write the vector cache: {e}");
+        }
+        (chunks, false)
+    };
+    // The cache stores paths relative to the index root, so a search is
+    // independent of the working directory and root form of the process
+    // that built it. Re-rooting through the shared helper also lands on
+    // the same identity the lexical arm produces, which is what makes
+    // hybrid fusion meet.
+    for file in &mut chunks.files {
+        *file = super::rooted_document_path(index_root, file);
     }
-    if let Some(stamp) = stamp
-        && let Err(e) = vector_cache::save(index_dir, stamp, &chunks)
-    {
-        tracing::debug!("could not write the vector cache: {e}");
-    }
-    Ok((chunks, false))
+    Ok((chunks, cache_hit))
 }
 
 /// Rebuild the packed vector cache for the index at or above `path`, if it is
@@ -375,11 +387,10 @@ impl PathScope {
     }
 }
 
-fn reconstruct_original_path(
-    sidecar_path: &Path,
-    index_dir: &Path,
-    repo_root: &Path,
-) -> Option<std::path::PathBuf> {
+/// The file a sidecar stands for: its path relative to the index root, the
+/// form the vector cache stores. Never rooted here — a root joined now would
+/// be frozen into the cache in whatever form this process used.
+fn sidecar_relative_path(sidecar_path: &Path, index_dir: &Path) -> Option<std::path::PathBuf> {
     // Remove the index directory prefix and .ck extension
     let relative_path = sidecar_path.strip_prefix(index_dir).ok()?;
     let mut original_path = relative_path.with_extension("");
@@ -394,7 +405,7 @@ fn reconstruct_original_path(
         }
     }
 
-    Some(repo_root.join(original_path))
+    Some(original_path)
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {

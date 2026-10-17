@@ -4,7 +4,9 @@
 //! A search used to walk the index directory and decode every sidecar: about
 //! 60 ms for a thousand files, most of a warm query. The cache holds the same
 //! vectors packed together with the path and span of each chunk, raw little-endian
-//! floats after a small header, and reads in a few milliseconds.
+//! floats after a small header, and reads in a few milliseconds. File paths
+//! are stored relative to the index root, so a cache built from one working
+//! directory reads the same from any other.
 //!
 //! It is only ever a copy. Validity is the manifest's identity (inode, mtime,
 //! size): every index write ends by saving the manifest through an atomic
@@ -20,7 +22,12 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 const FILE_NAME: &str = "vectors.cache";
-const MAGIC: &[u8; 8] = b"CKQVEC01";
+// 02 stores file paths relative to the index root. 01 stored whatever form
+// the building process used ("./a.md" from one working directory, "/abs/a.md"
+// from another), so a cache and a search in different directories disagreed
+// about a file's identity and reads opened paths relative to the wrong cwd.
+// The magic is the version: an 01 cache is a miss and is rebuilt.
+const MAGIC: &[u8; 8] = b"CKQVEC02";
 
 /// Every chunk of an index with its embedding, stored flat: one list of files,
 /// one of chunks pointing into it, one buffer of floats. Loading it makes three

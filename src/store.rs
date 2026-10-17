@@ -11,8 +11,8 @@
 
 use crate::chunk::Chunk;
 use crate::corpus::{Corpus, RelPath, Scope};
-use anyhow::{Result, bail};
-use rusqlite::{Connection, OpenFlags, params};
+use anyhow::{Context, Result, anyhow, bail};
+use rusqlite::{Connection, OpenFlags, TransactionBehavior, params};
 use std::collections::HashMap;
 
 pub const DB_FILE: &str = "index.db";
@@ -127,12 +127,26 @@ impl Store {
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
-        let tables: i64 = conn.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
-            [],
-            |r| r.get(0),
-        )?;
-        if tables == 0 {
+        // Before the first index switches the file to WAL, a reader can meet
+        // the writer's exclusive journal lock; wait it out instead of failing.
+        conn.busy_timeout(std::time::Duration::from_secs(30))?;
+        // Schema without meta rows is another process's first `--index`
+        // still in flight: to every reader that is no index yet. The table
+        // check runs first because querying an absent table is an error.
+        let table: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
+                [],
+                |r| r.get(0),
+            )
+            .context("ready check")?;
+        if table == 0 {
+            return Ok(None);
+        }
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM meta", [], |r| r.get(0))
+            .context("ready check")?;
+        if rows == 0 {
             return Ok(None);
         }
         Ok(Some(Store { conn }))
@@ -147,19 +161,19 @@ impl Store {
         let conn = Connection::open(&path)?;
         conn.busy_timeout(std::time::Duration::from_secs(30))?;
         conn.pragma_update(None, "foreign_keys", true)?;
-        let fresh: bool = conn.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
-            [],
-            |r| r.get::<_, i64>(0),
-        )? == 0;
-        conn.execute_batch(SCHEMA)?;
+        // A journal-mode change wants the file to itself and does not honour
+        // busy_timeout, so a second `--index` racing the first one's schema
+        // creation sees BUSY from the batch. The batch is idempotent; retry
+        // it until the other writer is done. Whether an index was there
+        // before is read afterwards, for the same reason.
+        schema_with_retry(&conn)?;
         let stored: Option<String> = conn
             .query_row("SELECT value FROM meta WHERE key = 'signature'", [], |r| {
                 r.get(0)
             })
             .ok();
-        if let Some(old) = stored
-            && old != meta.signature
+        if let Some(old) = stored.as_ref()
+            && *old != meta.signature
         {
             bail!(
                 "the index at {} was built with a different embedding signature \
@@ -169,7 +183,7 @@ impl Store {
             );
         }
         let store = Store { conn };
-        if fresh {
+        if stored.is_none() {
             let IndexMeta {
                 schema_version,
                 model_alias,
@@ -177,18 +191,20 @@ impl Store {
                 dims,
                 signature,
             } = meta;
-            for (k, v) in [
-                ("schema_version", schema_version.to_string()),
-                ("model_alias", model_alias.clone()),
-                ("model_repo", model_repo.clone()),
-                ("dims", dims.to_string()),
-                ("signature", signature.clone()),
-            ] {
-                store.conn.execute(
-                    "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-                    params![k, v],
-                )?;
-            }
+            // One statement, so a concurrent reader never meets a half-written
+            // meta and mistakes it for an index built by another model.
+            store.conn.execute(
+                "INSERT INTO meta (key, value) VALUES \
+                 ('schema_version', ?1), ('model_alias', ?2), ('model_repo', ?3), \
+                 ('dims', ?4), ('signature', ?5)",
+                params![
+                    schema_version.to_string(),
+                    model_alias.clone(),
+                    model_repo.clone(),
+                    dims.to_string(),
+                    signature.clone()
+                ],
+            )?;
         }
         Ok(store)
     }
@@ -249,7 +265,12 @@ impl Store {
         chunks: &[Chunk],
         vectors: &[Vec<f32>],
     ) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        // IMMEDIATE takes the write lock at BEGIN, so a second writer waits
+        // on busy_timeout instead of hitting the upgrade deadlock that
+        // SQLITE_BUSY reports immediately, without calling the busy handler.
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute(
             "DELETE FROM fts WHERE rowid = (SELECT id FROM files WHERE path = ?1)",
             params![file.rel.as_str()],
@@ -312,7 +333,9 @@ impl Store {
 
     /// Drop a file and everything stored for it, in one transaction.
     pub fn remove_file(&mut self, rel: &RelPath) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute(
             "DELETE FROM fts WHERE rowid = (SELECT id FROM files WHERE path = ?1)",
             params![rel.as_str()],
@@ -468,6 +491,31 @@ fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
+}
+
+fn schema_with_retry(conn: &Connection) -> Result<()> {
+    let mut last: Option<rusqlite::Error> = None;
+    for _ in 0..30 {
+        match conn.execute_batch(SCHEMA) {
+            Ok(()) => return Ok(()),
+            Err(e) if is_busy(&e) => {
+                last = Some(e);
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(anyhow!(
+        "the index stayed locked by another ckq for 30 s: {}",
+        last.expect("a busy error")
+    ))
+}
+
+fn is_busy(e: &rusqlite::Error) -> bool {
+    matches!(
+        e.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy)
+    ) || e.to_string().contains("database is locked")
 }
 
 /// f32 to little-endian f16 bytes, and back.

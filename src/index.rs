@@ -10,7 +10,7 @@ use crate::embed::{Device, Embedder, LlamaEmbedder};
 use crate::models::{self, ModelSpec};
 use crate::store::{FileRecord, IndexMeta, Store};
 use crate::walk::WalkOptions;
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use std::time::Instant;
 
 #[derive(Debug, Clone, Default)]
@@ -92,8 +92,8 @@ pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
         }
     }
 
-    let mut store = Store::open_write(corpus, &meta)?;
-    let indexed = store.files()?;
+    let mut store = Store::open_write(corpus, &meta).context("open_write")?;
+    let indexed = store.files().context("files")?;
     let mut report = IndexReport::default();
 
     let mut to_embed: Vec<(FileRecord, String, Vec<crate::chunk::Chunk>)> = Vec::new();
@@ -114,7 +114,7 @@ pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
                         report.unchanged += 1;
                     } else {
                         // Same bytes, new stat: remember the stat, keep the vectors.
-                        store.note_stat(&rec)?;
+                        store.note_stat(&rec).context("note_stat")?;
                         report.unchanged += 1;
                     }
                     continue;
@@ -159,7 +159,9 @@ pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
                 .collect();
             let vectors = embedder.embed_documents(&texts)?;
             embedded += vectors.len();
-            store.put_file(rec, text, chunks, &vectors)?;
+            store
+                .put_file(rec, text, chunks, &vectors)
+                .context("put_file")?;
         }
     }
     let t_embedding = t_embed.elapsed();
@@ -168,7 +170,7 @@ pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
     let live: std::collections::HashSet<&RelPath> = walked.iter().map(|f| &f.rel).collect();
     for rel in indexed.keys() {
         if !live.contains(rel) {
-            store.remove_file(rel)?;
+            store.remove_file(rel).context("remove_file")?;
             report.removed += 1;
         }
     }
@@ -193,7 +195,7 @@ pub fn add_file(corpus: &Corpus, rel: &RelPath, opts: &IndexOptions) -> Result<I
             ));
         }
     }
-    let mut store = Store::open_write(corpus, &meta)?;
+    let mut store = Store::open_write(corpus, &meta).context("open_write")?;
     let path = corpus.abs(rel);
     let bytes = std::fs::read(&path).map_err(|e| anyhow!("reading {}: {e}", path.display()))?;
     let text =
@@ -246,7 +248,7 @@ pub fn stale_count(corpus: &Corpus, opts: &WalkOptions) -> Result<usize> {
     let Some(store) = Store::open_read(corpus)? else {
         return Ok(0);
     };
-    let indexed = store.files()?;
+    let indexed = store.files().context("files")?;
     let walked = crate::walk::walk(corpus, opts)?;
     let mut stale = 0usize;
     for file in &walked {

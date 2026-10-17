@@ -319,14 +319,15 @@ mod tests {
         }
         let chunks = chunk(&rel("big.md"), &text);
         assert!(chunks.len() > 5);
-        let mut covered = vec![false; 4201];
+        // Index i-1 is line i: every line of the file must fall in some chunk.
+        let mut covered = vec![false; 4200];
         for c in &chunks {
             for seen in covered.iter_mut().take(c.line_end).skip(c.line_start - 1) {
                 *seen = true;
             }
             assert!(c.byte_end <= text.len());
         }
-        assert!(covered[1..].iter().all(|c| *c), "some line uncovered");
+        assert!(covered.iter().all(|c| *c), "some line uncovered");
     }
 
     #[test]

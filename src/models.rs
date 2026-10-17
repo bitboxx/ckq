@@ -1,6 +1,6 @@
 //! The embedding models ckq knows, and where their weights live.
 //!
-//! GGUF only, run by llama.cpp: the five aliases, their Hugging Face repo
+//! GGUF only, run by llama.cpp: the eight aliases, their Hugging Face repo
 //! and file, dimensions, pooling, prompts and default thresholds.
 //! `gemma-q4` is the default.
 
@@ -12,6 +12,9 @@ pub enum Pooling {
     Mean,
     /// Last token, for decoder models such as Qwen3-Embedding.
     Last,
+    /// First token, for encoders that pool the CLS token such as the
+    /// ModernBERT Granite-Embedding models.
+    Cls,
 }
 
 #[derive(Debug, Clone)]
@@ -97,9 +100,58 @@ const QWEN3: ModelSpec = ModelSpec {
     threshold: 0.35,
 };
 
-/// The registry. `gemma-q4`, `gemma-gguf`, `granite-gguf`, `bge-m3-gguf`, `qwen3-gguf`.
+const HARRIER: ModelSpec = ModelSpec {
+    alias: "harrier-gguf",
+    repo: "mradermacher/harrier-oss-v1-0.6b-GGUF",
+    file: "harrier-oss-v1-0.6b.Q8_0.gguf",
+    dims: 1024,
+    context: 32768,
+    pooling: Pooling::Last,
+    // harrier is a Qwen3-Embedding-style decoder: the web-search instruction
+    // from the model card prefixes the query, and documents go in bare.
+    query_prefix: "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: ",
+    document_prefix: "",
+    threshold: 0.40,
+};
+
+const GRANITE_R2_311M: ModelSpec = ModelSpec {
+    alias: "granite-r2-311m",
+    repo: "mykor/granite-embedding-311m-multilingual-r2-GGUF",
+    file: "granite-embedding-311M-multilingual-r2-Q8_0.gguf",
+    dims: 768,
+    context: 32768,
+    pooling: Pooling::Cls,
+    // The R2 card encodes queries and passages with no prefixes at all.
+    query_prefix: "",
+    document_prefix: "",
+    threshold: 0.80,
+};
+
+const GRANITE_R2_97M: ModelSpec = ModelSpec {
+    alias: "granite-r2-97m",
+    repo: "mykor/granite-embedding-97m-multilingual-r2-GGUF",
+    file: "granite-embedding-97M-multilingual-r2-Q8_0.gguf",
+    dims: 384,
+    context: 32768,
+    pooling: Pooling::Cls,
+    query_prefix: "",
+    document_prefix: "",
+    threshold: 0.78,
+};
+
+/// The registry. `gemma-q4`, `gemma-gguf`, `granite-gguf`, `granite-r2-311m`,
+/// `granite-r2-97m`, `bge-m3-gguf`, `qwen3-gguf`, `harrier-gguf`.
 pub fn all() -> &'static [ModelSpec] {
-    &[GEMMA_Q4, GEMMA_Q8, GRANITE, BGE_M3, QWEN3]
+    &[
+        GEMMA_Q4,
+        GEMMA_Q8,
+        GRANITE,
+        GRANITE_R2_311M,
+        GRANITE_R2_97M,
+        BGE_M3,
+        QWEN3,
+        HARRIER,
+    ]
 }
 
 /// An alias, or a repo name as stored in an index, to its spec.
@@ -164,6 +216,7 @@ pub fn signature(spec: &ModelSpec) -> String {
     hasher.update(match spec.pooling {
         Pooling::Mean => b"mean",
         Pooling::Last => b"last",
+        Pooling::Cls => b"cls",
     });
     hasher.update(b"\0");
     hasher.update(&crate::chunk::TARGET_TOKENS.to_le_bytes());

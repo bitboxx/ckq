@@ -282,6 +282,7 @@ fn pooling_of(spec: &ModelSpec) -> llama_cpp_2::context::params::LlamaPoolingTyp
     match spec.pooling {
         crate::models::Pooling::Mean => LlamaPoolingType::Mean,
         crate::models::Pooling::Last => LlamaPoolingType::Last,
+        crate::models::Pooling::Cls => LlamaPoolingType::Cls,
     }
 }
 
@@ -334,14 +335,10 @@ fn run(
     max_length: usize,
     dim: usize,
 ) -> Result<Vec<Vec<f32>>> {
-    use llama_cpp_2::model::AddBos;
-
     let mut encoded: Vec<Vec<_>> = Vec::with_capacity(texts.len());
     let mut truncated = 0usize;
     for text in texts {
-        let mut tokens = model
-            .str_to_token(text, AddBos::Always)
-            .map_err(|e| anyhow!("tokenize: {e}"))?;
+        let mut tokens = model.vocab().tokenize(text.as_bytes(), true, false);
         // Truncate rather than fail: ck chunks upstream, so an over-long chunk
         // is a chunker bug and not a reason to lose the whole file.
         if tokens.len() > max_length {

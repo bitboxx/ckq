@@ -33,3 +33,28 @@ when air is trapped inside, and the answer is a Hindi document about wedging cla
 never mentions a kiln. The other asks in Hindi how to decide sowing depth, and the answer
 is an Arabic document that gives the rule as twice the seed's diameter. Both need a step of
 inference rather than a closer match, which is the honest limit of a bi-encoder.
+
+## Results, 17 Oct 2026 — Apache/MIT candidates
+
+Four candidates for replacing gemma-q4 (Gemma Terms of Use) with a ship-safe
+licence, on one build: llama-cpp-2 at git `e40decdb` (llama.cpp v0.6.0, the
+first vendored version that knows the `modern-bert` architecture; 0.1.157 from
+crates.io does not). `gemma-q4` re-run as the control on the same build.
+Thresholds for the new models sit just below their lowest correct-hit score.
+
+| model | params | rank 1 | MRR@5 | score range |
+|---|---:|---:|---:|---:|
+| `gemma-q4` (control, re-run) | 300M | 35/40 | 0.927 | 0.36-0.72 |
+| `granite-r2-311m` | 311M | 33/40 | 0.895 | 0.81-0.94 |
+| `harrier-gguf` | 600M | 32/40 | 0.883 | 0.42-0.63 |
+| `granite-r2-97m` | 97M | 28/40 | 0.788 | 0.79-0.92 |
+
+Through `--hybrid` the same three candidates hold their rank 1 and MRR@5
+exactly (33/0.895, 32/0.883, 28/0.788), as does the control (35/0.927).
+
+`google/embeddinggemma-2` (Apache-2.0) was blocked: it needs the
+`gemma-embedding2` architecture, added in llama.cpp 4fbc76de on 6 Oct 2026, and
+no commit of llama-cpp-rs vendors a llama.cpp that new — the newest submodule
+is v0.6.0 (d812350, 5 Oct 2026), one day short. Every other candidate kept its
+licence verified on its Hugging Face page: harrier MIT, both granite Apache-2.0.
+

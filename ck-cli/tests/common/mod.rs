@@ -301,3 +301,11 @@ pub fn uniq_hits(hits: &[Hit]) -> Vec<Hit> {
     }
     out
 }
+
+/// The parsed `.ck/manifest.json` of the index rooted at `root`, for tests
+/// that assert on which files the index believes it has.
+pub fn read_manifest(root: &Path) -> Value {
+    let data = fs::read(root.join(".ck").join("manifest.json"))
+        .expect(".ck/manifest.json should exist after --index");
+    serde_json::from_slice(&data).expect(".ck/manifest.json should be valid JSON")
+}

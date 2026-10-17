@@ -13,6 +13,13 @@ publish = false
 # step of the rewrite removes them they stay in the tree, unbuilt, as a source
 # to port from. Nothing here may depend on them.
 
+[features]
+# Build one GGUF into the binary itself: build.rs then requires CKQ_EMBED_GGUF
+# (the file) and CKQ_EMBED_ALIAS (its registry alias), and that model becomes
+# the build's default, so the one file works offline on a fresh machine. Off
+# by default: a normal build downloads models on first use, as before.
+embedded-model = []
+
 [[bin]]
 name = "ckq"
 path = "src/main.rs"
@@ -42,6 +49,9 @@ libc = "0.2"
 [dev-dependencies]
 serial_test = "2.0"
 tempfile = "3"
+
+[build-dependencies]
+blake3 = "1.8"
 
 [profile.release]
 lto = "thin"

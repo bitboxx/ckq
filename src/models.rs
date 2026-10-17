@@ -30,7 +30,12 @@ pub struct ModelSpec {
     pub threshold: f32,
 }
 
+/// The default model: `gemma-q4`, or the embedded alias in a build that
+/// carries one inside the binary.
+#[cfg(not(feature = "embedded-model"))]
 pub const DEFAULT_ALIAS: &str = "gemma-q4";
+#[cfg(feature = "embedded-model")]
+pub const DEFAULT_ALIAS: &str = env!("CKQ_EMBED_ALIAS");
 
 const GEMMA_Q4: ModelSpec = ModelSpec {
     alias: "gemma-q4",
@@ -120,6 +125,10 @@ pub fn resolve(name: &str) -> Result<&'static ModelSpec> {
 /// same model), else the Hugging Face cache under `~/.cache/ck/models`,
 /// downloading on first use. Same cache layout as the old engine, so nothing
 /// already downloaded is fetched again.
+///
+/// In a build that carries the GGUF of this alias inside the binary, the
+/// embedded bytes come out to `~/.cache/ck/models/embedded/<blake3>.gguf`
+/// instead: written once, offline, never downloaded.
 pub fn gguf_path(spec: &ModelSpec) -> Result<PathBuf> {
     if let Some(override_path) = std::env::var_os("CKQ_GGUF_FILE") {
         let path = PathBuf::from(override_path);
@@ -127,6 +136,10 @@ pub fn gguf_path(spec: &ModelSpec) -> Result<PathBuf> {
             bail!("CKQ_GGUF_FILE does not point at a file: {}", path.display());
         }
         return Ok(path);
+    }
+    #[cfg(feature = "embedded-model")]
+    if Some(spec.alias) == embedded_alias() {
+        return embedded_gguf_path();
     }
     let cache = hf_hub::api::sync::ApiBuilder::new()
         .with_cache_dir(models_cache_dir())
@@ -146,6 +159,64 @@ fn models_cache_dir() -> PathBuf {
     std::env::current_dir()
         .unwrap_or_default()
         .join(".ck_models")
+}
+
+/// The alias whose GGUF this build carries inside the binary
+/// (`embedded-model` feature), which is that build's default model. `None`
+/// in a normal build, where every model downloads on first use.
+#[cfg(feature = "embedded-model")]
+pub fn embedded_alias() -> Option<&'static str> {
+    Some(embedded::ALIAS)
+}
+
+#[cfg(not(feature = "embedded-model"))]
+pub fn embedded_alias() -> Option<&'static str> {
+    None
+}
+
+/// The one GGUF this build carries: the bytes, and the first 16 hex of
+/// their blake3, computed by build.rs so a run never re-hashes 278 MB.
+#[cfg(feature = "embedded-model")]
+mod embedded {
+    pub const GGUF: &[u8] = include_bytes!(env!("CKQ_EMBED_GGUF"));
+    pub const ALIAS: &str = env!("CKQ_EMBED_ALIAS");
+    pub const HASH: &str = env!("CKQ_EMBED_BLAKE3");
+}
+
+/// The embedded bytes as a path llama.cpp can load: llama.cpp reads only
+/// from a file, so they are written out once, when absent.
+#[cfg(feature = "embedded-model")]
+fn embedded_gguf_path() -> Result<PathBuf> {
+    install_gguf(
+        &models_cache_dir().join("embedded"),
+        &format!("{}.gguf", embedded::HASH),
+        embedded::GGUF,
+    )
+}
+
+/// `bytes` at `dir/name`, written once: a file already there of the right
+/// size is trusted; anything else (absent, wrong size, a half-written temp
+/// left behind by a crashed process) is replaced by writing a per-process
+/// temp file in the same directory, fsync, and an atomic rename — two
+/// processes racing both end up with one complete file.
+#[cfg(feature = "embedded-model")]
+fn install_gguf(dir: &std::path::Path, name: &str, bytes: &[u8]) -> Result<PathBuf> {
+    let path = dir.join(name);
+    if let Ok(meta) = std::fs::metadata(&path)
+        && meta.len() == bytes.len() as u64
+    {
+        return Ok(path);
+    }
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    {
+        use std::io::Write as _;
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&tmp, &path)?;
+    Ok(path)
 }
 
 /// What has to match for two vectors to be comparable: the model, the
@@ -169,4 +240,67 @@ pub fn signature(spec: &ModelSpec) -> String {
     hasher.update(&crate::chunk::TARGET_TOKENS.to_le_bytes());
     hasher.update(&crate::chunk::OVERLAP_TOKENS.to_le_bytes());
     hasher.finalize().to_hex()[..16].to_string()
+}
+
+#[cfg(all(test, feature = "embedded-model"))]
+mod tests {
+    use super::install_gguf;
+    use tempfile::TempDir;
+
+    /// A directory that does not exist yet is created, and the bytes land
+    /// in it complete.
+    #[test]
+    fn install_creates_the_directory_and_writes_the_bytes() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("embedded");
+        let path = install_gguf(&target, "hash.gguf", b"gguf bytes").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"gguf bytes");
+    }
+
+    /// A file already there of the right size is trusted as-is: it is not
+    /// rewritten.
+    #[test]
+    fn a_right_size_file_is_trusted() {
+        let dir = TempDir::new().unwrap();
+        // Same length, different content: what a trusted file must keep.
+        std::fs::write(dir.path().join("hash.gguf"), "XXXX bytes").unwrap();
+        let path = install_gguf(dir.path(), "hash.gguf", b"gguf bytes").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"XXXX bytes");
+    }
+
+    /// A half-written temp file a crashed process left behind is not the
+    /// target file: install still produces a complete one.
+    #[test]
+    fn a_leftover_temp_file_does_not_count() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join(".hash.gguf.999999.tmp"), "gguf by").unwrap();
+        let path = install_gguf(dir.path(), "hash.gguf", b"gguf bytes").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"gguf bytes");
+        assert!(dir.path().join(".hash.gguf.999999.tmp").exists());
+    }
+
+    /// A file of the wrong size is replaced with the embedded bytes.
+    #[test]
+    fn a_wrong_size_file_is_replaced() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("hash.gguf"), "truncated").unwrap();
+        let path = install_gguf(dir.path(), "hash.gguf", b"gguf bytes").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"gguf bytes");
+    }
+
+    /// Installing twice in a row ends with the same one complete file.
+    #[test]
+    fn install_is_idempotent() {
+        let dir = TempDir::new().unwrap();
+        let first = install_gguf(dir.path(), "hash.gguf", b"gguf bytes").unwrap();
+        let second = install_gguf(dir.path(), "hash.gguf", b"gguf bytes").unwrap();
+        assert_eq!(first, second);
+        assert_eq!(std::fs::read(&first).unwrap(), b"gguf bytes");
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(entries, ["hash.gguf"]);
+    }
 }

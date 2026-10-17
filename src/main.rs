@@ -17,6 +17,14 @@
 //! in the process instead. Indexing never uses it — it embeds documents in
 //! the process that runs `--index`.
 //!
+//! A build with the `embedded-model` feature carries one GGUF inside the
+//! binary (build.rs reads `CKQ_EMBED_GGUF` and `CKQ_EMBED_ALIAS`) and that
+//! alias becomes the build's default model. `models::gguf_path` then writes
+//! the bytes once to `~/.cache/ck/models/embedded/<blake3>.gguf` — temp
+//! file, fsync, atomic rename — and trusts a right-size file thereafter, so
+//! the one binary works offline on a fresh machine. A normal build has none
+//! of this.
+//!
 //! Exit codes: 0 when something was found or a command succeeded, 1 for no
 //! match ("No matches found" on stderr) and for errors (message on stderr).
 
@@ -41,7 +49,7 @@ use std::process::ExitCode;
 #[derive(Parser, Debug)]
 #[command(
     name = "ckq",
-    version,
+    version = version_line(),
     about = "Multilingual search over a folder of text: BM25 and embeddings, fused"
 )]
 struct Cli {
@@ -377,8 +385,28 @@ fn command_targets(cli: &Cli) -> Vec<PathBuf> {
     }
 }
 
+/// The `--version` line: the crate version, plus the model a
+/// `embedded-model` build carries inside the binary.
+#[cfg(feature = "embedded-model")]
+fn version_line() -> &'static str {
+    concat!(
+        env!("CARGO_PKG_VERSION"),
+        " (embedded model: ",
+        env!("CKQ_EMBED_ALIAS"),
+        ")"
+    )
+}
+
+#[cfg(not(feature = "embedded-model"))]
+fn version_line() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
 /// `--status`, `--status-verbose` (stderr) and `--status-json` (stdout).
 fn status(cli: &Cli) -> anyhow::Result<ExitCode> {
+    if let Some(alias) = models::embedded_alias() {
+        eprintln!("Embedded model: {alias}");
+    }
     for path in command_targets(cli) {
         let corpus = corpus::Corpus::for_command(&path)?;
         let store = store::Store::open_read(&corpus)?;
@@ -393,6 +421,7 @@ fn status(cli: &Cli) -> anyhow::Result<ExitCode> {
         if cli.status_json {
             let json = serde_json::json!({
                 "path": corpus.root.display().to_string(),
+                "embedded_model": models::embedded_alias(),
                 "index_exists": store.is_some(),
                 "total_files": stats.files,
                 "total_chunks": stats.chunks,

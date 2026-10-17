@@ -14,7 +14,7 @@ cargo build --release
 ```
 
 The binary is `target/release/ckq`. The default embedding model (about 280 MB)
-downloads on first use to `~/.cache/ck/models`; building or running regex and
+downloads on first use to `~/.cache/ckq/models`; building or running regex and
 lexical search needs no model at all.
 
 ## One file
@@ -26,9 +26,9 @@ the binary itself, so one file works offline on a fresh machine:
 scripts/build-onefile.sh gemma-q4
 ```
 
-The model must already be in `~/.cache/ck/models` (run `ckq --index` once to
+The model must already be in `~/.cache/ckq/models` (run `ckq --index` once to
 download it). The embedded model becomes that build's default, and the first
-use writes it out once to `~/.cache/ck/models/embedded/`; `--status` and
+use writes it out once to `~/.cache/ckq/models/embedded/`; `--status` and
 `--version` say which model a binary carries. A binary that embeds `gemma-q4`
 carries Google's Gemma Terms of Use with it and must ship those terms; a
 model under Apache-2.0 or MIT (such as granite, bge-m3 or Qwen3-Embedding)
@@ -73,7 +73,7 @@ was found, 1 for no match or an error.
 
 ## How it works
 
-The index is one SQLite file, `.ck/index.db` in the indexed tree: a contentless
+The index is one SQLite file, `.ckq/index.db` in the indexed tree: a contentless
 FTS5 table gives BM25 over the file text and path, chunks are embedded to f16
 vectors in the same database, and a hash of model, prompts, pooling and chunker
 version guards comparability. Embeddings run through llama.cpp with the GPU
@@ -88,7 +88,7 @@ One daemon per model, keyed to the exact binary, so a rebuild never talks to
 a stale one; it exits after 15 minutes without a query. The daemon does
 nothing but embed queries — indexing always loads the model in the process
 that runs it — and `CKQ_IN_PROCESS=1` embeds in the searching process instead.
-Sockets live in `~/.cache/ck/sockets` (unix only).
+Sockets live in `~/.cache/ckq/sockets` (unix only).
 
 Hybrid search fuses per file by CombMAX over weighted reciprocal ranks: each
 method contributes `weight / (3 + rank)`, a file keeps the better of its two

@@ -9,13 +9,13 @@ One crate at the repository root: `ckq`, a CLI for multilingual search over a fo
 1. A document is its root-relative path (`corpus::RelPath`), everywhere: both ranked methods return it, fusion compares it, output prints it. The working directory never matters.
 2. The model's prompts are applied in `embed` and nowhere else.
 3. Search never writes the index. `--index`, `--add` and `--clean` do.
-4. One store: `.ck/index.db` (SQLite, WAL, contentless FTS5 for BM25, f16 vectors).
+4. One store: `.ckq/index.db` (SQLite, WAL, contentless FTS5 for BM25, f16 vectors).
 5. stdout carries results only; progress and banners go to stderr.
 6. The query daemon (`src/daemon.rs`, unix only) embeds queries and nothing
    else: the client sends bare query text, the daemon calls
    `embed::Embedder::embed_query` on its side (invariant 2 holds through it),
    and indexing never uses it. One model per daemon, socket at
-   `~/.cache/ck/sockets/ckq2-<alias>-<16 hex of blake3 over the binary's path,
+   `~/.cache/ckq/sockets/ckq-<alias>-<16 hex of blake3 over the binary's path,
    size and mtime>.sock` so a rebuilt binary never talks to a stale daemon.
    It binds before loading the model (two starting clients load it once) and
    exits after `CKQ_DAEMON_IDLE_SECS` idle (default 900; the tests set 60 in
@@ -32,7 +32,7 @@ cargo known-bugs            # the tests that pin a still-open bug
 cargo fmt && cargo clippy --release --all-targets -- -D warnings
 ```
 
-The default model (about 280 MB) downloads once into `~/.cache/ck/models` on first use. Run `cargo e2e` before any change to the model registry, the prompts, the chunker, the store, the fusion or the ranking: it holds the ranking gate on `bench/multilingual` (gemma-q4: 35/40 rank 1, MRR@5 0.927).
+The default model (about 280 MB) downloads once into `~/.cache/ckq/models` on first use. Run `cargo e2e` before any change to the model registry, the prompts, the chunker, the store, the fusion or the ranking: it holds the ranking gate on `bench/multilingual` (gemma-q4: 35/40 rank 1, MRR@5 0.927).
 
 ## Test conventions
 

@@ -1,9 +1,10 @@
 //! Which files are in the corpus.
 //!
-//! The `ignore` walker, so `.gitignore`, `.ignore` and `.ckignore` all apply.
+//! The `ignore` walker, so `.gitignore`, `.ignore` and `.ckqignore` all apply.
 //! Symlinked directories are never followed (a loop must not hang anything)
-//! and the root is never glob-expanded. `.ck` and `.git` are always skipped,
-//! and so is any file that looks binary.
+//! and the root is never glob-expanded. `.ckq` and `.git` are always skipped,
+//! and so is a legacy `.ck` left by the old engine, and any file that looks
+//! binary.
 
 use crate::corpus::{Corpus, RelPath};
 use anyhow::Result;
@@ -11,10 +12,10 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
-/// Patterns a fresh `.ckignore` starts with, written by `--index` when the
+/// Patterns a fresh `.ckqignore` starts with, written by `--index` when the
 /// corpus has none. Ported from upstream's default so existing corpora behave
 /// the same.
-pub const DEFAULT_CKIGNORE: &str = r"# .ckignore - Default patterns for ck semantic search
+pub const DEFAULT_CKQIGNORE: &str = r"# .ckqignore - Default patterns for ckq semantic search
 # Created automatically during first index
 # Syntax: same as .gitignore (glob patterns, ! for negation)
 
@@ -85,8 +86,8 @@ pub const DEFAULT_CKIGNORE: &str = r"# .ckignore - Default patterns for ck seman
 pub struct WalkOptions {
     /// Include dot-files and dot-directories.
     pub hidden: bool,
-    /// Ignore `.ckignore` files (`--no-ckignore`).
-    pub no_ckignore: bool,
+    /// Ignore `.ckqignore` files (`--no-ckqignore`).
+    pub no_ckqignore: bool,
     /// Do not read `.gitignore` files (`--no-ignore`).
     pub no_ignore: bool,
 }
@@ -110,15 +111,17 @@ pub fn walk(corpus: &Corpus, opts: &WalkOptions) -> Result<Vec<FileInfo>> {
         .git_exclude(!opts.no_ignore)
         .ignore(!opts.no_ignore)
         .parents(true);
-    if !opts.no_ckignore {
-        builder.add_custom_ignore_filename(".ckignore");
+    if !opts.no_ckqignore {
+        builder.add_custom_ignore_filename(".ckqignore");
     }
     builder.filter_entry(|entry| {
         if entry.depth() == 0 {
             return true;
         }
         let name = entry.file_name().to_string_lossy();
-        name != ".ck" && name != ".git"
+        name != crate::corpus::INDEX_DIR
+            && name != crate::corpus::LEGACY_INDEX_DIR
+            && name != ".git"
     });
 
     let mut out = Vec::new();
@@ -181,11 +184,11 @@ pub fn looks_binary(head: &[u8]) -> bool {
     }
 }
 
-/// Write `DEFAULT_CKIGNORE` to the root when it has no `.ckignore` yet.
-pub fn ensure_ckignore(corpus: &Corpus) -> Result<()> {
-    let path = corpus.root.join(".ckignore");
+/// Write `DEFAULT_CKQIGNORE` to the root when it has no `.ckqignore` yet.
+pub fn ensure_ckqignore(corpus: &Corpus) -> Result<()> {
+    let path = corpus.root.join(".ckqignore");
     if !path.exists() {
-        std::fs::write(&path, DEFAULT_CKIGNORE)?;
+        std::fs::write(&path, DEFAULT_CKQIGNORE)?;
     }
     Ok(())
 }

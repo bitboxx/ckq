@@ -1,4 +1,4 @@
-//! The index: one SQLite file, `.ck/index.db`, in WAL mode.
+//! The index: one SQLite file, `.ckq/index.db`, in WAL mode.
 //!
 //! It replaces the old manifest, per-file sidecars, `vectors.cache` and tantivy
 //! directory. Each file is written in one transaction, so a crash or a second

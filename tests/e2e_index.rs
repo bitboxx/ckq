@@ -1,9 +1,9 @@
 //! End-to-end tests for the index lifecycle: build, incremental update,
-//! deletion, `--add`, `.ckignore`, hidden files, robustness against odd
+//! deletion, `--add`, `.ckqignore`, hidden files, robustness against odd
 //! inputs, and the safety rails around the store's embedding signature.
 //! Everything runs the real binary on real files, and almost everything needs
 //! the real default model because indexing embeds — hence the `e2e:` ignores.
-//! The index is one SQLite file, `.ck/index.db`; what a test can observe of it
+//! The index is one SQLite file, `.ckq/index.db`; what a test can observe of it
 //! is `--status-json`, the `--index` summary line, and what search returns.
 
 mod common;
@@ -118,11 +118,11 @@ fn index_builds_the_ck_layout_and_status_reports_the_corpus() {
 
     // One store file holds the whole index: files, chunks, vectors and the
     // BM25 index alike, so a lexical search needs no build step of its own.
-    let ck = corpus.path().join(".ck");
-    assert!(ck.join("index.db").is_file(), "index.db missing");
+    let index_dir = corpus.path().join(".ckq");
+    assert!(index_dir.join("index.db").is_file(), "index.db missing");
     corpus.search(&["--lex", "lighthouse"]);
     assert!(
-        ck.join("index.db").is_file(),
+        index_dir.join("index.db").is_file(),
         "a lexical search writes nothing"
     );
 
@@ -261,13 +261,92 @@ fn deleted_file_disappears_from_search_and_the_index_drops_it() {
     // next lexical search must refuse and say how to start over.
     run_ok(corpus.ckq().args(["--clean", "."]));
     assert!(
-        !corpus.path().join(".ck").exists(),
-        "--clean left .ck behind"
+        !corpus.path().join(".ckq").exists(),
+        "--clean left .ckq behind"
     );
     let stderr = run_err(corpus.ckq().args(["--lex", "tide", "--jsonl", "-q", "."]));
     assert!(
         stderr.contains("--index"),
         "a search after --clean must point at --index, got:\n{stderr}"
+    );
+}
+
+/// A legacy `.ck` left by the old engine is content-free to ckq: the walker
+/// skips it as it skips `.ckq` and `.git`, however the other flags are set,
+/// so its files are neither indexed nor found by the regex mode, which walks
+/// the same tree. `--hidden` is on so the dot alone cannot be what excludes
+/// it.
+#[test]
+#[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn a_legacy_ck_directory_is_never_indexed_or_searched() {
+    let corpus = Corpus::new();
+    corpus.write(
+        "tide.md",
+        "The tide clock counts the hours to the next high water.\n",
+    );
+    corpus.write(
+        ".ck/manifest.json",
+        "{\"old engine leftover mentions saxifrage\"}\n",
+    );
+    run_ok(corpus.ckq().args(["--index", "--hidden", "-q", "."]));
+    // Two files: tide.md and the .ckqignore the index run wrote (a hidden
+    // text file like any other). The legacy .ck would make it three.
+    assert_eq!(
+        total_files(&corpus),
+        2,
+        "the legacy .ck must not be indexed"
+    );
+    expect_no_hits(&corpus, &["--lex", "saxifrage"]);
+    expect_no_hits(&corpus, &["--hidden", "saxifrage"]);
+}
+
+/// A corpus with only a legacy `.ck/index.db` refuses a ranked search and
+/// says the index moved to `.ckq` and how to build it again, rather than
+/// reporting a bare missing index.
+#[test]
+#[serial]
+#[ignore = "e2e: needs no model, only the real binary"]
+fn a_search_over_only_a_legacy_ck_index_is_told_it_moved() {
+    let corpus = Corpus::new();
+    corpus.write(
+        "tide.md",
+        "The tide clock counts the hours to the next high water.\n",
+    );
+    corpus.write(".ck/index.db", b"old engine bytes");
+    let stderr = run_err(corpus.ckq().args(["--lex", "tide", "--jsonl", "-q", "."]));
+    assert!(
+        stderr.contains("moved") && stderr.contains(".ckq") && stderr.contains("--index"),
+        "the error must say the index moved to .ckq and name --index, got:\n{stderr}"
+    );
+}
+
+/// `--clean` removes `.ckq` only. A legacy `.ck` stays exactly as it was,
+/// and the run says so on stderr.
+#[test]
+#[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn clean_removes_ckq_and_leaves_a_legacy_ck_in_place() {
+    let corpus = Corpus::new();
+    corpus.write(
+        "tide.md",
+        "The tide clock counts the hours to the next high water.\n",
+    );
+    corpus.write(".ck/manifest.json", "{\"old\": \"engine\"}\n");
+    corpus.index();
+    let out = run_ok(corpus.ckq().args(["--clean", "."]));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !corpus.path().join(".ckq").exists(),
+        "--clean left .ckq behind"
+    );
+    assert!(
+        corpus.path().join(".ck").is_dir(),
+        "--clean must not touch a legacy .ck"
+    );
+    assert!(
+        stderr.contains("left in place"),
+        "--clean must say the legacy .ck stayed, got:\n{stderr}"
     );
 }
 
@@ -314,9 +393,9 @@ fn add_indexes_one_new_file_without_a_full_run() {
 #[test]
 #[serial]
 #[ignore = "e2e: needs the default model; run with --include-ignored"]
-fn ckignore_excludes_files_from_the_start_and_when_added_later() {
+fn ckqignore_excludes_files_from_the_start_and_when_added_later() {
     let corpus = Corpus::new();
-    corpus.write(".ckignore", "# test ignore list\nprivate_*.md\n");
+    corpus.write(".ckqignore", "# test ignore list\nprivate_*.md\n");
     corpus.write(
         "private_journal.md",
         "My parrot learned to whistle the whole anthem in secret.\n",
@@ -340,9 +419,9 @@ fn ckignore_excludes_files_from_the_start_and_when_added_later() {
     );
 
     // The same file, ignored only after the fact, must drop out of results.
-    let mut ignore = fs::read_to_string(corpus.path().join(".ckignore")).unwrap();
+    let mut ignore = fs::read_to_string(corpus.path().join(".ckqignore")).unwrap();
     ignore.push_str("draft_letter.md\n");
-    fs::write(corpus.path().join(".ckignore"), ignore).unwrap();
+    fs::write(corpus.path().join(".ckqignore"), ignore).unwrap();
     corpus.index();
 
     expect_no_hits(&corpus, &["--lex", "parsnip"]);
@@ -377,12 +456,12 @@ fn hidden_files_are_indexed_only_with_the_hidden_flag() {
 
     run_ok(corpus.ckq().args(["--index", "--hidden", "-q", "."]));
     // The walker sees four text files now: the visible one, the dot-file, the
-    // dot-dir's file, and the .ckignore the first run wrote (a hidden text
+    // dot-dir's file, and the .ckqignore the first run wrote (a hidden text
     // file like any other, exactly as the old engine treated it).
     assert_eq!(
         total_files(&corpus),
         4,
-        "the dot-file, dot-dir and .ckignore join"
+        "the dot-file, dot-dir and .ckqignore join"
     );
     let hits = corpus.search(&["--lex", "quilts", "--hidden"]);
     assert_eq!(
@@ -685,7 +764,7 @@ fn a_corrupt_store_errors_loudly_instead_of_lying() {
     let hits = corpus.search(&["--sem", "an expensive spice at the market"]);
     assert_eq!(common::rank_of(&hits, "saffron"), Some(1));
 
-    let db = corpus.path().join(".ck/index.db");
+    let db = corpus.path().join(".ckq/index.db");
     fs::write(&db, b"NOT A DATABASE, JUST GARBAGE BYTES 0123456789").unwrap();
     let sem_err = run_err(
         corpus

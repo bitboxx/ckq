@@ -87,7 +87,7 @@ jobs:
       - name: Restore embedding models
         uses: actions/cache@v4
         with:
-          path: ~/.cache/ck/models
+          path: ~/.cache/ckq/models
           key: ckq-models-gemma-q4
 
       - run: cargo e2e

@@ -1,7 +1,7 @@
 //! Regex mode: plain grep over the files, no index needed.
 //!
 //! The flags the contract tests pin: `-n`, `-i`, `-w`, `-F`, `-l`, `-C N`,
-//! `--topk`, plus `--hidden` and `--no-ckignore`. Walks with `walk::walk`, so
+//! `--topk`, plus `--hidden` and `--no-ckqignore`. Walks with `walk::walk`, so
 //! it skips what indexing skips. Output goes through `output`, like the ranked
 //! methods: JSONL hits carry the span of the matching line and score 1.0.
 

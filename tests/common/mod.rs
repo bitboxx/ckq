@@ -62,7 +62,7 @@ pub fn daemon_socket_count(alias: &str) -> usize {
         .parent()
         .expect("a socket path has a directory")
         .to_path_buf();
-    let prefix = format!("ckq2-{alias}-");
+    let prefix = format!("ckq-{alias}-");
     fs::read_dir(&dir)
         .map(|entries| {
             entries

@@ -16,7 +16,12 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 /// Directory, under the corpus root, that holds the index.
-pub const INDEX_DIR: &str = ".ck";
+pub const INDEX_DIR: &str = ".ckq";
+
+/// What the engine this one forked from called [`INDEX_DIR`]. Never read,
+/// never written: only named, so a leftover is skipped by the walker, left
+/// alone by `--clean` and explained by a search that finds nothing newer.
+pub const LEGACY_INDEX_DIR: &str = ".ck";
 
 /// A path relative to the corpus root: `/`-separated, no leading `./`, never
 /// empty, never containing `..`.
@@ -90,7 +95,6 @@ impl Scope {
     }
 }
 
-/// A corpus: a directory whose `.ck` holds the index.
 #[derive(Debug, Clone)]
 pub struct Corpus {
     /// Absolute root, from `std::path::absolute`: no symlink resolution, so the
@@ -104,8 +108,9 @@ pub struct Corpus {
 
 impl Corpus {
     /// The corpus a search of `arg` reads from: the nearest directory at or
-    /// above `arg` that holds `.ck`, and the part of it `arg` names. An `arg`
-    /// with no index above it is an error that says to run `ckq --index`.
+    /// above `arg` that holds `.ckq`, and the part of it `arg` names. An `arg`
+    /// with no index above it is an error that says to run `ckq --index`;
+    /// one with only a legacy `.ck` up the tree is told the index moved.
     pub fn for_search(arg: &Path) -> Result<(Corpus, Scope)> {
         if !arg.exists() {
             bail!("Path does not exist: {}", arg.display());
@@ -113,6 +118,15 @@ impl Corpus {
         let abs = absolute(arg);
         let start = if abs.is_dir() { &abs } else { parent(&abs)? };
         let Some(root) = nearest_index_root(start) else {
+            if let Some(legacy) = nearest_dir(start, |d| {
+                d.join(LEGACY_INDEX_DIR).join("index.db").is_file()
+            }) {
+                bail!(
+                    "the index moved from {} to .ckq; run `ckq --index {}` to build it again",
+                    legacy.join(LEGACY_INDEX_DIR).display(),
+                    arg.display()
+                );
+            }
             bail!(
                 "No ckq index found for {}; run `ckq --index {}` first",
                 arg.display(),
@@ -157,8 +171,8 @@ impl Corpus {
     }
 
     /// The corpus a `--clean`/`--status`/`--add` argument names: the nearest
-    /// directory at or above `arg` that holds `.ck`, else `arg` itself when it
-    /// is a directory.
+    /// directory at or above `arg` that holds `.ckq`, else `arg` itself when
+    /// it is a directory.
     pub fn for_command(arg: &Path) -> Result<Corpus> {
         if !arg.exists() {
             bail!("Path does not exist: {}", arg.display());
@@ -213,18 +227,22 @@ fn parent(p: &Path) -> Result<&Path> {
         .ok_or_else(|| anyhow::anyhow!("{} has no parent", p.display()))
 }
 
-/// The nearest directory at or above `from` that holds a `.ck` directory.
+/// The nearest directory at or above `from` that holds a `.ckq` directory.
 fn nearest_index_root(from: &Path) -> Option<PathBuf> {
+    nearest_dir(from, |d| d.join(INDEX_DIR).is_dir())
+}
+
+/// The first directory at or above `from` for which `holds` is true.
+fn nearest_dir(from: &Path, holds: impl Fn(&Path) -> bool) -> Option<PathBuf> {
     let mut cur = Some(from);
     while let Some(dir) = cur {
-        if dir.join(INDEX_DIR).is_dir() {
+        if holds(dir) {
             return Some(dir.to_path_buf());
         }
         cur = dir.parent();
     }
     None
 }
-
 fn rel_of(root: &Path, below: &Path) -> Result<RelPath> {
     RelPath::new(below.strip_prefix(root).unwrap_or(below))
 }

@@ -140,14 +140,14 @@ fn request(stream: &mut UnixStream, query: &str) -> Result<Vec<f32>> {
     serde_json::from_value(reply["vector"].clone()).context("parsing the daemon's vector")
 }
 
-/// Where the sockets live: `~/.cache/ck/sockets`, beside the model cache, mode
+/// Where the sockets live: `~/.cache/ckq/sockets`, beside the model cache,
 /// 0700 — a daemon answers anyone who can connect, so no other user may reach
 /// the directory.
 fn socket_dir() -> PathBuf {
     let dir = dirs::home_dir()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
         .join(".cache")
-        .join("ck")
+        .join("ckq")
         .join("sockets");
     if std::fs::create_dir_all(&dir).is_ok() {
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
@@ -188,9 +188,9 @@ fn exe_stamp() -> String {
     hasher.finalize().to_hex()[..16].to_string()
 }
 
-/// One socket per model and binary: `ckq2-<alias>-<stamp>.sock`.
+/// One socket per model and binary: `ckq-<alias>-<stamp>.sock`.
 pub fn socket_path(alias: &str) -> PathBuf {
-    socket_dir().join(format!("ckq2-{alias}-{}.sock", exe_stamp()))
+    socket_dir().join(format!("ckq-{alias}-{}.sock", exe_stamp()))
 }
 
 /// `Some(stream)` when a daemon answers on `path`.
@@ -377,9 +377,9 @@ fn serve_conn(stream: UnixStream, embedder: &mut LlamaEmbedder) -> std::io::Resu
 /// Clear what dead daemons left in the socket directory. The socket key
 /// carries the binary's stamp, so every rebuild leaves a new socket and log
 /// pair, and [`bind`] only ever clears a dead socket at its own key; without
-/// this the directory grows by a pair per build. A `ckq2-*` socket goes when
+/// this the directory grows by a pair per build. A `ckq-*` socket goes when
 /// nothing answers on it, its log with it; a log alone goes once it is older
-/// than [`LOG_KEEP`]. Nothing outside `ckq2-*` is ever touched.
+/// than [`LOG_KEEP`]. Nothing outside `ckq-*` is ever touched.
 fn reap_stale(own: &Path) {
     let Some(dir) = own.parent() else { return };
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -392,7 +392,7 @@ fn reap_stale(own: &Path) {
         }
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if !name.starts_with("ckq2-") {
+        if !name.starts_with("ckq-") {
             continue;
         }
         if name.ends_with(".sock") {

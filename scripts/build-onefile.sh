@@ -4,7 +4,7 @@
 #
 #   scripts/build-onefile.sh gemma-q4
 #
-# The GGUF is resolved in ~/.cache/ck/models (the Hugging Face cache layout
+# The GGUF is resolved in ~/.cache/ckq/models (the Hugging Face cache layout
 # ckq downloads into); if it is not there yet, run ckq --index once on any
 # folder to download it. The alias's repo and file are read out of
 # src/models.rs, the same registry build.rs validates against.
@@ -18,7 +18,7 @@ alias=$1
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 models_rs=$root/src/models.rs
-cache=$HOME/.cache/ck/models
+cache=$HOME/.cache/ckq/models
 
 # The alias -> (repo, file) row of the registry in src/models.rs.
 spec=$(awk -v want="$alias" '

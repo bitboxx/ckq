@@ -133,12 +133,11 @@ pub fn resolve(name: &str) -> Result<&'static ModelSpec> {
 }
 
 /// The GGUF on disk: `CKQ_GGUF_FILE` when set (for trying another build of the
-/// same model), else the Hugging Face cache under `~/.cache/ck/models`,
-/// downloading on first use. Same cache layout as the old engine, so nothing
-/// already downloaded is fetched again.
+/// same model), else the Hugging Face cache under `~/.cache/ckq/models`,
+/// downloading on first use.
 ///
 /// In a build that carries the GGUF of this alias inside the binary, the
-/// embedded bytes come out to `~/.cache/ck/models/embedded/<blake3>.gguf`
+/// embedded bytes come out to `~/.cache/ckq/models/embedded/<blake3>.gguf`
 /// instead: written once, offline, never downloaded.
 pub fn gguf_path(spec: &ModelSpec) -> Result<PathBuf> {
     if let Some(override_path) = std::env::var_os("CKQ_GGUF_FILE") {
@@ -165,11 +164,11 @@ pub fn gguf_path(spec: &ModelSpec) -> Result<PathBuf> {
 
 fn models_cache_dir() -> PathBuf {
     if let Some(home) = dirs::home_dir() {
-        return home.join(".cache").join("ck").join("models");
+        return home.join(".cache").join("ckq").join("models");
     }
     std::env::current_dir()
         .unwrap_or_default()
-        .join(".ck_models")
+        .join(".ckq_models")
 }
 
 /// The alias whose GGUF this build carries inside the binary

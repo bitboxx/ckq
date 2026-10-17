@@ -9,7 +9,7 @@
 //!    `Corpus::display`. The working directory never matters.
 //! 2. The model's prompts are applied in `embed` and nowhere else.
 //! 3. Search never writes the index. `--index`, `--add` and `--clean` do.
-//! 4. One store: `.ck/index.db`.
+//! 4. One store: `.ckq/index.db`.
 //! 5. stdout carries results only.
 //!
 //! `--sem` and `--hybrid` embed their query through a resident daemon (unix):
@@ -20,7 +20,7 @@
 //! A build with the `embedded-model` feature carries one GGUF inside the
 //! binary (build.rs reads `CKQ_EMBED_GGUF` and `CKQ_EMBED_ALIAS`) and that
 //! alias becomes the build's default model. `models::gguf_path` then writes
-//! the bytes once to `~/.cache/ck/models/embedded/<blake3>.gguf` — temp
+//! the bytes once to `~/.cache/ckq/models/embedded/<blake3>.gguf` — temp
 //! file, fsync, atomic rename — and trusts a right-size file thereafter, so
 //! the one binary works offline on a fresh machine. A normal build has none
 //! of this.
@@ -122,9 +122,9 @@ struct Cli {
     /// Do not read .gitignore files.
     #[arg(long = "no-ignore")]
     no_ignore: bool,
-    /// Do not read .ckignore files.
-    #[arg(long = "no-ckignore")]
-    no_ckignore: bool,
+    /// Do not read .ckqignore files.
+    #[arg(long = "no-ckqignore")]
+    no_ckqignore: bool,
 
     // Index
     /// Build or update the index of the given directory.
@@ -182,7 +182,7 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let walk_opts = walk::WalkOptions {
         hidden: cli.hidden,
-        no_ckignore: cli.no_ckignore,
+        no_ckqignore: cli.no_ckqignore,
         no_ignore: cli.no_ignore,
     };
 
@@ -241,9 +241,15 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     if cli.clean {
         for path in command_targets(&cli) {
             let corpus = corpus::Corpus::for_command(&path)?;
-            index::clean(&corpus)?;
+            let legacy_left = index::clean(&corpus)?;
             if !cli.quiet {
                 eprintln!("Index cleaned: {}", corpus.index_dir().display());
+                if legacy_left {
+                    eprintln!(
+                        "ckq: note: a legacy .ck index was left in place at {}",
+                        corpus.root.join(corpus::LEGACY_INDEX_DIR).display()
+                    );
+                }
             }
         }
         return Ok(ExitCode::SUCCESS);

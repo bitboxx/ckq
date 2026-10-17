@@ -72,7 +72,7 @@ fn resolve_model(corpus: &Corpus, opts: &IndexOptions) -> Result<(&'static Model
 pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
     let timing = std::env::var_os("CKQ_TIMING").is_some();
     let t0 = Instant::now();
-    crate::walk::ensure_ckignore(corpus)?;
+    crate::walk::ensure_ckqignore(corpus)?;
     let walked = crate::walk::walk(corpus, &opts.walk)?;
     let t_walk = t0.elapsed();
 
@@ -276,13 +276,13 @@ pub fn stale_count(corpus: &Corpus, opts: &WalkOptions) -> Result<usize> {
     Ok(stale)
 }
 
-/// Remove the index (`--clean`): the whole `.ck` directory, including any
-/// files the old engine left there (manifest.json, sidecars, vectors.cache,
-/// tantivy_index).
-pub fn clean(corpus: &Corpus) -> Result<()> {
+/// Remove the index (`--clean`): the whole `.ckq` directory. A legacy `.ck`
+/// left by the old engine is deliberately not touched — there is no
+/// migration — so the caller can say it stayed.
+pub fn clean(corpus: &Corpus) -> Result<bool> {
     let dir = corpus.index_dir();
     if dir.exists() {
         std::fs::remove_dir_all(&dir)?;
     }
-    Ok(())
+    Ok(corpus.root.join(crate::corpus::LEGACY_INDEX_DIR).exists())
 }

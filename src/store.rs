@@ -130,6 +130,9 @@ impl Store {
         // Before the first index switches the file to WAL, a reader can meet
         // the writer's exclusive journal lock; wait it out instead of failing.
         conn.busy_timeout(std::time::Duration::from_secs(30))?;
+        // A scope's LIKE must compare case-sensitively, like `=` and
+        // `RelPath::starts_with` do: `notes` must not match `Notes/x.md`.
+        conn.pragma_update(None, "case_sensitive_like", true)?;
         // Schema without meta rows is another process's first `--index`
         // still in flight: to every reader that is no index yet. The table
         // check runs first because querying an absent table is an error.
@@ -160,7 +163,7 @@ impl Store {
         let path = corpus.index_dir().join(DB_FILE);
         let conn = Connection::open(&path)?;
         conn.busy_timeout(std::time::Duration::from_secs(30))?;
-        conn.pragma_update(None, "foreign_keys", true)?;
+        conn.pragma_update(None, "case_sensitive_like", true)?;
         // A journal-mode change wants the file to itself and does not honour
         // busy_timeout, so a second `--index` racing the first one's schema
         // creation sees BUSY from the batch. The batch is idempotent; retry
@@ -387,7 +390,7 @@ impl Store {
         let mut rows = match scope {
             Scope::All => stmt.query([])?,
             Scope::Under(prefix) => {
-                let like = format!("{}%", escape_like(prefix.as_str()));
+                let like = format!("{}/%", escape_like(prefix.as_str()));
                 stmt.query(params![prefix.as_str(), like])?
             }
         };
@@ -440,7 +443,7 @@ impl Store {
         let mut rows = match scope {
             Scope::All => stmt.query(params![match_expr, limit as i64])?,
             Scope::Under(prefix) => {
-                let like = format!("{}%", escape_like(prefix.as_str()));
+                let like = format!("{}/%", escape_like(prefix.as_str()));
                 stmt.query(params![match_expr, limit as i64, prefix.as_str(), like])?
             }
         };
@@ -689,6 +692,51 @@ mod tests {
         let hits = store.bm25("needle", &sub, 10).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].0.as_str(), "sub/needle.md");
+    }
+
+    #[test]
+    fn scope_under_matches_the_prefix_and_its_children_only() {
+        // `LIKE 'notes%'` would also return the siblings `notes2.md` and
+        // `notes-old.md`, and ASCII-case-insensitive LIKE would return
+        // `Notes/up.md`; `RelPath::starts_with` allows none of them.
+        let (_dir, c) = corpus();
+        let mut store = Store::open_write(&c, &meta()).unwrap();
+        let chunk = Chunk {
+            byte_start: 0,
+            byte_end: 6,
+            line_start: 1,
+            line_end: 1,
+        };
+        for rel in [
+            "notes/in.md",
+            "notes",
+            "notes2.md",
+            "notes-old.md",
+            "Notes/up.md",
+        ] {
+            store
+                .put_file(&rec(rel, "h"), "needle", &[chunk], &[vec![0.5; 768]])
+                .unwrap();
+        }
+        let sub = Scope::Under(RelPath::new(std::path::Path::new("notes")).unwrap());
+        let want = vec!["notes".to_string(), "notes/in.md".to_string()];
+        let mut paths: Vec<String> = store
+            .vectors(&sub)
+            .unwrap()
+            .chunks
+            .iter()
+            .map(|c| c.rel.as_str().to_string())
+            .collect();
+        paths.sort();
+        assert_eq!(paths, want, "vectors");
+        let mut paths: Vec<String> = store
+            .bm25("needle", &sub, 10)
+            .unwrap()
+            .into_iter()
+            .map(|(rel, _)| rel.as_str().to_string())
+            .collect();
+        paths.sort();
+        assert_eq!(paths, want, "bm25");
     }
 
     #[test]

@@ -11,7 +11,8 @@
 
 use crate::chunk::Chunk;
 use crate::corpus::{Corpus, RelPath, Scope};
-use anyhow::Result;
+use anyhow::{Result, bail};
+use rusqlite::{Connection, OpenFlags, params};
 use std::collections::HashMap;
 
 pub const DB_FILE: &str = "index.db";
@@ -21,7 +22,7 @@ pub const SCHEMA_VERSION: i64 = 1;
 /// which stays in the files. Its rowid is `files.id`. Columns are `path` then
 /// `content`, and ranking is `bm25(fts, 0.5, 1.0)`: the path counts half, as in
 /// the old engine. The tokenizer keeps diacritics, as tantivy's default did, so
-/// `cafe` does not match `café` and whole words still do not match compounds.
+// `cafe` does not match `café` and whole words still do not match compounds.
 pub const SCHEMA: &str = "
 PRAGMA journal_mode = WAL;
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -61,6 +62,18 @@ pub struct IndexMeta {
     pub signature: String,
 }
 
+impl IndexMeta {
+    pub fn for_model(spec: &crate::models::ModelSpec) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            model_alias: spec.alias.to_string(),
+            model_repo: spec.repo.to_string(),
+            dims: spec.dims,
+            signature: crate::models::signature(spec),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileRecord {
     pub rel: RelPath,
@@ -91,32 +104,128 @@ pub struct IndexStats {
     pub files: usize,
     pub chunks: usize,
     pub embedded_chunks: usize,
+    /// Sum of the indexed files' sizes.
+    pub source_bytes: u64,
     pub db_bytes: u64,
 }
 
+#[derive(Debug)]
 pub struct Store {
-    conn: rusqlite::Connection,
+    conn: Connection,
 }
 
 impl Store {
     /// Open an existing index read-only. `None` when the corpus has none.
     pub fn open_read(corpus: &Corpus) -> Result<Option<Store>> {
-        todo!()
+        let path = corpus.index_dir().join(DB_FILE);
+        if !path.is_file() {
+            return Ok(None);
+        }
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        Ok(Some(Store { conn }))
     }
 
     /// Open for writing, creating the file and schema when absent. A new index
     /// takes `meta`; an existing one must already carry the same signature,
     /// otherwise this fails with a message that names `--clean`.
     pub fn open_write(corpus: &Corpus, meta: &IndexMeta) -> Result<Store> {
-        todo!("busy_timeout 30 s; foreign_keys on")
+        std::fs::create_dir_all(corpus.index_dir())?;
+        let path = corpus.index_dir().join(DB_FILE);
+        let conn = Connection::open(&path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(30))?;
+        conn.pragma_update(None, "foreign_keys", true)?;
+        let fresh: bool = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )?
+            == 0;
+        conn.execute_batch(SCHEMA)?;
+        let stored: Option<String> = conn
+            .query_row("SELECT value FROM meta WHERE key = 'signature'", [], |r| r.get(0))
+            .ok();
+        if let Some(old) = stored {
+            if old != meta.signature {
+                bail!(
+                    "the index at {} was built with a different embedding signature \
+                     ({old} != {}); run `ckq --clean` and index again",
+                    corpus.index_dir().display(),
+                    meta.signature
+                );
+            }
+        }
+        let store = Store { conn };
+        if fresh {
+            let IndexMeta {
+                schema_version,
+                model_alias,
+                model_repo,
+                dims,
+                signature,
+            } = meta;
+            for (k, v) in [
+                ("schema_version", schema_version.to_string()),
+                ("model_alias", model_alias.clone()),
+                ("model_repo", model_repo.clone()),
+                ("dims", dims.to_string()),
+                ("signature", signature.clone()),
+            ] {
+                store
+                    .conn
+                    .execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", params![k, v])?;
+            }
+        }
+        Ok(store)
     }
 
     pub fn meta(&self) -> Result<IndexMeta> {
-        todo!()
+        let get = |key: &str| -> Result<String> {
+            Ok(self
+                .conn
+                .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+                    r.get(0)
+                })?)
+        };
+        Ok(IndexMeta {
+            schema_version: get("schema_version")?.parse()?,
+            model_alias: get("model_alias")?,
+            model_repo: get("model_repo")?,
+            dims: get("dims")?.parse()?,
+            signature: get("signature")?,
+        })
     }
 
     pub fn files(&self) -> Result<HashMap<RelPath, FileRecord>> {
-        todo!()
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, hash, size, mtime_ns FROM files")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })?;
+        let mut out = HashMap::new();
+        for row in rows {
+            let (path, hash, size, mtime_ns) = row?;
+            let rel = RelPath::new(std::path::Path::new(&path))?;
+            out.insert(
+                rel.clone(),
+                FileRecord {
+                    rel,
+                    hash,
+                    size: size as u64,
+                    mtime_ns,
+                },
+            );
+        }
+        Ok(out)
     }
 
     /// Replace everything stored for one file, in one transaction: its row, its
@@ -129,41 +238,354 @@ impl Store {
         chunks: &[Chunk],
         vectors: &[Vec<f32>],
     ) -> Result<()> {
-        todo!()
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM fts WHERE rowid = (SELECT id FROM files WHERE path = ?1)",
+            params![file.rel.as_str()],
+        )?;
+        tx.execute("DELETE FROM files WHERE path = ?1", params![file.rel.as_str()])?;
+        tx.execute(
+            "INSERT INTO files (path, hash, size, mtime_ns) VALUES (?1, ?2, ?3, ?4)",
+            params![file.rel.as_str(), file.hash, file.size as i64, file.mtime_ns],
+        )?;
+        let id: i64 = tx.query_row(
+            "SELECT id FROM files WHERE path = ?1",
+            params![file.rel.as_str()],
+            |r| r.get(0),
+        )?;
+        for (ord, chunk) in chunks.iter().enumerate() {
+            let vec: Option<Vec<u8>> = vectors.get(ord).map(|v| encode_vector(v));
+            tx.execute(
+                "INSERT INTO chunks (file_id, ord, byte_start, byte_end, line_start, line_end, vec) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    id,
+                    ord as i64,
+                    chunk.byte_start as i64,
+                    chunk.byte_end as i64,
+                    chunk.line_start as i64,
+                    chunk.line_end as i64,
+                    vec
+                ],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO fts (rowid, path, content) VALUES (?1, ?2, ?3)",
+            params![id, file.rel.as_str(), text],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Refresh the stat columns of a file whose bytes did not change.
+    pub fn note_stat(&mut self, file: &FileRecord) -> Result<()> {
+        self.conn.execute(
+            "UPDATE files SET hash = ?2, size = ?3, mtime_ns = ?4 WHERE path = ?1",
+            params![file.rel.as_str(), file.hash, file.size as i64, file.mtime_ns],
+        )?;
+        Ok(())
     }
 
     /// Drop a file and everything stored for it, in one transaction.
     pub fn remove_file(&mut self, rel: &RelPath) -> Result<()> {
-        todo!()
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM fts WHERE rowid = (SELECT id FROM files WHERE path = ?1)",
+            params![rel.as_str()],
+        )?;
+        tx.execute("DELETE FROM files WHERE path = ?1", params![rel.as_str()])?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// All chunk vectors whose file is in `scope`.
     pub fn vectors(&self, scope: &Scope) -> Result<VectorSet> {
-        todo!()
+        const COLS: &str = "f.path, c.byte_start, c.byte_end, c.line_start, c.line_end, c.vec, \
+                            (SELECT value FROM meta WHERE key = 'dims')";
+        let mut stmt = match scope {
+            Scope::All => self.conn.prepare(&format!(
+                "SELECT {COLS} FROM chunks c JOIN files f ON f.id = c.file_id \
+                 WHERE c.vec IS NOT NULL ORDER BY f.path, c.ord"
+            ))?,
+            Scope::Under(_) => self.conn.prepare(&format!(
+                "SELECT {COLS} FROM chunks c JOIN files f ON f.id = c.file_id \
+                 WHERE c.vec IS NOT NULL AND (f.path = ?1 OR f.path LIKE ?2 ESCAPE '\\') \
+                 ORDER BY f.path, c.ord"
+            ))?,
+        };
+        let mut dims = 0usize;
+        let mut chunks = Vec::new();
+        let mut data = Vec::new();
+        let mut fill = |row: &rusqlite::Row<'_>| -> Result<()> {
+            let path: String = row.get(0)?;
+            let byte_start: i64 = row.get(1)?;
+            let byte_end: i64 = row.get(2)?;
+            let line_start: i64 = row.get(3)?;
+            let line_end: i64 = row.get(4)?;
+            let vec: Vec<u8> = row.get(5)?;
+            let d: String = row.get(6)?;
+            dims = d.parse()?;
+            chunks.push(ChunkRef {
+                rel: RelPath::new(std::path::Path::new(&path))?,
+                chunk: Chunk {
+                    byte_start: byte_start as usize,
+                    byte_end: byte_end as usize,
+                    line_start: line_start as usize,
+                    line_end: line_end as usize,
+                },
+            });
+            decode_vector(&vec, &mut data);
+            Ok(())
+        };
+        let mut rows = match scope {
+            Scope::All => stmt.query([])?,
+            Scope::Under(prefix) => {
+                let like = format!("{}%", escape_like(prefix.as_str()));
+                stmt.query(params![prefix.as_str(), like])?
+            }
+        };
+        while let Some(row) = rows.next()? {
+            fill(row)?;
+        }
+        Ok(VectorSet { dims, data, chunks })
     }
 
     /// The chunks of one file, in order.
+    #[allow(dead_code)] // part of the store's surface; spans live in chunks
     pub fn chunks_of(&self, rel: &RelPath) -> Result<Vec<Chunk>> {
-        todo!()
+        let mut stmt = self.conn.prepare(
+            "SELECT byte_start, byte_end, line_start, line_end FROM chunks \
+             WHERE file_id = (SELECT id FROM files WHERE path = ?1) ORDER BY ord",
+        )?;
+        let rows = stmt.query_map(params![rel.as_str()], |r| {
+            Ok(Chunk {
+                byte_start: r.get::<_, i64>(0)? as usize,
+                byte_end: r.get::<_, i64>(1)? as usize,
+                line_start: r.get::<_, i64>(2)? as usize,
+                line_end: r.get::<_, i64>(3)? as usize,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 
     /// BM25 over files. `match_expr` is an FTS5 MATCH expression built by
     /// `search::fts_query`. Best first, at most `limit`, files in `scope` only.
     /// Scores are positive, higher is better (the negation of FTS5's `bm25()`).
     pub fn bm25(&self, match_expr: &str, scope: &Scope, limit: usize) -> Result<Vec<(RelPath, f32)>> {
-        todo!()
+        let base = "SELECT f.path, bm25(fts, 0.5, 1.0) FROM fts JOIN files f ON f.id = fts.rowid";
+        let sql = match scope {
+            Scope::All => format!("{base} WHERE fts MATCH ?1 ORDER BY 2 LIMIT ?2"),
+            Scope::Under(_) => format!(
+                "{base} WHERE fts MATCH ?1 AND (f.path = ?3 OR f.path LIKE ?4 ESCAPE '\\') \
+                 ORDER BY 2 LIMIT ?2"
+            ),
+        };
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = match scope {
+            Scope::All => stmt.query(params![match_expr, limit as i64])?,
+            Scope::Under(prefix) => {
+                let like = format!("{}%", escape_like(prefix.as_str()));
+                stmt.query(params![match_expr, limit as i64, prefix.as_str(), like])?
+            }
+        };
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            let path: String = row.get(0)?;
+            let score: f32 = row.get(1)?;
+            out.push((RelPath::new(std::path::Path::new(&path))?, -score));
+        }
+        Ok(out)
     }
 
     pub fn stats(&self) -> Result<IndexStats> {
-        todo!()
+        let files: i64 = self
+            .conn
+            .query_row("SELECT count(*) FROM files", [], |r| r.get(0))?;
+        let chunks: i64 = self
+            .conn
+            .query_row("SELECT count(*) FROM chunks", [], |r| r.get(0))?;
+        let embedded: i64 = self.conn.query_row(
+            "SELECT count(*) FROM chunks WHERE vec IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )?;
+        let source: i64 = self
+            .conn
+            .query_row("SELECT coalesce(sum(size), 0) FROM files", [], |r| r.get(0))?;
+        let db = self
+            .conn
+            .query_row("SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap_or(0) as u64;
+        Ok(IndexStats {
+            files: files as usize,
+            chunks: chunks as usize,
+            embedded_chunks: embedded as usize,
+            source_bytes: source as u64,
+            db_bytes: db,
+        })
     }
+}
+
+/// `%` and `_` escaped for a `LIKE ... ESCAPE '\'` pattern.
+fn escape_like(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
 }
 
 /// f32 to little-endian f16 bytes, and back.
 pub fn encode_vector(v: &[f32]) -> Vec<u8> {
-    todo!("half::f16")
+    let mut out = Vec::with_capacity(v.len() * 2);
+    for x in v {
+        let bits = half::f16::from_f32(*x).to_le_bytes();
+        out.extend_from_slice(&bits);
+    }
+    out
 }
 
 pub fn decode_vector(bytes: &[u8], out: &mut Vec<f32>) {
-    todo!()
+    for pair in bytes.chunks_exact(2) {
+        out.push(half::f16::from_le_bytes([pair[0], pair[1]]).to_f32());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::corpus::Corpus;
+    use tempfile::TempDir;
+
+    fn corpus() -> (TempDir, Corpus) {
+        let dir = TempDir::new().unwrap();
+        let c = Corpus::for_index(dir.path()).unwrap();
+        (dir, c)
+    }
+
+    fn meta() -> IndexMeta {
+        IndexMeta::for_model(crate::models::resolve(crate::models::DEFAULT_ALIAS).unwrap())
+    }
+
+    fn rec(rel: &str, hash: &str) -> FileRecord {
+        FileRecord {
+            rel: RelPath::new(std::path::Path::new(rel)).unwrap(),
+            hash: hash.to_string(),
+            size: 10,
+            mtime_ns: 1,
+        }
+    }
+
+    #[test]
+    fn open_read_is_none_without_an_index() {
+        let (_dir, c) = corpus();
+        assert!(Store::open_read(&c).unwrap().is_none());
+    }
+
+    #[test]
+    fn put_file_round_trips_text_chunks_and_vectors() {
+        let (_dir, c) = corpus();
+        let mut store = Store::open_write(&c, &meta()).unwrap();
+        let chunk = Chunk {
+            byte_start: 0,
+            byte_end: 5,
+            line_start: 1,
+            line_end: 1,
+        };
+        store
+            .put_file(&rec("a.md", "h1"), "hello quokka", &[chunk], &[vec![0.5; 768]])
+            .unwrap();
+        let files = store.files().unwrap();
+        assert!(files.contains_key(&RelPath::new(std::path::Path::new("a.md")).unwrap()));
+        let vs = store.vectors(&Scope::All).unwrap();
+        assert_eq!(vs.dims, 768);
+        assert_eq!(vs.chunks.len(), 1);
+        assert_eq!(vs.data.len(), 768);
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.files, 1);
+        assert_eq!(stats.embedded_chunks, 1);
+        let hits = store
+            .bm25("quokka", &Scope::All, 10)
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0.as_str(), "a.md");
+        assert!(hits[0].1 > 0.0);
+    }
+
+    #[test]
+    fn put_file_replaces_what_was_there() {
+        let (_dir, c) = corpus();
+        let mut store = Store::open_write(&c, &meta()).unwrap();
+        let one = Chunk { byte_start: 0, byte_end: 5, line_start: 1, line_end: 1 };
+        let two = [Chunk { byte_start: 0, byte_end: 4, line_start: 1, line_end: 1 };
+            2];
+        store
+            .put_file(&rec("a.md", "h1"), "old text about otters", &[one], &[vec![0.1; 768]])
+            .unwrap();
+        store
+            .put_file(&rec("a.md", "h2"), "new text about newts", &two, &[])
+            .unwrap();
+        assert!(store.bm25("otters", &Scope::All, 10).unwrap().is_empty());
+        assert_eq!(store.bm25("newts", &Scope::All, 10).unwrap().len(), 1);
+        assert_eq!(store.vectors(&Scope::All).unwrap().chunks.len(), 0);
+        assert_eq!(store.chunks_of(&rec("a.md", "h2").rel).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn remove_file_takes_everything_with_it() {
+        let (_dir, c) = corpus();
+        let mut store = Store::open_write(&c, &meta()).unwrap();
+        let chunk = Chunk { byte_start: 0, byte_end: 5, line_start: 1, line_end: 1 };
+        store
+            .put_file(&rec("a.md", "h1"), "needle", &[chunk], &[vec![0.5; 768]])
+            .unwrap();
+        store.remove_file(&rec("a.md", "h1").rel).unwrap();
+        assert!(store.files().unwrap().is_empty());
+        assert!(store.bm25("needle", &Scope::All, 10).unwrap().is_empty());
+        assert_eq!(store.stats().unwrap().chunks, 0);
+    }
+
+    #[test]
+    fn a_different_signature_is_refused_by_name() {
+        let (_dir, c) = corpus();
+        let m = meta();
+        drop(Store::open_write(&c, &m).unwrap());
+        let mut other = m.clone();
+        other.signature = "tampered-signature".to_string();
+        let err = Store::open_write(&c, &other).unwrap_err().to_string();
+        assert!(err.contains("different embedding signature"), "{err}");
+        assert!(err.contains("--clean"), "{err}");
+    }
+
+    #[test]
+    fn scope_limits_vectors_and_bm25() {
+        let (_dir, c) = corpus();
+        let mut store = Store::open_write(&c, &meta()).unwrap();
+        let chunk = Chunk { byte_start: 0, byte_end: 5, line_start: 1, line_end: 1 };
+        store
+            .put_file(&rec("sub/needle.md", "h1"), "needle", &[chunk], &[vec![0.9; 768]])
+            .unwrap();
+        store
+            .put_file(&rec("top.md", "h2"), "needle", &[chunk], &[vec![0.1; 768]])
+            .unwrap();
+        let sub = Scope::Under(RelPath::new(std::path::Path::new("sub")).unwrap());
+        let vs = store.vectors(&sub).unwrap();
+        assert_eq!(vs.chunks.len(), 1);
+        assert_eq!(vs.chunks[0].rel.as_str(), "sub/needle.md");
+        let hits = store.bm25("needle", &sub, 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0.as_str(), "sub/needle.md");
+    }
+
+    #[test]
+    fn f16_round_trip() {
+        let v = vec![0.0, 1.0, -0.5, 0.7071];
+        let bytes = encode_vector(&v);
+        let mut out = Vec::new();
+        decode_vector(&bytes, &mut out);
+        assert_eq!(out.len(), 4);
+        assert!((out[3] - 0.7071).abs() < 1e-3);
+    }
 }

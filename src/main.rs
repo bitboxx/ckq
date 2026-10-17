@@ -27,6 +27,7 @@ mod store;
 mod walk;
 
 use clap::Parser;
+use output::{Format, OutputOptions};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -131,16 +132,266 @@ struct Cli {
 }
 
 fn main() -> ExitCode {
+    // A closed pipe must end us the way it ends grep, not with a panic.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let cli = Cli::parse();
-    match run(cli) {
+    let code = match run(cli) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("Error: {e:#}");
             ExitCode::from(1)
         }
-    }
+    };
+    // Last thing before exit: drop the model in the order ggml requires.
+    embed::shutdown();
+    code
 }
 
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
-    todo!("dispatch: index commands, then regex mode, then ranked modes; warn on stale index; print")
+    let walk_opts = walk::WalkOptions {
+        hidden: cli.hidden,
+        no_ckignore: cli.no_ckignore,
+        no_ignore: cli.no_ignore,
+    };
+
+    // ---- Index commands -------------------------------------------------
+    if cli.index {
+        let targets = command_targets(&cli);
+        for path in &targets {
+            let corpus = corpus::Corpus::for_index(path)?;
+            let report = index::update(
+                &corpus,
+                &index::IndexOptions {
+                    model: cli.model.clone(),
+                    walk: walk_opts.clone(),
+                    quiet: cli.quiet,
+                },
+            )?;
+            if !cli.quiet {
+                eprintln!("{}", report.summary());
+            }
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    if let Some(file) = &cli.add {
+        let corpus = corpus::Corpus::for_command(file)?;
+        let Some(rel) = corpus.rel(file) else {
+            anyhow::bail!("{} is not under {}", file.display(), corpus.root.display());
+        };
+        let report = index::add_file(
+            &corpus,
+            &rel,
+            &index::IndexOptions {
+                model: cli.model.clone(),
+                walk: walk_opts.clone(),
+                quiet: cli.quiet,
+            },
+        )?;
+        if !cli.quiet {
+            eprintln!("{}", report.summary());
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    if cli.clean {
+        for path in command_targets(&cli) {
+            let corpus = corpus::Corpus::for_command(&path)?;
+            index::clean(&corpus)?;
+            if !cli.quiet {
+                eprintln!("Index cleaned: {}", corpus.index_dir().display());
+            }
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    if cli.clean_orphans {
+        // The store cannot hold orphans: each file is written and dropped in
+        // one transaction. Accepted for compatibility, and it does what it
+        // promises anyway by removing index entries for deleted files.
+        for path in command_targets(&cli) {
+            let corpus = corpus::Corpus::for_command(&path)?;
+            if store::Store::open_read(&corpus)?.is_some() {
+                let report = index::update(
+                    &corpus,
+                    &index::IndexOptions {
+                        model: cli.model.clone(),
+                        walk: walk_opts.clone(),
+                        quiet: cli.quiet,
+                    },
+                )?;
+                if !cli.quiet {
+                    eprintln!("{}", report.summary());
+                }
+            }
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    if cli.status || cli.status_verbose || cli.status_json {
+        return status(&cli);
+    }
+
+    // ---- Search ----------------------------------------------------------
+    let Some(pattern) = cli.pattern.clone() else {
+        anyhow::bail!("a query is required; see ckq --help");
+    };
+    let paths: Vec<PathBuf> = if cli.paths.is_empty() {
+        vec![PathBuf::from(".")]
+    } else {
+        cli.paths.clone()
+    };
+    let format = if cli.json {
+        Format::Json
+    } else if cli.jsonl {
+        Format::Jsonl
+    } else {
+        Format::Text
+    };
+    let out_opts = OutputOptions {
+        format,
+        snippet: !cli.no_snippet,
+        scores: cli.scores,
+        line_numbers: cli.line_number,
+        files_only: cli.files_with_matches,
+        filenames: false,
+    };
+    let mut found = 0usize;
+
+    for path in &paths {
+        let show_filenames = paths.len() > 1 || path.is_dir();
+        let out_opts = OutputOptions {
+            filenames: show_filenames,
+            ..out_opts
+        };
+
+        if cli.sem || cli.lex || cli.hybrid {
+            let (corpus, scope) = corpus::Corpus::for_search(path)?;
+            let Some(store) = store::Store::open_read(&corpus)? else {
+                anyhow::bail!(
+                    "No ckq index found at {}; run `ckq --index` first",
+                    corpus.root.display()
+                );
+            };
+            if !cli.quiet {
+                let stale = index::stale_count(&corpus, &walk_opts)?;
+                if stale > 0 {
+                    eprintln!(
+                        "ckq: warning: index is stale ({stale} files added, changed or gone); \
+                         run `ckq --index`"
+                    );
+                }
+            }
+            let meta = store.meta()?;
+            let spec = models::resolve(&meta.model_repo)?;
+            let query = search::Query {
+                text: pattern.clone(),
+                terms: cli.terms.clone(),
+                topk: cli.topk.unwrap_or(10),
+                threshold: cli.threshold,
+                scope,
+            };
+            let hits = if cli.lex {
+                search::lexical(&store, &corpus, &query)?
+            } else if cli.sem {
+                let mut embedder =
+                    embed::LlamaEmbedder::load(spec, embed::query_device())?;
+                search::semantic(&store, &mut embedder, &query, spec.threshold)?
+            } else {
+                let mut embedder =
+                    embed::LlamaEmbedder::load(spec, embed::query_device())?;
+                search::hybrid(&store, &corpus, &mut embedder, &query, spec.threshold)?
+            };
+            found += output::print_hits(&corpus, &hits, &out_opts)?;
+        } else {
+            let (corpus, _scope) = corpus::Corpus::plain(path)?;
+            let opts = grep::GrepOptions {
+                pattern: pattern.clone(),
+                ignore_case: cli.ignore_case,
+                word: cli.word_regexp,
+                fixed: cli.fixed_strings,
+                context: cli.context.unwrap_or(0),
+                files_only: cli.files_with_matches,
+                limit: cli.topk,
+                walk: walk_opts.clone(),
+            };
+            let matches = grep::grep(&corpus, &opts)?;
+            found += output::print_matches(&corpus, &matches, &out_opts)?;
+        }
+    }
+
+    if found == 0 {
+        eprintln!("No matches found");
+        return Ok(ExitCode::from(1));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The paths an index command works on: the arguments, or `.` when none.
+fn command_targets(cli: &Cli) -> Vec<PathBuf> {
+    if cli.paths.is_empty() {
+        vec![PathBuf::from(".")]
+    } else {
+        cli.paths.clone()
+    }
+}
+
+/// `--status`, `--status-verbose` (stderr) and `--status-json` (stdout).
+fn status(cli: &Cli) -> anyhow::Result<ExitCode> {
+    for path in command_targets(cli) {
+        let corpus = corpus::Corpus::for_command(&path)?;
+        let store = store::Store::open_read(&corpus)?;
+        let stats = match &store {
+            Some(s) => s.stats()?,
+            None => Default::default(),
+        };
+        let meta = match &store {
+            Some(s) => Some(s.meta()?),
+            None => None,
+        };
+        if cli.status_json {
+            let json = serde_json::json!({
+                "path": corpus.root.display().to_string(),
+                "index_exists": store.is_some(),
+                "total_files": stats.files,
+                "total_chunks": stats.chunks,
+                "embedded_chunks": stats.embedded_chunks,
+                "total_size_bytes": stats.source_bytes,
+                "index_size_bytes": stats.db_bytes,
+                "model": meta.as_ref().map(|m| serde_json::json!({
+                    "name": m.model_repo,
+                    "alias": m.model_alias,
+                    "dimensions": m.dims,
+                })),
+            });
+            println!("{}", serde_json::to_string_pretty(&json)?);
+            continue;
+        }
+        if stats.files == 0 {
+            eprintln!("No index found at {}", corpus.root.display());
+            eprintln!("Run `ckq --index .` to create an index");
+            continue;
+        }
+        eprintln!("Index location: {}", corpus.index_dir().display());
+        eprintln!("Files indexed: {}", stats.files);
+        eprintln!("  Total chunks: {}", stats.chunks);
+        eprintln!("  Embedded chunks: {}", stats.embedded_chunks);
+        if let Some(m) = &meta {
+            eprintln!("  Model: {} (alias '{}', {} dims)", m.model_repo, m.model_alias, m.dims);
+        }
+        if cli.status_verbose {
+            let source_mb = stats.source_bytes as f64 / (1024.0 * 1024.0);
+            let index_mb = stats.db_bytes as f64 / (1024.0 * 1024.0);
+            eprintln!("  Source size: {source_mb:.1} MB");
+            eprintln!("  Index size: {index_mb:.1} MB");
+            if stats.source_bytes > 0 {
+                let ratio = stats.db_bytes as f64 / stats.source_bytes as f64;
+                eprintln!("  Compression: {:.1}x ({:.1}%)", 1.0 / ratio, ratio * 100.0);
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }

@@ -190,6 +190,7 @@ dependencies = [
  "half",
  "hf-hub",
  "ignore",
+ "libc",
  "llama-cpp-2",
  "regex",
  "rusqlite",

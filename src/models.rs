@@ -4,7 +4,7 @@
 //! aliases, their Hugging Face repo and file, dimensions, pooling, prompts and
 //! default thresholds. `gemma-q4` is the default.
 
-use anyhow::Result;
+use anyhow::{Result, anyhow, bail};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,14 +32,84 @@ pub struct ModelSpec {
 
 pub const DEFAULT_ALIAS: &str = "gemma-q4";
 
+const GEMMA_Q4: ModelSpec = ModelSpec {
+    alias: "gemma-q4",
+    repo: "ggml-org/embeddinggemma-300M-qat-q4_0-GGUF",
+    file: "embeddinggemma-300M-qat-Q4_0.gguf",
+    dims: 768,
+    context: 2048,
+    pooling: Pooling::Mean,
+    // EmbeddingGemma is trained with a task instruction on the query and a
+    // title slot on the document. "none" is what the model card uses when
+    // there is no title, and ck chunks have none to give.
+    query_prefix: "task: search result | query: ",
+    document_prefix: "title: none | text: ",
+    threshold: 0.40,
+};
+
+const GEMMA_Q8: ModelSpec = ModelSpec {
+    alias: "gemma-gguf",
+    repo: "ggml-org/embeddinggemma-300M-GGUF",
+    file: "embeddinggemma-300M-Q8_0.gguf",
+    dims: 768,
+    context: 2048,
+    pooling: Pooling::Mean,
+    query_prefix: "task: search result | query: ",
+    document_prefix: "title: none | text: ",
+    threshold: 0.40,
+};
+
+const GRANITE: ModelSpec = ModelSpec {
+    alias: "granite-gguf",
+    repo: "bartowski/granite-embedding-278m-multilingual-GGUF",
+    file: "granite-embedding-278m-multilingual-Q8_0.gguf",
+    dims: 768,
+    context: 512,
+    pooling: Pooling::Mean,
+    query_prefix: "",
+    document_prefix: "",
+    threshold: 0.55,
+};
+
+const BGE_M3: ModelSpec = ModelSpec {
+    alias: "bge-m3-gguf",
+    repo: "gpustack/bge-m3-GGUF",
+    file: "bge-m3-Q8_0.gguf",
+    dims: 1024,
+    context: 8192,
+    pooling: Pooling::Mean,
+    query_prefix: "",
+    document_prefix: "",
+    threshold: 0.35,
+};
+
+const QWEN3: ModelSpec = ModelSpec {
+    alias: "qwen3-gguf",
+    repo: "Qwen/Qwen3-Embedding-0.6B-GGUF",
+    file: "Qwen3-Embedding-0.6B-Q8_0.gguf",
+    dims: 1024,
+    context: 8192,
+    pooling: Pooling::Last,
+    // Qwen3 takes an instruction on the query only. The task sentence is the
+    // one from the model card; the documents go in bare.
+    query_prefix: "Instruct: Given a search query, retrieve relevant passages that answer it\nQuery: ",
+    document_prefix: "",
+    threshold: 0.35,
+};
+
 /// The registry. `gemma-q4`, `gemma-gguf`, `granite-gguf`, `bge-m3-gguf`, `qwen3-gguf`.
 pub fn all() -> &'static [ModelSpec] {
-    todo!("port the five llamacpp entries from ck-models/src/lib.rs, values unchanged")
+    &[GEMMA_Q4, GEMMA_Q8, GRANITE, BGE_M3, QWEN3]
 }
 
 /// An alias, or a repo name as stored in an index, to its spec.
 pub fn resolve(name: &str) -> Result<&'static ModelSpec> {
-    todo!()
+    all().iter()
+        .find(|m| m.alias == name || m.repo == name)
+        .ok_or_else(|| {
+            let aliases: Vec<&str> = all().iter().map(|m| m.alias).collect();
+            anyhow!("Unknown model '{name}'. Available models: {}", aliases.join(", "))
+        })
 }
 
 /// The GGUF on disk: `CKQ_GGUF_FILE` when set (for trying another build of the
@@ -47,12 +117,50 @@ pub fn resolve(name: &str) -> Result<&'static ModelSpec> {
 /// downloading on first use. Same cache layout as the old engine, so nothing
 /// already downloaded is fetched again.
 pub fn gguf_path(spec: &ModelSpec) -> Result<PathBuf> {
-    todo!("hf-hub ApiBuilder with cache dir ~/.cache/ck/models")
+    if let Some(override_path) = std::env::var_os("CKQ_GGUF_FILE") {
+        let path = PathBuf::from(override_path);
+        if !path.is_file() {
+            bail!("CKQ_GGUF_FILE does not point at a file: {}", path.display());
+        }
+        return Ok(path);
+    }
+    let cache = hf_hub::api::sync::ApiBuilder::new()
+        .with_cache_dir(models_cache_dir())
+        .build()
+        .map_err(|e| anyhow::anyhow!("hf-hub: {e}"))?;
+    let repo = cache.model(spec.repo.to_string());
+    let path = repo
+        .get(spec.file)
+        .map_err(|e| anyhow::anyhow!("downloading {} ({e})", spec.repo))?;
+    Ok(path)
+}
+
+fn models_cache_dir() -> PathBuf {
+    if let Some(home) = dirs::home_dir() {
+        return home.join(".cache").join("ck").join("models");
+    }
+    std::env::current_dir().unwrap_or_default().join(".ck_models")
 }
 
 /// What has to match for two vectors to be comparable: the model, the
 /// prompts, the pooling and the chunker version. Stored in the index; a
 /// mismatch refuses `--index` and names `--clean`.
 pub fn signature(spec: &ModelSpec) -> String {
-    todo!("blake3 of repo, file, prefixes, pooling and crate::chunk sizes; first 16 hex chars")
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(spec.repo.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(spec.file.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(spec.query_prefix.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(spec.document_prefix.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(match spec.pooling {
+        Pooling::Mean => b"mean",
+        Pooling::Last => b"last",
+    });
+    hasher.update(b"\0");
+    hasher.update(&crate::chunk::TARGET_TOKENS.to_le_bytes());
+    hasher.update(&crate::chunk::OVERLAP_TOKENS.to_le_bytes());
+    hasher.finalize().to_hex()[..16].to_string()
 }

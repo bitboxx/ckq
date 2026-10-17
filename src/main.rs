@@ -496,7 +496,9 @@ fn status(cli: &Cli) -> anyhow::Result<ExitCode> {
             println!("{}", serde_json::to_string_pretty(&json)?);
             continue;
         }
-        if stats.files == 0 {
+        // An existing index with no files is still an index: report it as
+        // one (0 files) rather than claiming there is none.
+        if store.is_none() {
             eprintln!("No index found at {}", corpus.root.display());
             eprintln!("Run `ckq --index .` to create an index");
             continue;

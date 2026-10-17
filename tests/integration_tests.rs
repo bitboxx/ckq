@@ -1119,3 +1119,26 @@ fn test_alternating_semantic_searches_stay_scoped() {
         }
     }
 }
+
+/// `--status` on an index that exists but holds no files must report the
+/// index, not claim there is none (which would tell the user to run the very
+/// command that already made it). `--status-json` already said
+/// `index_exists: true` for the same store.
+#[test]
+fn test_status_on_an_empty_index_reports_the_index() {
+    let temp_dir = TempDir::new().unwrap();
+    let out = ckq_command()
+        .args(["--index", "-q", temp_dir.path().to_str().unwrap()])
+        .output()
+        .expect("Failed to run ckq index");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    let out = ckq_command()
+        .args(["--status", temp_dir.path().to_str().unwrap()])
+        .output()
+        .expect("Failed to run ckq status");
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("No index found"), "stderr: {stderr}");
+    assert!(stderr.contains("Files indexed: 0"), "stderr: {stderr}");
+}

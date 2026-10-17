@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.0] - unreleased
+
+### Added
+- **`ckq`, one crate.** The v2 rewrite: a single crate at the root replaces the eight-crate workspace. Ten modules, one binary, the same CLI surface (`--sem`, `--lex`, `--hybrid`, regex mode, `--json`/`--jsonl`).
+- **One store: `.ck/index.db`.** SQLite with WAL, a contentless FTS5 table for BM25 over file text and path, and f16 vectors in the same database. It replaces the old manifest plus per-file sidecars plus `vectors.cache` plus the tantivy index — one file to copy, back up or delete.
+- **Hybrid fusion by CombMAX over weighted reciprocal ranks.** A file takes the better of its two `weight / (3 + rank)` scores and the other method adds 0.01 of itself to break near-ties; the lexical weight is 1.05 with `--term` and 0.15 without. Summed RRF was measured against it on a 48-question evaluation and lost at every k (3 to 60) and every lexical weight (0.4 to 2.0): 34 to 36 answers first against 37.
+- **Concurrent first `--index` runs succeed.** The journal-mode change in the schema batch is retried (it ignores `busy_timeout`), writes use IMMEDIATE transactions (a DEFERRED write deadlocks on lock upgrade and reports `SQLITE_BUSY` without calling the busy handler), and a reader requires a populated `meta` before it trusts the schema. 15/15 concurrent pairs succeed.
+- **The query device defaults to GPU by measurement**: median of 10 cold `--sem` runs on `bench/multilingual` (Apple M1 Ultra) — 0.41 s on GPU against 0.59 s on CPU.
+
+### Changed
+- **A document is its root-relative path (`RelPath`), everywhere.** Both ranked methods return it, fusion compares it, output prints it; the working directory never matters. The old engine's four disagreeing path forms are what broke hybrid fusion and cwd-independence; both hold by design now, and the old `known_bug_` tests for them pass without special cases.
+- **Search never writes the index.** Only `--index`, `--add` and `--clean` do. After `--clean` a ranked search refuses and names `--index` instead of silently rebuilding.
+- **The embedder owns the model on one dedicated thread** (`LlamaContext` borrows the model and is `!Send`), applies the model's prompts in one place, and tears down in the order ggml requires (context before model, plus an `atexit` hook) — without which ggml aborts at exit.
+- **`--index` skips a file whose size and mtime match the index** without reading or hashing it, so the hook that keeps a corpus current stays cheap after nearly every write.
+
+### Removed
+- The eight crates (`ck-core`, `ck-models`, `ck-embed`, `ck-chunk`, `ck-index`, `ck-engine`, `ck-tui`, `ck-cli`) and everything only they needed: the embedding daemon (each process loads its own model), the ONNX/fastembed and mixedbread backends (GGUF through llama.cpp only), tree-sitter chunker queries, the TUI, the MCP server, `ck-vscode`, the docs site and npm distribution, the SWE-bench harness and the upstream example corpora.
+- crates.io and npm publishing: `Cargo.toml` is `publish = false` and a release is a tag that builds GitHub release binaries.
+
+### Fixed
+- **`ckq --index /dir` indexed the current directory.** A command flag takes no query, so a lone positional argument is its path — clap filed it under `pattern`, which made the command index `.`. (The old engine's test pinned this bug; the rewrite fixes it.)
+- **An empty index no longer fails the second writer.** `open_read` treats an `index.db` with no schema yet — what another process's first, still-running `--index` looks like — as no index, instead of dying with `no such table`.
+- **Tests pinned against bugs v2 fixed by design**: the symlink-loop and cwd `known_bug_` tests dropped their prefixes; the hybrid one-entry-per-file bug is gone because fusion is keyed on `RelPath`.
+
 ## [Unreleased]
 
 ### Changed

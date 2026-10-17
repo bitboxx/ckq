@@ -7,6 +7,7 @@ mod common;
 
 use common::{Corpus, parse_jsonl, run_ok};
 use serial_test::serial;
+use std::path::Path;
 
 /// A corpus whose every file matches `needle`, so any scope leak shows up as
 /// a foreign file in the results.
@@ -68,4 +69,47 @@ fn a_directory_argument_does_not_leak_prefix_sharing_siblings() {
     let hits = hits_in(&corpus, &["--lex", "needle"], "notes");
     let docs = documents(&hits);
     assert_eq!(docs, vec!["in.md".to_string(), "in2.md".to_string()]);
+}
+
+// ---------------------------------------------------------------------------
+// Ranked modes: printed paths count from the argument (b-NEW)
+// ---------------------------------------------------------------------------
+
+#[test]
+#[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn ranked_paths_print_from_the_argument_down() {
+    let corpus = needled();
+    corpus.index();
+
+    // A directory argument: real paths, relative the way the argument was
+    // given — not `notes/notes/in.md`, which does not exist.
+    let hits = hits_in(&corpus, &["--lex", "needle"], "notes");
+    assert!(!hits.is_empty());
+    for h in &hits {
+        assert!(
+            h.path == Path::new("notes/in.md") || h.path == Path::new("notes/in2.md"),
+            "printed {}",
+            h.path.display()
+        );
+        assert!(
+            corpus.path().join(&h.path).is_file(),
+            "printed path does not exist: {}",
+            h.path.display()
+        );
+    }
+
+    // A file argument prints as the file itself.
+    let hits = hits_in(&corpus, &["--lex", "needle"], "notes/in.md");
+    assert!(!hits.is_empty());
+    assert!(hits.iter().all(|h| h.path == Path::new("notes/in.md")));
+
+    // An absolute argument prints absolute paths, the way regex mode does.
+    let abs = corpus.path().join("notes");
+    let hits = hits_in(&corpus, &["--lex", "needle"], &abs.to_string_lossy());
+    assert!(!hits.is_empty());
+    assert!(
+        hits.iter()
+            .all(|h| h.path == abs.join("in.md") || h.path == abs.join("in2.md"))
+    );
 }

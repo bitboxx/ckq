@@ -104,6 +104,10 @@ pub struct Corpus {
     /// absolute (a wrapper strips that prefix from every result), otherwise the
     /// caller's relative argument, `.` when none was given.
     display_root: PathBuf,
+    /// What [`Corpus::display`] strips off a root-relative path before the
+    /// join: the scope a search argument named below the index root. Empty
+    /// for the corpora whose paths already count from `display_root`.
+    display_base: String,
 }
 
 impl Corpus {
@@ -145,7 +149,14 @@ impl Corpus {
         } else {
             Scope::Under(rel_of(&root, start)?)
         };
-        Ok((Corpus::at(&root, &display_prefix(arg, &abs)), scope))
+        // Output counts from the argument: joining `rel` (which counts from
+        // the root) onto the argument would print the scope twice
+        // (`notes/notes/in.md`), so the scope is stripped first.
+        let base = match &scope {
+            Scope::All => "",
+            Scope::Under(p) => p.as_str(),
+        };
+        Ok((Corpus::at_below(&root, arg, base), scope))
     }
 
     /// A corpus with no index, for regex mode: `arg` itself when it is a
@@ -191,9 +202,16 @@ impl Corpus {
     }
 
     fn at(root: &Path, display_root: &Path) -> Corpus {
+        Corpus::at_below(root, display_root, "")
+    }
+
+    /// A corpus whose output paths count from `base` (a root-relative path
+    /// the search argument named) rather than from the root.
+    fn at_below(root: &Path, display_root: &Path, base: &str) -> Corpus {
         Corpus {
             root: root.to_path_buf(),
             display_root: display_root.to_path_buf(),
+            display_base: base.to_string(),
         }
     }
 
@@ -217,10 +235,25 @@ impl Corpus {
         self.root.join(rel.as_str())
     }
 
-    /// How the file is printed: `display_root` joined with `rel`. Every output
-    /// path goes through here, whichever method found the file.
+    /// How the file is printed: `display_root` joined with the part of `rel`
+    /// below `display_base` — all of `rel` unless the search argument sat
+    /// below the index root, in which case the path counts from the argument
+    /// down, as it was given, and never prints the argument twice. Every
+    /// output path goes through here, whichever method found the file.
     pub fn display(&self, rel: &RelPath) -> PathBuf {
-        self.display_root.join(rel.as_str())
+        let below = if self.display_base.is_empty() {
+            rel.as_str()
+        } else {
+            rel.as_str()
+                .strip_prefix(&format!("{}/", self.display_base))
+                // The scope's own file: nothing below the base.
+                .unwrap_or("")
+        };
+        if below.is_empty() {
+            self.display_root.clone()
+        } else {
+            self.display_root.join(below)
+        }
     }
 }
 
@@ -311,5 +344,21 @@ mod tests {
         let dir = arg.parent().unwrap().to_path_buf();
         let (_, scope) = Corpus::for_search(&dir).unwrap();
         assert_eq!(scope, Scope::Under(RelPath::new(Path::new("sub")).unwrap()));
+    }
+
+    #[test]
+    fn display_counts_from_the_argument_not_the_index_root() {
+        // The index root sits two levels above the argument; paths used to
+        // print the argument's components twice (`docs/notes/docs/notes/…`).
+        let (_dir, arg) = rooted(&["docs/notes/in.md"]);
+        let notes = arg.parent().unwrap().to_path_buf();
+        let rel = RelPath::new(Path::new("docs/notes/in.md")).unwrap();
+
+        let (corpus, _) = Corpus::for_search(&notes).unwrap();
+        assert_eq!(corpus.display(&rel), notes.join("in.md"));
+
+        // A file argument prints as the file itself, the way it was given.
+        let (corpus, _) = Corpus::for_search(&arg).unwrap();
+        assert_eq!(corpus.display(&rel), arg);
     }
 }

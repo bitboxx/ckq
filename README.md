@@ -17,6 +17,24 @@ The binary is `target/release/ckq`. The default embedding model (about 280 MB)
 downloads on first use to `~/.cache/ck/models`; building or running regex and
 lexical search needs no model at all.
 
+## One file
+
+`scripts/build-onefile.sh <alias>` builds a ckq with that model's GGUF inside
+the binary itself, so one file works offline on a fresh machine:
+
+```bash
+scripts/build-onefile.sh gemma-q4
+```
+
+The model must already be in `~/.cache/ck/models` (run `ckq --index` once to
+download it). The embedded model becomes that build's default, and the first
+use writes it out once to `~/.cache/ck/models/embedded/`; `--status` and
+`--version` say which model a binary carries. A binary that embeds `gemma-q4`
+carries Google's Gemma Terms of Use with it and must ship those terms; a
+model under Apache-2.0 or MIT (such as granite, bge-m3 or Qwen3-Embedding)
+does not have that condition. Which model the releases embed is decided
+separately.
+
 ## Usage
 
 ```bash

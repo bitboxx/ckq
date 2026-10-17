@@ -529,9 +529,8 @@ pub fn encode_vector(v: &[f32]) -> Vec<u8> {
 }
 
 pub fn decode_vector(bytes: &[u8], out: &mut Vec<f32>) {
-    for pair in bytes.chunks_exact(2) {
-        out.push(half::f16::from_le_bytes([pair[0], pair[1]]).to_f32());
-    }
+    let (pairs, _) = bytes.as_chunks::<2>();
+    out.extend(pairs.iter().map(|p| half::f16::from_le_bytes(*p).to_f32()));
 }
 
 #[cfg(test)]

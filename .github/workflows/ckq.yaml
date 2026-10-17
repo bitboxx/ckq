@@ -78,17 +78,44 @@ jobs:
         with:
           cache: true
           stripdown: true
-      # The binary links vulkan-1.dll; the SDK ships it in runtime/x64.
-      - name: Put vulkan-1.dll on PATH (Windows)
+      # The binary links vulkan-1.dll. Recent SDKs install it straight into
+      # System32 (already on the DLL search path); older layouts keep it in
+      # the SDK, which then needs to be on PATH.
+      - name: Locate vulkan-1.dll (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $dll = Get-ChildItem "$env:VULKAN_SDK\runtime" -Recurse -Filter vulkan-1.dll | Select-Object -First 1
-          if ($null -eq $dll) { throw "vulkan-1.dll not found under $env:VULKAN_SDK\runtime" }
-          Write-Host "vulkan-1.dll: $($dll.FullName)"
-          Add-Content $env:GITHUB_PATH ($dll.DirectoryName)
+          $candidates = @(
+            "$env:VULKAN_SDK\runtime\x64\vulkan-1.dll",
+            "$env:VULKAN_SDK\Bin\vulkan-1.dll",
+            "C:\Windows\System32\vulkan-1.dll"
+          )
+          $found = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $found) { throw "vulkan-1.dll not found in any of: $($candidates -join ', ')" }
+          Write-Host "vulkan-1.dll: $found"
+          if ($found -notlike 'C:\Windows\*') {
+            Add-Content $env:GITHUB_PATH (Split-Path $found)
+            Write-Host "Added $(Split-Path $found) to PATH"
+          }
       - name: Test (offline)
         run: cargo test --release
+      # Prove the default feature reached the backend: the resolved feature
+      # graph, the loader the binary links, and the compiled SPIR-V shaders
+      # (vulkan-shaders-gen only runs with GGML_VULKAN on).
+      - name: Prove the Vulkan backend was built (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cargo tree -e features -i llama-cpp-2 | grep 'feature "vulkan"'
+          ldd target/release/ckq | grep libvulkan
+          find target -path '*llama-cpp-sys-2*' -name '*.spv' | head -3
+      - name: Prove the Vulkan backend was built (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo tree -e features -i llama-cpp-2 | Select-String 'feature "vulkan"'
+          $spv = Get-ChildItem target -Recurse -Filter '*.spv' | Select-Object -First 3
+          if (-not $spv) { throw 'no SPIR-V shaders under target: GGML_VULKAN was off' }
+          $spv | ForEach-Object { Write-Host "shader: $($_.FullName)" }
 
   msrv:
     name: msrv (Rust 1.88)

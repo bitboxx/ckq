@@ -1265,11 +1265,17 @@ async fn hybrid_search(options: &SearchOptions) -> Result<Vec<SearchResult>> {
     hybrid_search_with_progress(options, None).await
 }
 
-/// Reciprocal rank fusion constant. The original paper uses 60, which flattens
-/// the top of each list so far that two weak agreements (ranks 6 and 5) outscore
-/// one method's clear first place. 3 keeps agreement worth something without
-/// letting it bury a strong single-method hit; 1 to 5 performed the same.
+/// Reciprocal rank constant: a rank r scores 1 / (RRF_K + r).
 const RRF_K: f32 = 3.0;
+
+/// How much a second method's rank adds to a file's best one. Fusion is
+/// CombMAX: a file ranks by the better of its two weighted reciprocal ranks,
+/// and agreement only breaks near-ties. Summing the two (classic RRF) lost on
+/// the vault evaluation, 17 Oct 2026, 48 questions: every k from 3 to 60 and
+/// every lexical weight from 0.4 to 2.0 put fewer answers first (34 to 36)
+/// than CombMAX (37), because a note both methods rank second or third
+/// overtook the note one method ranked first.
+const AGREEMENT_WEIGHT: f32 = 0.01;
 
 /// Weight of the lexical method in hybrid search when it has only the query to
 /// work with. A question is not the words its answer contains: across languages
@@ -1277,9 +1283,15 @@ const RRF_K: f32 = 3.0;
 /// which are by construction the wrong ones. On bench/multilingual, gemma-q4
 /// ranks 35 of 40 answers first alone; fused at full weight, 15. At 0.15 it is
 /// back to 35, and the lexical method still orders near-ties and fills the list
-/// when the semantic threshold leaves it short. Terms given with `--term` are
-/// chosen to be in the answer, so they get full weight.
+/// when the semantic threshold leaves it short.
 const QUERY_LEXICAL_WEIGHT: f32 = 0.15;
+
+/// Weight of the lexical method when `--term` gives it keywords chosen to be in
+/// the answer. Just above 1, so at equal rank the keyword hit leads: on the
+/// vault evaluation 1.05 put 37 of 48 answers first and 45 in the top 3
+/// (MRR 0.861), against 34 / 45 / 0.831 at 1.0, where the agreement tiebreak
+/// let the semantic first place win, and 37 / 45 / 0.840 at 1.3.
+const TERM_LEXICAL_WEIGHT: f32 = 1.05;
 
 /// Semantic results are chunks and several can come from one file, so the
 /// semantic method is asked for this many times the candidates it must supply.
@@ -1325,7 +1337,7 @@ async fn hybrid_search_with_progress(
     let lexical_weight = if options.terms.is_empty() {
         QUERY_LEXICAL_WEIGHT
     } else {
-        1.0
+        TERM_LEXICAL_WEIGHT
     };
     let mut fused = fuse_by_file(&lexical.results, &semantic.matches, lexical_weight);
     fused.retain(|result| path_matches_include(&result.file, &options.include_patterns));
@@ -1349,8 +1361,9 @@ async fn hybrid_search_with_progress(
     Ok(fused)
 }
 
-/// Reciprocal rank fusion of two rankings at file level, the lexical one scaled
-/// by `lexical_weight`. Each list contributes its best rank per file; the
+/// Fusion of two rankings at file level by CombMAX over weighted reciprocal
+/// ranks, the lexical one scaled by `lexical_weight`, plus `AGREEMENT_WEIGHT`
+/// times the other method's score. Each list contributes its best rank per file; the
 /// semantic list arrives as chunks, best first, so a file's first chunk sets its
 /// rank. Ties break on path, for stable output.
 fn fuse_by_file(
@@ -1399,7 +1412,9 @@ fn fuse_by_file(
     let mut fused: Vec<SearchResult> = entries
         .into_values()
         .map(|entry| {
-            let score = lexical_weight * rank_score(entry.lex_rank) + rank_score(entry.vec_rank);
+            let lex = lexical_weight * rank_score(entry.lex_rank);
+            let vec = rank_score(entry.vec_rank);
+            let score = lex.max(vec) + AGREEMENT_WEIGHT * lex.min(vec);
             let mut result = entry.result;
             result.score = score;
             result.signals = Some(ck_core::SearchSignals {
@@ -1748,8 +1763,32 @@ mod tests {
         ];
         let fused = fuse_by_file(&lexical, &semantic, QUERY_LEXICAL_WEIGHT);
         assert_eq!(fused[0].file, Path::new("right.md"));
-        let full = fuse_by_file(&lexical, &semantic, 1.0);
+        let full = fuse_by_file(&lexical, &semantic, TERM_LEXICAL_WEIGHT);
         assert_ne!(full[0].file, Path::new("right.md"));
+    }
+
+    #[test]
+    fn test_fuse_by_file_keyword_first_place_beats_a_shared_second_place() {
+        // "top.md" is the lexical first place only; "both.md" is second for
+        // both methods. Summed RRF would put "both.md" first; CombMAX must not.
+        let lexical = vec![
+            make_result("top.md", 1, 1, ""),
+            make_result("both.md", 1, 1, ""),
+        ];
+        let semantic = vec![
+            make_result("sem.md", 1, 1, ""),
+            make_result("both.md", 1, 1, ""),
+        ];
+        let fused = fuse_by_file(&lexical, &semantic, TERM_LEXICAL_WEIGHT);
+        let pos = |f: &str| fused.iter().position(|r| r.file == Path::new(f)).unwrap();
+        assert_eq!(pos("top.md"), 0, "keyword first place leads at equal rank");
+        assert!(
+            pos("sem.md") < pos("both.md"),
+            "a first place beats a shared second"
+        );
+        let both = &fused[pos("both.md")];
+        let only = &fused[pos("sem.md")];
+        assert!(both.score > 0.0 && only.score > both.score);
     }
 
     #[test]

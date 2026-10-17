@@ -13,3 +13,7 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    ignore:
+      # The ref of dtolnay/rust-toolchain is the Rust version it installs, and
+      # the msrv job pins it to the MSRV on purpose; a bump would stop testing it.
+      - dependency-name: dtolnay/rust-toolchain

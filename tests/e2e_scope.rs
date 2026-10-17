@@ -113,3 +113,27 @@ fn ranked_paths_print_from_the_argument_down() {
             .all(|h| h.path == abs.join("in.md") || h.path == abs.join("in2.md"))
     );
 }
+
+// ---------------------------------------------------------------------------
+// Regex mode: --topk applies after the scope (b-F1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn regex_topk_with_a_file_argument_returns_that_files_matches() {
+    let corpus = Corpus::new();
+    corpus.write("a.md", "match one\nmatch two\n");
+    corpus.write("b.md", "match three\n");
+
+    // The limit used to stop the walk at a.md, whose matches the scope then
+    // dropped: "No matches found", exit 1.
+    let out = run_ok(corpus.ckq().args(["-F", "--topk", "1", "match", "b.md"]));
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["match three"]);
+
+    // The limit still applies within the scope.
+    let out = run_ok(corpus.ckq().args(["-F", "--topk", "1", "match", "."]));
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["./a.md:", "match one"]);
+}

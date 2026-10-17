@@ -5,7 +5,7 @@
 //! it skips what indexing skips. Output goes through `output`, like the ranked
 //! methods: JSONL hits carry the span of the matching line and score 1.0.
 
-use crate::corpus::{Corpus, RelPath};
+use crate::corpus::{Corpus, RelPath, Scope};
 use crate::walk::WalkOptions;
 use anyhow::{Result, anyhow};
 use regex::Regex;
@@ -35,13 +35,18 @@ pub struct Match {
     pub after: Vec<(usize, String)>,
 }
 
-/// Every match, in path then line order. An invalid regex is an error whose
-/// message starts "Regex error".
-pub fn grep(corpus: &Corpus, opts: &GrepOptions) -> Result<Vec<Match>> {
+/// Every match, in path then line order, from `scope` only: files outside it
+/// are neither read nor counted, so `--topk` limits in-scope matches alone
+/// and a file argument pays for itself, not for its parent tree. An invalid
+/// regex is an error whose message starts "Regex error".
+pub fn grep(corpus: &Corpus, opts: &GrepOptions, scope: &Scope) -> Result<Vec<Match>> {
     let re = build_regex(opts)?;
     let files = crate::walk::walk(corpus, &opts.walk)?;
     let mut out = Vec::new();
     'files: for file in files {
+        if !scope.contains(&file.rel) {
+            continue;
+        }
         let Ok(text) = std::fs::read_to_string(corpus.abs(&file.rel)) else {
             continue;
         };

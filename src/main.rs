@@ -364,9 +364,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 limit: cli.topk,
                 walk: walk_opts.clone(),
             };
-            let mut matches = grep::grep(&corpus, &opts)?;
-            // A file argument scopes the search to that file.
-            matches.retain(|m| scope.contains(&m.rel));
+            let matches = grep::grep(&corpus, &opts, &scope)?;
             found += output::print_matches(&corpus, &matches, &out_opts)?;
         }
     }

@@ -28,6 +28,12 @@ pub struct ModelSpec {
     pub document_prefix: &'static str,
     /// Default `--threshold` for `--sem`; scores are not comparable across models.
     pub threshold: f32,
+    /// First 16 hex of the blake3 of `file` as the registry downloads it, where
+    /// known. An embedded copy of exactly that file keeps the plain build's
+    /// signature; any other weights under the same alias do not. Read only by
+    /// builds with the `embedded-model` feature.
+    #[cfg_attr(not(feature = "embedded-model"), allow(dead_code))]
+    pub blake3: Option<&'static str>,
 }
 
 /// The default model: `gemma-q4`, or the embedded alias in a build that
@@ -50,6 +56,7 @@ const GEMMA_Q4: ModelSpec = ModelSpec {
     query_prefix: "task: search result | query: ",
     document_prefix: "title: none | text: ",
     threshold: 0.40,
+    blake3: Some("7311e127d8aa9cb9"),
 };
 
 const GEMMA_Q8: ModelSpec = ModelSpec {
@@ -62,6 +69,7 @@ const GEMMA_Q8: ModelSpec = ModelSpec {
     query_prefix: "task: search result | query: ",
     document_prefix: "title: none | text: ",
     threshold: 0.40,
+    blake3: None,
 };
 
 const GRANITE: ModelSpec = ModelSpec {
@@ -74,6 +82,7 @@ const GRANITE: ModelSpec = ModelSpec {
     query_prefix: "",
     document_prefix: "",
     threshold: 0.55,
+    blake3: None,
 };
 
 const BGE_M3: ModelSpec = ModelSpec {
@@ -86,6 +95,7 @@ const BGE_M3: ModelSpec = ModelSpec {
     query_prefix: "",
     document_prefix: "",
     threshold: 0.35,
+    blake3: None,
 };
 
 const QWEN3: ModelSpec = ModelSpec {
@@ -100,6 +110,7 @@ const QWEN3: ModelSpec = ModelSpec {
     query_prefix: "Instruct: Given a search query, retrieve relevant passages that answer it\nQuery: ",
     document_prefix: "",
     threshold: 0.35,
+    blake3: None,
 };
 
 /// The registry. `gemma-q4`, `gemma-gguf`, `granite-gguf`, `bge-m3-gguf`, `qwen3-gguf`.
@@ -239,7 +250,44 @@ pub fn signature(spec: &ModelSpec) -> String {
     hasher.update(b"\0");
     hasher.update(&crate::chunk::TARGET_TOKENS.to_le_bytes());
     hasher.update(&crate::chunk::OVERLAP_TOKENS.to_le_bytes());
+    if let Some(marker) = weights_marker(spec) {
+        hasher.update(b"\0");
+        hasher.update(marker.as_bytes());
+    }
     hasher.finalize().to_hex()[..16].to_string()
+}
+
+/// What sets the weights apart when they are not the registry's own file:
+/// a `CKQ_GGUF_FILE` override (its path, size and mtime, which are cheap), or
+/// embedded bytes whose hash differs from the registry's known one, such as a
+/// copy with a requantised token table. `None` for the registry's file, so a
+/// plain build and a build embedding that same file share an index.
+fn weights_marker(spec: &ModelSpec) -> Option<String> {
+    weights_marker_with(spec, std::env::var_os("CKQ_GGUF_FILE").as_deref())
+}
+
+fn weights_marker_with(
+    spec: &ModelSpec,
+    gguf_override: Option<&std::ffi::OsStr>,
+) -> Option<String> {
+    if let Some(path) = gguf_override {
+        let meta = std::fs::metadata(path).ok();
+        let size = meta.as_ref().map_or(0, |m| m.len());
+        let mtime = meta
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_nanos());
+        return Some(format!(
+            "override:{}:{size}:{mtime}",
+            path.to_string_lossy()
+        ));
+    }
+    #[cfg(feature = "embedded-model")]
+    if embedded_alias() == Some(spec.alias) && spec.blake3 != Some(embedded::HASH) {
+        return Some(format!("embedded:{}", embedded::HASH));
+    }
+    let _ = spec;
+    None
 }
 
 #[cfg(all(test, feature = "embedded-model"))]
@@ -302,5 +350,40 @@ mod tests {
             .map(|e| e.file_name())
             .collect();
         assert_eq!(entries, ["hash.gguf"]);
+    }
+}
+
+#[cfg(test)]
+mod signature_tests {
+    use super::*;
+
+    #[test]
+    fn only_weights_other_than_the_registry_file_add_a_marker() {
+        let spec = resolve("gemma-q4").unwrap();
+        let marker = weights_marker_with(spec, None);
+        // A build embedding other bytes under this alias, such as a copy with
+        // a requantised token table, must not share an index with the plain one.
+        #[cfg(feature = "embedded-model")]
+        if embedded_alias() == Some("gemma-q4") && spec.blake3 != Some(embedded::HASH) {
+            assert_eq!(marker, Some(format!("embedded:{}", embedded::HASH)));
+            return;
+        }
+        assert_eq!(marker, None);
+    }
+
+    #[test]
+    fn an_override_file_marks_the_signature() {
+        let spec = resolve("gemma-q4").unwrap();
+        let marker = weights_marker_with(spec, Some(std::ffi::OsStr::new("/nonexistent/x.gguf")));
+        assert!(marker.unwrap().starts_with("override:/nonexistent/x.gguf"));
+    }
+
+    #[test]
+    fn the_plain_gemma_signature_is_unchanged() {
+        // The value existing v2 indexes carry. A change here forces every
+        // index to be rebuilt, so it has to be deliberate.
+        if std::env::var_os("CKQ_GGUF_FILE").is_none() && embedded_alias() != Some("gemma-q4") {
+            assert_eq!(signature(resolve("gemma-q4").unwrap()), "c23fdf7835ede659");
+        }
     }
 }

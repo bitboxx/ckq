@@ -285,3 +285,19 @@ pub fn score_bench(bench: &Bench, mode: &[&str]) -> BenchScore {
         misses,
     }
 }
+
+/// The hits with one entry per file, the first hit of each file kept, in
+/// order. Search modes that report chunks can repeat a file; rankings and
+/// order comparisons want it once.
+pub fn uniq_hits(hits: &[Hit]) -> Vec<Hit> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    for hit in hits {
+        let stem = hit.stem();
+        if !seen.contains(&stem) {
+            seen.push(stem);
+            out.push(hit.clone());
+        }
+    }
+    out
+}

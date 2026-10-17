@@ -29,8 +29,9 @@ build time by cargo features:
   falls back to the CPU on its own.
 - `--no-default-features` builds a CPU-only binary for machines with no
   Vulkan loader at all.
-- `--features cuda` builds with CUDA instead, which needs the CUDA toolkit
-  at build time and an NVIDIA driver at runtime.
+- `--no-default-features --features cuda` builds with CUDA instead, which
+  needs the CUDA toolkit at build time and an NVIDIA driver at runtime.
+  `--features cuda` alone keeps Vulkan as well, and then needs both SDKs.
 
 The default feature reaches `llama-cpp-2` through the tiny `gpu/` path crate
 (package `ckq-gpu`), because cargo cannot make a default feature

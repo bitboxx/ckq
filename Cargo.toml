@@ -25,7 +25,8 @@ embedded-model = []
 # cfg(not(target_os = "macos")), so the Mac keeps its Metal build untouched.
 # The shim exists because cargo cannot make a default feature
 # platform-specific (and refuses one crate twice under two names);
-# --no-default-features builds CPU-only, --features cuda swaps in CUDA.
+# --no-default-features builds CPU-only; --no-default-features --features
+# cuda builds CUDA alone (--features cuda by itself adds CUDA to Vulkan).
 default = ["vulkan"]
 vulkan = ["dep:ckq-gpu", "ckq-gpu?/vulkan"]
 cuda = ["dep:ckq-gpu", "ckq-gpu?/cuda"]

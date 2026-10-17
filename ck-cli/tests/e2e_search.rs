@@ -522,15 +522,14 @@ fn the_same_search_twice_is_identical() {
 }
 
 /// The daemon path and `CKQ_IN_PROCESS=1` must agree: same order, scores
-/// within 1e-4. Two deviations keep this ignored: the in-process run puts a
-/// llama-cpp-2 WARN line on stdout (so `--jsonl` is not clean JSON), and its
-/// `--sem` scores differ from the daemon's by about 0.07 with the same order
-/// (17 Oct 2026, gemma-q4: guide.md 0.815 vs 0.743, workshop.md 0.641 vs
-/// 0.580) — the two paths do not embed identically.
+/// within 1e-4. The client applies the role prefix before it sends and the
+/// daemon embeds the texts verbatim, so both paths embed the same string;
+/// and the CLI's tracing logs go to stderr, so the in-process run's
+/// llama.cpp warnings leave `--jsonl` stdout clean.
 #[test]
 #[serial]
-#[ignore = "bug: CKQ_IN_PROCESS=1 puts a WARN line on stdout and its --sem scores differ from the daemon's by ~0.07, not 1e-4"]
-fn known_bug_daemon_and_in_process_agree() {
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn daemon_and_in_process_agree() {
     let (corpus, query) = fusion_corpus();
     corpus.index();
 

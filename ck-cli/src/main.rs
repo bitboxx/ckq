@@ -1109,8 +1109,14 @@ async fn run_mcp_server() -> Result<()> {
 }
 
 async fn run_cli_mode(cli: Cli) -> Result<()> {
-    // Regular CLI mode logging
+    // Regular CLI mode logging. The writer must be stderr explicitly:
+    // tracing_subscriber::fmt defaults to stdout, and llama.cpp's log
+    // callback (routed into tracing by ck-embed) puts lines like its
+    // "control-looking token" warning there — a WARN-level line on stdout
+    // breaks every consumer of `--jsonl` output, exactly what MCP mode's
+    // stderr writer already guards against.
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive(tracing::Level::WARN.into()),

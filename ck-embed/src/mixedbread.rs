@@ -345,7 +345,10 @@ impl Embedder for MixedbreadEmbedder {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
+        self.embed_prepared(texts)
+    }
 
+    fn embed_prepared(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         let (input_ids, attention_mask, token_types) = self.build_inputs(texts)?;
 
         // Real token count per row, so last-token pooling skips the padding.

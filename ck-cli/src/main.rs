@@ -960,7 +960,9 @@ fn run_embed_daemon(alias: &str, options: &ck_embed::EmbedderOptions) -> anyhow:
     daemon_options.in_process = true;
     let mut embedder = ck_embed::create_embedder_for_config(&config, &daemon_options, None)?;
 
-    ck_embed::embed_daemon::serve_on(listener, socket, move |texts| embedder.embed(texts))
+    ck_embed::embed_daemon::serve_on(listener, socket, move |texts| {
+        embedder.embed_prepared(texts)
+    })
 }
 
 /// Open and keep a pinned connection to the embedding daemon, starting it if

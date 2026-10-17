@@ -1823,6 +1823,10 @@ mod tests {
             _texts: &[String],
             _role: ck_embed::Role,
         ) -> Result<Vec<Vec<f32>>> {
+            self.embed_prepared(_texts)
+        }
+
+        fn embed_prepared(&mut self, _texts: &[String]) -> Result<Vec<Vec<f32>>> {
             // Always return empty vector to trigger the panic scenario
             Ok(Vec::new())
         }
@@ -1845,6 +1849,10 @@ mod tests {
         }
 
         fn embed_with(&mut self, texts: &[String], _role: ck_embed::Role) -> Result<Vec<Vec<f32>>> {
+            self.embed_prepared(texts)
+        }
+
+        fn embed_prepared(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
             // Always return one less embedding than requested
             if texts.is_empty() {
                 Ok(Vec::new())

@@ -114,6 +114,10 @@ impl Embedder for LlamaCppDaemonClient {
             return Ok(Vec::new());
         }
         let texts = &crate::apply_prefix(texts, self.prefix_for(role));
+        self.embed_prepared(texts)
+    }
+
+    fn embed_prepared(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         // A daemon can hit its idle timeout in the window between our connect
         // and our request. ck-index catches per-file errors, counts
         // files_errored and still reports success, so healing it here is the
@@ -547,9 +551,16 @@ impl Embedder for LlamaCppEmbedder {
             Role::Document => &self.document_prefix,
         };
         let texts = crate::apply_prefix(texts, prefix);
+        self.embed_prepared(&texts)
+    }
+
+    fn embed_prepared(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
         let (reply_tx, reply_rx) = channel();
         self.tx
-            .send(Job::Embed(texts, reply_tx))
+            .send(Job::Embed(texts.to_vec(), reply_tx))
             .map_err(|_| anyhow!("llama.cpp thread is gone"))?;
         reply_rx
             .recv()

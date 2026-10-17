@@ -69,6 +69,12 @@ pub trait Embedder: Send + Sync {
     fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         self.embed_with(texts, Role::Document)
     }
+
+    /// Embed `texts` exactly as given, adding no role prefix. The receiving
+    /// end of the daemon's wire contract: clients prefix in `embed_with`
+    /// before they send, so a daemon serving them must embed verbatim or the
+    /// prefix lands on the text twice.
+    fn embed_prepared(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
 }
 
 /// Put the model's instruction on each text, for the side it is on.
@@ -347,6 +353,10 @@ impl Embedder for DummyEmbedder {
     }
 
     fn embed_with(&mut self, texts: &[String], _role: Role) -> Result<Vec<Vec<f32>>> {
+        self.embed_prepared(texts)
+    }
+
+    fn embed_prepared(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         Ok(texts.iter().map(|_| vec![0.0; self.dim]).collect())
     }
 }
@@ -501,6 +511,10 @@ impl Embedder for FastEmbedder {
     }
 
     fn embed_with(&mut self, texts: &[String], _role: Role) -> Result<Vec<Vec<f32>>> {
+        self.embed_prepared(texts)
+    }
+
+    fn embed_prepared(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         let text_refs: Vec<&str> = texts.iter().map(std::string::String::as_str).collect();
         let embeddings = self.model.embed(text_refs, None)?;
         Ok(embeddings)

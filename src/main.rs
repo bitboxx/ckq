@@ -316,6 +316,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         files_only: cli.files_with_matches,
         filenames: false,
     };
+    warn_inert_flags(&cli);
     let mut found = 0usize;
 
     for path in &paths {
@@ -384,6 +385,50 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         return Ok(ExitCode::from(1));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// One stderr line per flag that does nothing in the chosen mode, so a user
+/// narrowing a semantic search with `--term` hears that nothing happened.
+/// Not an error — grep-style muscle memory keeps working — and `-n` and `-l`
+/// are absent because ranked output honours them. The wrapper `vq` passes
+/// none of these flags, so it never sees a warning.
+fn warn_inert_flags(cli: &Cli) {
+    if cli.quiet {
+        return;
+    }
+    let ranked = cli.sem || cli.lex || cli.hybrid;
+    let mode = if cli.sem {
+        "--sem"
+    } else if cli.lex {
+        "--lex"
+    } else if cli.hybrid {
+        "--hybrid"
+    } else {
+        "regex"
+    };
+    let mut inert: Vec<&str> = Vec::new();
+    if ranked {
+        if cli.ignore_case {
+            inert.push("-i");
+        }
+        if cli.word_regexp {
+            inert.push("-w");
+        }
+        if cli.fixed_strings {
+            inert.push("-F");
+        }
+        if cli.context.is_some() {
+            inert.push("-C");
+        }
+    }
+    // `--term` feeds the lexical method, which --lex and --hybrid have and
+    // --sem and regex mode do not.
+    if !cli.terms.is_empty() && (cli.sem || !ranked) {
+        inert.push("--term");
+    }
+    for flag in inert {
+        eprintln!("ckq: warning: {flag} has no effect in {mode} mode");
+    }
 }
 
 /// The paths an index command works on: the arguments, or `.` when none.

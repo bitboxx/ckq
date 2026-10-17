@@ -197,3 +197,103 @@ fn threshold_nan_and_out_of_range_are_rejected_at_parse_time() {
         );
     assert!(stderr.contains("No ckq index found"), "{stderr}");
 }
+
+// ---------------------------------------------------------------------------
+// Flags that do nothing in the chosen mode say so (b-F7)
+// ---------------------------------------------------------------------------
+
+fn stderr_of(out: &std::process::Output) -> String {
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+#[test]
+fn regex_mode_names_an_inert_term_on_stderr() {
+    let corpus = Corpus::new();
+    corpus.write("a.md", "needle here\n");
+    let out = run_ok(corpus.ckq().args(["--term", "zzzz", "needle", "."]));
+    assert!(
+        stderr_of(&out).contains("ckq: warning: --term has no effect in regex mode"),
+        "{}",
+        stderr_of(&out)
+    );
+}
+
+#[test]
+#[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn ranked_modes_name_the_grep_flags_they_ignore() {
+    let corpus = needled();
+    corpus.index();
+    let out = run_ok(
+        corpus
+            .ckq()
+            .args(["--lex", "-i", "-w", "-F", "-C", "2", "needle", "."]),
+    );
+    let err = stderr_of(&out);
+    for flag in ["-i", "-w", "-F", "-C"] {
+        assert!(
+            err.contains(&format!("{flag} has no effect in --lex mode")),
+            "{err}"
+        );
+    }
+
+    // --term has no lexical side under --sem.
+    let out = run_ok(
+        corpus
+            .ckq()
+            .args(["--sem", "--term", "zzzz", "needle", "."]),
+    );
+    assert!(
+        stderr_of(&out).contains("ckq: warning: --term has no effect in --sem mode"),
+        "{}",
+        stderr_of(&out)
+    );
+}
+
+#[test]
+#[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn the_flags_vq_passes_never_warn() {
+    let corpus = needled();
+    corpus.index();
+    // The vault wrapper's flag sets: -q --jsonl --no-snippet with --lex
+    // --term, --hybrid --term --limit, --sem, and -n for regex mode. None
+    // of these may produce a warning (shown here without -q, which also
+    // silences warnings, to prove the flags themselves are clean).
+    for args in [
+        vec![
+            "--lex",
+            "--jsonl",
+            "--no-snippet",
+            "--term",
+            "needle",
+            "--limit",
+            "5",
+            "needle",
+            ".",
+        ],
+        vec![
+            "--hybrid",
+            "--jsonl",
+            "--no-snippet",
+            "--term",
+            "needle",
+            "--limit",
+            "5",
+            "needle",
+            ".",
+        ],
+        vec!["--sem", "--jsonl", "--no-snippet", "needle", "."],
+    ] {
+        let out = run_ok(corpus.ckq().args(&args));
+        assert!(
+            !stderr_of(&out).contains("ckq: warning:"),
+            "{:?}: {}",
+            args,
+            stderr_of(&out)
+        );
+    }
+
+    let out = run_ok(corpus.ckq().args(["-n", "needle", "."]));
+    assert!(!stderr_of(&out).contains("ckq: warning:"));
+}

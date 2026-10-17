@@ -38,13 +38,13 @@ pub enum Device {
 /// For a search: `CKQ_QUERY_DEVICE=cpu|gpu` when set, else whichever measured
 /// faster for a cold single query on this platform. Measured 17 Oct 2026 on
 /// an M1 Ultra, gemma-q4, median of 10 cold `--sem` runs over bench/multilingual:
-/// cpu 0.30 s, gpu 0.37 s — the CPU wins from a cold start (no Metal shader
-/// compilation), so it is the default.
+/// gpu 0.41 s, cpu 0.59 s — the GPU wins even cold (Metal shader compilation
+/// included), so it is the default.
 pub fn query_device() -> Device {
     match std::env::var("CKQ_QUERY_DEVICE").as_deref() {
-        Ok("gpu") => Device::Gpu,
         Ok("cpu") => Device::Cpu,
-        _ => Device::Cpu,
+        Ok("gpu") => Device::Gpu,
+        _ => Device::Gpu,
     }
 }
 
@@ -78,17 +78,22 @@ pub struct LlamaEmbedder {
 /// Loading a model twice would double the memory, so workers are shared per
 /// model within a process; only successful loads are cached. The handle joins
 /// the thread at shutdown, which is what lets its drops run in order.
-static WORKERS: LazyLock<Mutex<Vec<(&'static str, Sender<Job>, usize, thread::JoinHandle<()>)>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+/// One live model: its alias, the channel to its thread, its dimensionality
+/// and the thread's handle (for the ordered teardown at shutdown).
+type Worker = (&'static str, Sender<Job>, usize, thread::JoinHandle<()>);
+static WORKERS: LazyLock<Mutex<Vec<Worker>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
 /// The llama.cpp backend, initialised once per process: a second
 /// `LlamaBackend::init()` is an error, so the worker thread borrows this one.
-static BACKEND: LazyLock<Result<llama_cpp_2::llama_backend::LlamaBackend, String>> = LazyLock::new(|| {
-    // Silence llama.cpp's load chatter entirely: it is neither results nor a
-    // warning, and it must never contaminate stdout.
-    llama_cpp_2::send_logs_to_tracing(llama_cpp_2::LogOptions::default().with_logs_enabled(false));
-    llama_cpp_2::llama_backend::LlamaBackend::init().map_err(|e| e.to_string())
-});
+static BACKEND: LazyLock<Result<llama_cpp_2::llama_backend::LlamaBackend, String>> =
+    LazyLock::new(|| {
+        // Silence llama.cpp's load chatter entirely: it is neither results nor a
+        // warning, and it must never contaminate stdout.
+        llama_cpp_2::send_logs_to_tracing(
+            llama_cpp_2::LogOptions::default().with_logs_enabled(false),
+        );
+        llama_cpp_2::llama_backend::LlamaBackend::init().map_err(|e| e.to_string())
+    });
 
 /// Offload every layer; llama.cpp silently keeps on CPU whatever will not fit.
 const GPU_LAYERS: u32 = 1000;
@@ -145,13 +150,15 @@ fn start_worker(
             let backend = BACKEND
                 .as_ref()
                 .map_err(|e| anyhow!("llama backend: {e}"))?;
-            let params =
-                llama_cpp_2::model::params::LlamaModelParams::default().with_n_gpu_layers(match device {
+            let params = llama_cpp_2::model::params::LlamaModelParams::default().with_n_gpu_layers(
+                match device {
                     Device::Gpu => GPU_LAYERS,
                     Device::Cpu => 0,
-                });
-            let model = llama_cpp_2::model::LlamaModel::load_from_file(backend, &model_path, &params)
-                .map_err(|e| anyhow!("loading GGUF {}: {e}", model_path.display()))?;
+                },
+            );
+            let model =
+                llama_cpp_2::model::LlamaModel::load_from_file(backend, &model_path, &params)
+                    .map_err(|e| anyhow!("loading GGUF {}: {e}", model_path.display()))?;
             let dims = model.n_embd() as usize;
             if dims != spec.dims {
                 anyhow::bail!(
@@ -168,10 +175,7 @@ fn start_worker(
             let ctx_budget = max_length as u32 * MAX_SEQ as u32;
             let pooling = pooling_of(spec);
             let mut ctx = model
-                .new_context(
-                    backend,
-                    context_params(ctx_budget, MAX_SEQ as u32, pooling),
-                )
+                .new_context(backend, context_params(ctx_budget, MAX_SEQ as u32, pooling))
                 .map_err(|e| anyhow!("llama context: {e}"))?;
             let q_budget = (max_length as u32).clamp(1, QUERY_CTX);
             let mut query_ctx = model
@@ -183,7 +187,12 @@ fn start_worker(
                 .send(Ok(dims))
                 .map_err(|_| anyhow!("caller left before the model loaded"))?;
 
-            while let Ok(Job::Embed { texts, query, reply }) = rx.recv() {
+            while let Ok(Job::Embed {
+                texts,
+                query,
+                reply,
+            }) = rx.recv()
+            {
                 let result = if query {
                     run(&model, &mut query_ctx, &texts, q_budget as usize, dims)
                 } else {
@@ -349,7 +358,7 @@ fn run(
     }
 
     let budget = ctx.n_ctx() as usize;
-    let max_seq = (budget / max_length.max(1)).max(1).min(MAX_SEQ);
+    let max_seq = (budget / max_length.max(1)).clamp(1, MAX_SEQ);
 
     let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
     let mut start = 0usize;

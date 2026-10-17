@@ -112,7 +112,6 @@ struct SignalsJson {
     rrf_score: f32,
 }
 
-
 /// Read the hit's snippet out of its file through `corpus.abs`, clamped to the
 /// file's real length so a stale span degrades instead of panicking.
 fn snippet(corpus: &Corpus, rel: &crate::corpus::RelPath, chunk: &crate::chunk::Chunk) -> String {
@@ -257,22 +256,27 @@ pub fn print_matches(corpus: &Corpus, matches: &[Match], opts: &OutputOptions) -
                     printed += 1;
                     continue;
                 }
-                let current = (m.line, m.text.clone());
-                let all = m
-                    .before
-                    .iter()
-                    .chain(std::iter::once(&current))
-                    .chain(m.after.iter());
-                for (no, text) in all {
-                    if opts.line_numbers && opts.filenames {
-                        println!("{display}:{no}:{text}");
-                    } else if opts.line_numbers {
-                        println!("{no}:{text}");
-                    } else if opts.filenames {
-                        println!("{display}:{text}");
-                    } else {
-                        println!("{text}");
-                    }
+                // As the old engine's grep output: with -n the match's line
+                // number prefixes the first line of the context block and the
+                // rest follow bare; without it the file name gets its own
+                // line and everything else prints as-is.
+                let mut block: Vec<&str> = m.before.iter().map(|(_, t)| t.as_str()).collect();
+                block.push(&m.text);
+                block.extend(m.after.iter().map(|(_, t)| t.as_str()));
+                let mut block = block.into_iter();
+                let first = block.next().unwrap_or("");
+                if opts.line_numbers && opts.filenames {
+                    println!("{display}:{}:{first}", m.line);
+                } else if opts.line_numbers {
+                    println!("{}:{first}", m.line);
+                } else if opts.filenames {
+                    println!("{display}:");
+                    println!("{first}");
+                } else {
+                    println!("{first}");
+                }
+                for line in block {
+                    println!("{line}");
                 }
             }
         }

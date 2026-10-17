@@ -104,11 +104,15 @@ pub fn all() -> &'static [ModelSpec] {
 
 /// An alias, or a repo name as stored in an index, to its spec.
 pub fn resolve(name: &str) -> Result<&'static ModelSpec> {
-    all().iter()
+    all()
+        .iter()
         .find(|m| m.alias == name || m.repo == name)
         .ok_or_else(|| {
             let aliases: Vec<&str> = all().iter().map(|m| m.alias).collect();
-            anyhow!("Unknown model '{name}'. Available models: {}", aliases.join(", "))
+            anyhow!(
+                "Unknown model '{name}'. Available models: {}",
+                aliases.join(", ")
+            )
         })
 }
 
@@ -139,7 +143,9 @@ fn models_cache_dir() -> PathBuf {
     if let Some(home) = dirs::home_dir() {
         return home.join(".cache").join("ck").join("models");
     }
-    std::env::current_dir().unwrap_or_default().join(".ck_models")
+    std::env::current_dir()
+        .unwrap_or_default()
+        .join(".ck_models")
 }
 
 /// What has to match for two vectors to be comparable: the model, the

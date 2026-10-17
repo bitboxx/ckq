@@ -54,15 +54,15 @@ impl IndexReport {
 fn resolve_model(corpus: &Corpus, opts: &IndexOptions) -> Result<(&'static ModelSpec, IndexMeta)> {
     if let Some(name) = &opts.model {
         let spec = models::resolve(name)?;
-        return Ok((spec, IndexMeta::for_model(&spec)));
+        return Ok((spec, IndexMeta::for_model(spec)));
     }
     if let Some(store) = Store::open_read(corpus)? {
         let meta = store.meta()?;
         let spec = models::resolve(&meta.model_repo)?;
-        return Ok((spec, IndexMeta::for_model(&spec)));
+        return Ok((spec, IndexMeta::for_model(spec)));
     }
     let spec = models::resolve(models::DEFAULT_ALIAS)?;
-    Ok((spec, IndexMeta::for_model(&spec)))
+    Ok((spec, IndexMeta::for_model(spec)))
 }
 
 /// Bring the index in line with the files on disk.
@@ -145,9 +145,13 @@ pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
     let mut embedded = 0usize;
     if !to_embed.is_empty() {
         if !opts.quiet {
-            eprintln!("embedding {} files with {}...", to_embed.len(), meta.model_alias);
+            eprintln!(
+                "embedding {} files with {}...",
+                to_embed.len(),
+                meta.model_alias
+            );
         }
-        let mut embedder = LlamaEmbedder::load(&spec, Device::Gpu)?;
+        let mut embedder = LlamaEmbedder::load(spec, Device::Gpu)?;
         for (rec, text, chunks) in &to_embed {
             let texts: Vec<&str> = chunks
                 .iter()
@@ -170,9 +174,7 @@ pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
     }
 
     if timing {
-        eprintln!(
-            "timing: walk {t_walk:?}, read+chunk {t_readwrite:?}, embed {t_embedding:?}"
-        );
+        eprintln!("timing: walk {t_walk:?}, read+chunk {t_readwrite:?}, embed {t_embedding:?}");
     }
     report.chunks_embedded = embedded;
     Ok(report)
@@ -210,7 +212,7 @@ pub fn add_file(corpus: &Corpus, rel: &RelPath, opts: &IndexOptions) -> Result<I
     let vectors = if chunks.is_empty() {
         Vec::new()
     } else {
-        let mut embedder = LlamaEmbedder::load(&spec, Device::Gpu)?;
+        let mut embedder = LlamaEmbedder::load(spec, Device::Gpu)?;
         let texts: Vec<&str> = chunks
             .iter()
             .map(|c| &text[c.byte_start..c.byte_end])

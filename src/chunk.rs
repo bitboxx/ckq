@@ -278,7 +278,10 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].line_start, 1);
         assert_eq!(chunks[0].line_end, 3);
-        assert_eq!(&text[chunks[0].byte_start..chunks[0].byte_end], "# Title\n\nOne paragraph.");
+        assert_eq!(
+            &text[chunks[0].byte_start..chunks[0].byte_end],
+            "# Title\n\nOne paragraph."
+        );
     }
 
     #[test]
@@ -290,7 +293,11 @@ mod tests {
             text.push('\n');
         }
         let chunks = chunk(&rel("a.md"), &text);
-        assert!(chunks.len() >= 2, "eight sections must split: {}", chunks.len());
+        assert!(
+            chunks.len() >= 2,
+            "eight sections must split: {}",
+            chunks.len()
+        );
         // Each chunk after the first starts on a heading line or in the
         // overlap tail of the previous chunk, never mid-heading.
         for c in &chunks[1..] {
@@ -306,14 +313,16 @@ mod tests {
     fn every_line_of_a_big_file_is_covered() {
         let mut text = String::new();
         for i in 1..=4200 {
-            text.push_str(&format!("Line {i}: the archivist shelves another bound volume of chronicles.\n"));
+            text.push_str(&format!(
+                "Line {i}: the archivist shelves another bound volume of chronicles.\n"
+            ));
         }
         let chunks = chunk(&rel("big.md"), &text);
         assert!(chunks.len() > 5);
         let mut covered = vec![false; 4201];
         for c in &chunks {
-            for line in c.line_start..=c.line_end {
-                covered[line] = true;
+            for seen in covered.iter_mut().take(c.line_end).skip(c.line_start - 1) {
+                *seen = true;
             }
             assert!(c.byte_end <= text.len());
         }

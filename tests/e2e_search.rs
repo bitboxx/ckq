@@ -546,7 +546,8 @@ fn two_runs_of_the_single_path_agree_and_stdout_is_clean_jsonl() {
     );
     for (x, y) in a.iter().zip(&b) {
         assert_eq!(
-            x.score, y.score,
+            x.score,
+            y.score,
             "two identical runs disagree on the score of {}",
             x.stem()
         );
@@ -707,6 +708,15 @@ lenses; align the finder at dusk before the planets rise.\n",
         "# Garden\n\nSow the peas in early spring and mulch the beds before the summer heat \
 arrives.\n",
     );
+    // A file that stays on the old subject, so "which file ranks first for
+    // the old query" has a right answer that is not a near-tie between two
+    // off-topic files (v2's single-prefix query embedding orders such ties
+    // differently from the old engine's doubled one).
+    corpus.write(
+        "observatory.md",
+        "# Observatory\n\nThe dome shelters a big telescope for observing the \
+planets; the astronomer watches them rise after dusk.\n",
+    );
     corpus.index();
 
     corpus.write(
@@ -735,6 +745,12 @@ the crema turn hazelnut brown as the shot lands in the cup.\n",
         "--threshold",
         "0.0",
     ]);
+    assert_eq!(
+        rank_of(&sem_old, "observatory"),
+        Some(1),
+        "the file that still covers the subject must own the old query: {:?}",
+        all_stems(&uniq_hits(&sem_old))
+    );
     assert_ne!(
         rank_of(&sem_old, "telescope"),
         Some(1),

@@ -330,7 +330,7 @@ pub fn parse_index_summary(stderr: &str) -> IndexSummary {
         updated: number("updated"),
         removed: number("removed"),
         unchanged: number("unchanged"),
-        chunks_embedded: number("embedded"),
+        chunks_embedded: number("chunks embedded"),
     }
 }
 

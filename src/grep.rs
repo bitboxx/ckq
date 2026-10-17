@@ -60,10 +60,8 @@ pub fn grep(corpus: &Corpus, opts: &GrepOptions) -> Result<Vec<Match>> {
         for (idx, (line_no, offset, line)) in lines.iter().enumerate() {
             let mut matched = false;
             for m in re.find_iter(line) {
-                if let Some(limit) = opts.limit {
-                    if out.len() >= limit {
-                        break 'files;
-                    }
+                if opts.limit.is_some_and(|limit| out.len() >= limit) {
+                    break 'files;
                 }
                 let before = lines[idx.saturating_sub(opts.context)..idx]
                     .iter()

@@ -107,6 +107,9 @@ impl Corpus {
     /// above `arg` that holds `.ck`, and the part of it `arg` names. An `arg`
     /// with no index above it is an error that says to run `ckq --index`.
     pub fn for_search(arg: &Path) -> Result<(Corpus, Scope)> {
+        if !arg.exists() {
+            bail!("Path does not exist: {}", arg.display());
+        }
         let abs = absolute(arg);
         let start = if abs.is_dir() { &abs } else { parent(&abs)? };
         let Some(root) = nearest_index_root(start) else {
@@ -132,22 +135,22 @@ impl Corpus {
         }
         let abs = absolute(arg);
         if abs.is_dir() {
-            return Ok((
-                Corpus::at(&abs, &display_prefix(arg, &abs)),
-                Scope::All,
-            ));
+            return Ok((Corpus::at(&abs, &display_prefix(arg, &abs)), Scope::All));
         }
         let parent = parent(&abs)?;
         Ok((
-            Corpus::at(&parent, &display_prefix(arg, &abs)),
-            Scope::Under(rel_of(&parent, &abs)?),
+            Corpus::at(parent, &display_prefix(arg, &abs)),
+            Scope::Under(rel_of(parent, &abs)?),
         ))
     }
 
     /// The corpus `--index` writes: `arg` itself, created on first use.
     pub fn for_index(arg: &Path) -> Result<Corpus> {
         if !arg.is_dir() {
-            bail!("Path does not exist or is not a directory: {}", arg.display());
+            bail!(
+                "Path does not exist or is not a directory: {}",
+                arg.display()
+            );
         }
         let abs = absolute(arg);
         Ok(Corpus::at(&abs, &display_prefix(arg, &abs)))
@@ -157,6 +160,9 @@ impl Corpus {
     /// directory at or above `arg` that holds `.ck`, else `arg` itself when it
     /// is a directory.
     pub fn for_command(arg: &Path) -> Result<Corpus> {
+        if !arg.exists() {
+            bail!("Path does not exist: {}", arg.display());
+        }
         let abs = absolute(arg);
         let start = if abs.is_dir() { &abs } else { parent(&abs)? };
         let root = nearest_index_root(start).unwrap_or_else(|| start.to_path_buf());
@@ -203,7 +209,8 @@ fn absolute(p: &Path) -> PathBuf {
 }
 
 fn parent(p: &Path) -> Result<&Path> {
-    p.parent().ok_or_else(|| anyhow::anyhow!("{} has no parent", p.display()))
+    p.parent()
+        .ok_or_else(|| anyhow::anyhow!("{} has no parent", p.display()))
 }
 
 /// The nearest directory at or above `from` that holds a `.ck` directory.

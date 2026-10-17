@@ -61,11 +61,7 @@ pub fn fts_query(q: &Query) -> String {
     let mut parts: Vec<String> = Vec::new();
     let phrase = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
     if q.terms.is_empty() {
-        parts.extend(
-            query_tokens(&q.text)
-                .into_iter()
-                .map(|t| phrase(&t)),
-        );
+        parts.extend(query_tokens(&q.text).into_iter().map(|t| phrase(&t)));
     } else {
         for term in &q.terms {
             // As the old engine did: a quote or backslash becomes a space, so
@@ -84,7 +80,7 @@ pub fn fts_query(q: &Query) -> String {
                     words
                         .into_iter()
                         .filter(|w| w.chars().count() > 3)
-                        .map(|w| phrase(w)),
+                        .map(phrase),
                 );
             }
         }
@@ -115,10 +111,8 @@ pub fn lexical(store: &Store, corpus: &Corpus, q: &Query) -> Result<Vec<Hit>> {
     let mut hits = Vec::with_capacity(ranked.len());
     for (rel, raw) in ranked {
         let score = if best > 0.0 { raw / best } else { raw };
-        if let Some(t) = q.threshold {
-            if score < t {
-                continue;
-            }
+        if q.threshold.is_some_and(|t| score < t) {
+            continue;
         }
         let (chunk, _text) = locate_span(corpus, &rel, &terms);
         hits.push(Hit {
@@ -156,7 +150,10 @@ fn locate_span(corpus: &Corpus, rel: &RelPath, terms: &[String]) -> (Chunk, Stri
     if terms.is_empty() {
         let end = text.lines().next().map(str::len).unwrap_or(0);
         return (
-            Chunk { byte_end: end, ..fallback },
+            Chunk {
+                byte_end: end,
+                ..fallback
+            },
             text.lines().next().unwrap_or("").to_string(),
         );
     }
@@ -173,12 +170,12 @@ fn locate_span(corpus: &Corpus, rel: &RelPath, terms: &[String]) -> (Chunk, Stri
         }
     }
     match best {
-        Some((_, chunk)) => (
-            chunk,
-            text[chunk.byte_start..chunk.byte_end].to_string(),
-        ),
+        Some((_, chunk)) => (chunk, text[chunk.byte_start..chunk.byte_end].to_string()),
         None => (
-            Chunk { byte_end: text.lines().next().map(str::len).unwrap_or(0), ..fallback },
+            Chunk {
+                byte_end: text.lines().next().map(str::len).unwrap_or(0),
+                ..fallback
+            },
             text.lines().next().unwrap_or("").to_string(),
         ),
     }
@@ -252,7 +249,6 @@ pub fn hybrid(
         terms: q.terms.clone(),
     };
     let semantic = semantic(store, embedder, &sem_query, default_threshold)?;
-
 
     let lex_weight = if q.terms.is_empty() {
         LEX_WEIGHT_QUERY_ONLY
@@ -345,7 +341,10 @@ mod tests {
 
     #[test]
     fn a_query_becomes_quoted_tokens_joined_by_or() {
-        assert_eq!(fts_query(&query("volcano erupt", &[])), "\"volcano\" OR \"erupt\"");
+        assert_eq!(
+            fts_query(&query("volcano erupt", &[])),
+            "\"volcano\" OR \"erupt\""
+        );
         assert_eq!(fts_query(&query("a-b c", &[])), "\"a\" OR \"b\" OR \"c\"");
     }
 

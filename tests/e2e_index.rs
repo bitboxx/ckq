@@ -27,7 +27,9 @@ fn total_files(corpus: &Corpus) -> u64 {
 /// walks the tree it is given, so a walker that followed a symlink loop
 /// would hang forever; a plain `output()` would hang the test with it.
 fn run_bounded(cmd: &mut Command, secs: u64) -> Output {
-    cmd.stdin(Stdio::null());
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = cmd.spawn().expect("ckq should start");
     let deadline = Instant::now() + Duration::from_secs(secs);
     loop {
@@ -182,7 +184,7 @@ fn incremental_reindex_reembeds_only_the_edited_file() {
         "The bakery opens before sunrise and the street smells of warm bread.\n\
          By nine the shelves hold cardamom buns and the queue reaches the corner.\n",
     );
-    let out = run_ok(corpus.ckq().args(["--index", "-q", "."]));
+    let out = run_ok(corpus.ckq().args(["--index", "."]));
     let summary = common::parse_index_summary(&String::from_utf8_lossy(&out.stderr));
     assert_eq!(summary.added, 0, "nothing new: {summary:?}");
     assert_eq!(summary.updated, 1, "only the edited file: {summary:?}");
@@ -235,9 +237,12 @@ fn deleted_file_disappears_from_search_and_the_index_drops_it() {
     }
 
     corpus.remove("mushroom.md");
-    let out = run_ok(corpus.ckq().args(["--index", "-q", "."]));
+    let out = run_ok(corpus.ckq().args(["--index", "."]));
     let summary = common::parse_index_summary(&String::from_utf8_lossy(&out.stderr));
-    assert_eq!(summary.removed, 1, "the deleted file must be dropped: {summary:?}");
+    assert_eq!(
+        summary.removed, 1,
+        "the deleted file must be dropped: {summary:?}"
+    );
 
     for (mode, query) in mushroom_queries {
         expect_no_hits(&corpus, &[mode, query]);
@@ -371,7 +376,14 @@ fn hidden_files_are_indexed_only_with_the_hidden_flag() {
     expect_no_hits(&corpus, &["--lex", "quilts"]);
 
     run_ok(corpus.ckq().args(["--index", "--hidden", "-q", "."]));
-    assert_eq!(total_files(&corpus), 3, "the dot-file and dot-dir join");
+    // The walker sees four text files now: the visible one, the dot-file, the
+    // dot-dir's file, and the .ckignore the first run wrote (a hidden text
+    // file like any other, exactly as the old engine treated it).
+    assert_eq!(
+        total_files(&corpus),
+        4,
+        "the dot-file, dot-dir and .ckignore join"
+    );
     let hits = corpus.search(&["--lex", "quilts", "--hidden"]);
     assert_eq!(
         common::rank_of(&hits, "quilts"),
@@ -619,18 +631,29 @@ fn switching_models_rebuilds_the_whole_index() {
         "The dune moves a hand's width inland with every winter storm.\n",
     );
     corpus.index();
-    assert_eq!(status_json(&corpus)["model"]["alias"].as_str(), Some("gemma-q4"));
+    assert_eq!(
+        status_json(&corpus)["model"]["alias"].as_str(),
+        Some("gemma-q4")
+    );
 
     // gemma-gguf is the same architecture at another quantisation: the
     // switch must re-embed, and the store must end up wholly the new model's.
-    let out = run_ok(corpus.ckq().args(["--index", "-q", "--model", "gemma-gguf", "."]));
+    let out = run_ok(corpus.ckq().args(["--index", "--model", "gemma-gguf", "."]));
     let summary = common::parse_index_summary(&String::from_utf8_lossy(&out.stderr));
     assert_eq!(summary.added, 1, "a rebuild starts over: {summary:?}");
-    assert_eq!(summary.unchanged, 0, "no stale vectors may survive: {summary:?}");
+    assert_eq!(
+        summary.unchanged, 0,
+        "no stale vectors may survive: {summary:?}"
+    );
     let json = status_json(&corpus);
     assert_eq!(json["model"]["alias"].as_str(), Some("gemma-gguf"));
     assert_eq!(json["total_files"].as_u64(), Some(1));
-    let hits = corpus.search(&["--sem", "sand moved by the winter wind", "--threshold", "0.0"]);
+    let hits = corpus.search(&[
+        "--sem",
+        "sand moved by the winter wind",
+        "--threshold",
+        "0.0",
+    ]);
     assert_eq!(
         common::rank_of(&hits, "dune"),
         Some(1),
@@ -664,16 +687,21 @@ fn a_corrupt_store_errors_loudly_instead_of_lying() {
 
     let db = corpus.path().join(".ck/index.db");
     fs::write(&db, b"NOT A DATABASE, JUST GARBAGE BYTES 0123456789").unwrap();
-    let sem_err = run_err(corpus.ckq().args(["--sem", "expensive spice", "--jsonl", "-q", "."]));
+    let sem_err = run_err(
+        corpus
+            .ckq()
+            .args(["--sem", "expensive spice", "--jsonl", "-q", "."]),
+    );
     assert!(
         sem_err.contains("Error"),
         "a corrupt store must fail loudly, got:\n{sem_err}"
     );
-    let lex_err = run_err(corpus.ckq().args(["--lex", "saffron", "--jsonl", "-q", "."]));
-    assert!(
-        lex_err.contains("Error"),
-        "got:\n{lex_err}"
+    let lex_err = run_err(
+        corpus
+            .ckq()
+            .args(["--lex", "saffron", "--jsonl", "-q", "."]),
     );
+    assert!(lex_err.contains("Error"), "got:\n{lex_err}");
 
     // And the recovery path is exactly the one the message names.
     run_ok(corpus.ckq().args(["--clean", "."]));

@@ -32,7 +32,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 #[derive(Parser, Debug)]
-#[command(name = "ckq", version, about = "Multilingual search over a folder of text: BM25 and embeddings, fused")]
+#[command(
+    name = "ckq",
+    version,
+    about = "Multilingual search over a folder of text: BM25 and embeddings, fused"
+)]
 struct Cli {
     /// The query: a regex in regex mode, text for --lex, --sem and --hybrid.
     pattern: Option<String>,
@@ -297,17 +301,15 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let hits = if cli.lex {
                 search::lexical(&store, &corpus, &query)?
             } else if cli.sem {
-                let mut embedder =
-                    embed::LlamaEmbedder::load(spec, embed::query_device())?;
+                let mut embedder = embed::LlamaEmbedder::load(spec, embed::query_device())?;
                 search::semantic(&store, &mut embedder, &query, spec.threshold)?
             } else {
-                let mut embedder =
-                    embed::LlamaEmbedder::load(spec, embed::query_device())?;
+                let mut embedder = embed::LlamaEmbedder::load(spec, embed::query_device())?;
                 search::hybrid(&store, &corpus, &mut embedder, &query, spec.threshold)?
             };
             found += output::print_hits(&corpus, &hits, &out_opts)?;
         } else {
-            let (corpus, _scope) = corpus::Corpus::plain(path)?;
+            let (corpus, scope) = corpus::Corpus::plain(path)?;
             let opts = grep::GrepOptions {
                 pattern: pattern.clone(),
                 ignore_case: cli.ignore_case,
@@ -318,7 +320,9 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 limit: cli.topk,
                 walk: walk_opts.clone(),
             };
-            let matches = grep::grep(&corpus, &opts)?;
+            let mut matches = grep::grep(&corpus, &opts)?;
+            // A file argument scopes the search to that file.
+            matches.retain(|m| scope.contains(&m.rel));
             found += output::print_matches(&corpus, &matches, &out_opts)?;
         }
     }
@@ -331,11 +335,15 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
 }
 
 /// The paths an index command works on: the arguments, or `.` when none.
+/// A command takes no query, so a lone positional argument is its path —
+/// clap cannot know that and files it under `pattern`.
 fn command_targets(cli: &Cli) -> Vec<PathBuf> {
-    if cli.paths.is_empty() {
-        vec![PathBuf::from(".")]
-    } else {
+    if !cli.paths.is_empty() {
         cli.paths.clone()
+    } else if let Some(path) = &cli.pattern {
+        vec![PathBuf::from(path)]
+    } else {
+        vec![PathBuf::from(".")]
     }
 }
 
@@ -380,7 +388,10 @@ fn status(cli: &Cli) -> anyhow::Result<ExitCode> {
         eprintln!("  Total chunks: {}", stats.chunks);
         eprintln!("  Embedded chunks: {}", stats.embedded_chunks);
         if let Some(m) = &meta {
-            eprintln!("  Model: {} (alias '{}', {} dims)", m.model_repo, m.model_alias, m.dims);
+            eprintln!(
+                "  Model: {} (alias '{}', {} dims)",
+                m.model_repo, m.model_alias, m.dims
+            );
         }
         if cli.status_verbose {
             let source_mb = stats.source_bytes as f64 / (1024.0 * 1024.0);

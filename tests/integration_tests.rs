@@ -774,7 +774,10 @@ fn test_concurrent_indexing_is_serialized() {
         .current_dir(temp_dir.path())
         .output()
         .expect("ck --status-json should run");
-    assert!(out.status.success(), "status after concurrent indexing failed");
+    assert!(
+        out.status.success(),
+        "status after concurrent indexing failed"
+    );
     let status: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(
         status["total_files"].as_u64(),
@@ -1040,13 +1043,11 @@ fn test_each_directory_gets_its_own_index() {
 
     // Each search answers from its own corpus and nothing from the other.
     assert!(
-        search_stdout("--lex", "zephyrquux", a.path())
-            .is_some_and(|s| s.contains("sailing.md")),
+        search_stdout("--lex", "zephyrquux", a.path()).is_some_and(|s| s.contains("sailing.md")),
         "corpus A must find its own marker"
     );
     assert!(
-        search_stdout("--lex", "quibblewomp", b.path())
-            .is_some_and(|s| s.contains("baking.md")),
+        search_stdout("--lex", "quibblewomp", b.path()).is_some_and(|s| s.contains("baking.md")),
         "corpus B must find its own marker"
     );
 }
@@ -1080,7 +1081,7 @@ fn test_lexical_search_does_not_leak_between_directories() {
     // The leak itself: A must not answer with B's content.
     let foreign = search_stdout("--lex", "quibblewomp", a.path());
     assert!(
-        foreign.as_deref().map_or(true, |f| !f.contains("baking.md")),
+        foreign.as_deref().is_none_or(|f| !f.contains("baking.md")),
         "searching corpus A returned a file from corpus B: {foreign:?}"
     );
 }

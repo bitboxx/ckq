@@ -115,7 +115,9 @@ pub struct Store {
 }
 
 impl Store {
-    /// Open an existing index read-only. `None` when the corpus has none.
+    /// Open an existing index read-only. `None` when the corpus has none —
+    /// including when a `index.db` exists but carries no schema yet, which is
+    /// what another process's first, still-running `--index` looks like.
     pub fn open_read(corpus: &Corpus) -> Result<Option<Store>> {
         let path = corpus.index_dir().join(DB_FILE);
         if !path.is_file() {
@@ -125,6 +127,14 @@ impl Store {
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
+        let tables: i64 = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
+            [],
+            |r| r.get(0),
+        )?;
+        if tables == 0 {
+            return Ok(None);
+        }
         Ok(Some(Store { conn }))
     }
 
@@ -137,26 +147,26 @@ impl Store {
         let conn = Connection::open(&path)?;
         conn.busy_timeout(std::time::Duration::from_secs(30))?;
         conn.pragma_update(None, "foreign_keys", true)?;
-        let fresh: bool = conn
-            .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
-                [],
-                |r| r.get::<_, i64>(0),
-            )?
-            == 0;
+        let fresh: bool = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )? == 0;
         conn.execute_batch(SCHEMA)?;
         let stored: Option<String> = conn
-            .query_row("SELECT value FROM meta WHERE key = 'signature'", [], |r| r.get(0))
+            .query_row("SELECT value FROM meta WHERE key = 'signature'", [], |r| {
+                r.get(0)
+            })
             .ok();
-        if let Some(old) = stored {
-            if old != meta.signature {
-                bail!(
-                    "the index at {} was built with a different embedding signature \
-                     ({old} != {}); run `ckq --clean` and index again",
-                    corpus.index_dir().display(),
-                    meta.signature
-                );
-            }
+        if let Some(old) = stored
+            && old != meta.signature
+        {
+            bail!(
+                "the index at {} was built with a different embedding signature \
+                 ({old} != {}); run `ckq --clean` and index again",
+                corpus.index_dir().display(),
+                meta.signature
+            );
         }
         let store = Store { conn };
         if fresh {
@@ -174,9 +184,10 @@ impl Store {
                 ("dims", dims.to_string()),
                 ("signature", signature.clone()),
             ] {
-                store
-                    .conn
-                    .execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", params![k, v])?;
+                store.conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                    params![k, v],
+                )?;
             }
         }
         Ok(store)
@@ -243,10 +254,18 @@ impl Store {
             "DELETE FROM fts WHERE rowid = (SELECT id FROM files WHERE path = ?1)",
             params![file.rel.as_str()],
         )?;
-        tx.execute("DELETE FROM files WHERE path = ?1", params![file.rel.as_str()])?;
+        tx.execute(
+            "DELETE FROM files WHERE path = ?1",
+            params![file.rel.as_str()],
+        )?;
         tx.execute(
             "INSERT INTO files (path, hash, size, mtime_ns) VALUES (?1, ?2, ?3, ?4)",
-            params![file.rel.as_str(), file.hash, file.size as i64, file.mtime_ns],
+            params![
+                file.rel.as_str(),
+                file.hash,
+                file.size as i64,
+                file.mtime_ns
+            ],
         )?;
         let id: i64 = tx.query_row(
             "SELECT id FROM files WHERE path = ?1",
@@ -281,7 +300,12 @@ impl Store {
     pub fn note_stat(&mut self, file: &FileRecord) -> Result<()> {
         self.conn.execute(
             "UPDATE files SET hash = ?2, size = ?3, mtime_ns = ?4 WHERE path = ?1",
-            params![file.rel.as_str(), file.hash, file.size as i64, file.mtime_ns],
+            params![
+                file.rel.as_str(),
+                file.hash,
+                file.size as i64,
+                file.mtime_ns
+            ],
         )?;
         Ok(())
     }
@@ -375,7 +399,12 @@ impl Store {
     /// BM25 over files. `match_expr` is an FTS5 MATCH expression built by
     /// `search::fts_query`. Best first, at most `limit`, files in `scope` only.
     /// Scores are positive, higher is better (the negation of FTS5's `bm25()`).
-    pub fn bm25(&self, match_expr: &str, scope: &Scope, limit: usize) -> Result<Vec<(RelPath, f32)>> {
+    pub fn bm25(
+        &self,
+        match_expr: &str,
+        scope: &Scope,
+        limit: usize,
+    ) -> Result<Vec<(RelPath, f32)>> {
         let base = "SELECT f.path, bm25(fts, 0.5, 1.0) FROM fts JOIN files f ON f.id = fts.rowid";
         let sql = match scope {
             Scope::All => format!("{base} WHERE fts MATCH ?1 ORDER BY 2 LIMIT ?2"),
@@ -413,14 +442,16 @@ impl Store {
             [],
             |r| r.get(0),
         )?;
-        let source: i64 = self
-            .conn
-            .query_row("SELECT coalesce(sum(size), 0) FROM files", [], |r| r.get(0))?;
+        let source: i64 =
+            self.conn
+                .query_row("SELECT coalesce(sum(size), 0) FROM files", [], |r| r.get(0))?;
         let db = self
             .conn
-            .query_row("SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()", [], |r| {
-                r.get::<_, i64>(0)
-            })
+            .query_row(
+                "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
             .unwrap_or(0) as u64;
         Ok(IndexStats {
             files: files as usize,
@@ -434,7 +465,9 @@ impl Store {
 
 /// `%` and `_` escaped for a `LIKE ... ESCAPE '\'` pattern.
 fn escape_like(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 /// f32 to little-endian f16 bytes, and back.
@@ -495,7 +528,12 @@ mod tests {
             line_end: 1,
         };
         store
-            .put_file(&rec("a.md", "h1"), "hello quokka", &[chunk], &[vec![0.5; 768]])
+            .put_file(
+                &rec("a.md", "h1"),
+                "hello quokka",
+                &[chunk],
+                &[vec![0.5; 768]],
+            )
             .unwrap();
         let files = store.files().unwrap();
         assert!(files.contains_key(&RelPath::new(std::path::Path::new("a.md")).unwrap()));
@@ -506,9 +544,7 @@ mod tests {
         let stats = store.stats().unwrap();
         assert_eq!(stats.files, 1);
         assert_eq!(stats.embedded_chunks, 1);
-        let hits = store
-            .bm25("quokka", &Scope::All, 10)
-            .unwrap();
+        let hits = store.bm25("quokka", &Scope::All, 10).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].0.as_str(), "a.md");
         assert!(hits[0].1 > 0.0);
@@ -518,11 +554,25 @@ mod tests {
     fn put_file_replaces_what_was_there() {
         let (_dir, c) = corpus();
         let mut store = Store::open_write(&c, &meta()).unwrap();
-        let one = Chunk { byte_start: 0, byte_end: 5, line_start: 1, line_end: 1 };
-        let two = [Chunk { byte_start: 0, byte_end: 4, line_start: 1, line_end: 1 };
-            2];
+        let one = Chunk {
+            byte_start: 0,
+            byte_end: 5,
+            line_start: 1,
+            line_end: 1,
+        };
+        let two = [Chunk {
+            byte_start: 0,
+            byte_end: 4,
+            line_start: 1,
+            line_end: 1,
+        }; 2];
         store
-            .put_file(&rec("a.md", "h1"), "old text about otters", &[one], &[vec![0.1; 768]])
+            .put_file(
+                &rec("a.md", "h1"),
+                "old text about otters",
+                &[one],
+                &[vec![0.1; 768]],
+            )
             .unwrap();
         store
             .put_file(&rec("a.md", "h2"), "new text about newts", &two, &[])
@@ -537,7 +587,12 @@ mod tests {
     fn remove_file_takes_everything_with_it() {
         let (_dir, c) = corpus();
         let mut store = Store::open_write(&c, &meta()).unwrap();
-        let chunk = Chunk { byte_start: 0, byte_end: 5, line_start: 1, line_end: 1 };
+        let chunk = Chunk {
+            byte_start: 0,
+            byte_end: 5,
+            line_start: 1,
+            line_end: 1,
+        };
         store
             .put_file(&rec("a.md", "h1"), "needle", &[chunk], &[vec![0.5; 768]])
             .unwrap();
@@ -563,9 +618,19 @@ mod tests {
     fn scope_limits_vectors_and_bm25() {
         let (_dir, c) = corpus();
         let mut store = Store::open_write(&c, &meta()).unwrap();
-        let chunk = Chunk { byte_start: 0, byte_end: 5, line_start: 1, line_end: 1 };
+        let chunk = Chunk {
+            byte_start: 0,
+            byte_end: 5,
+            line_start: 1,
+            line_end: 1,
+        };
         store
-            .put_file(&rec("sub/needle.md", "h1"), "needle", &[chunk], &[vec![0.9; 768]])
+            .put_file(
+                &rec("sub/needle.md", "h1"),
+                "needle",
+                &[chunk],
+                &[vec![0.9; 768]],
+            )
             .unwrap();
         store
             .put_file(&rec("top.md", "h2"), "needle", &[chunk], &[vec![0.1; 768]])
@@ -581,11 +646,11 @@ mod tests {
 
     #[test]
     fn f16_round_trip() {
-        let v = vec![0.0, 1.0, -0.5, 0.7071];
+        let v = vec![0.0, 1.0, -0.5, 0.6875];
         let bytes = encode_vector(&v);
         let mut out = Vec::new();
         decode_vector(&bytes, &mut out);
         assert_eq!(out.len(), 4);
-        assert!((out[3] - 0.7071).abs() < 1e-3);
+        assert!((out[3] - 0.6875).abs() < 1e-3);
     }
 }

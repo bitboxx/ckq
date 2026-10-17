@@ -1,80 +1,93 @@
-# ckq's own CI. Upstream's ci.yaml still runs and covers the inherited crates;
-# this exists because the llamacpp backend and the embedding daemon are new here
-# and the daemon is unix-only, so Windows needs proving rather than assuming.
+# The one CI workflow. `cargo test` stays offline: the e2e suites are
+# #[ignore]d with an `e2e:` reason and run in the e2e job, which restores
+# the default embedding model from the cache.
 name: ckq
+
+permissions:
+  contents: read
 
 on:
   push:
-    branches: [main]
+    branches: [main, v2]
   pull_request:
 
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
 jobs:
-  build:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      # llama-cpp-sys-2 builds llama.cpp from source.
-      - name: Install CMake
-        uses: lukka/get-cmake@latest
-
-      # Default features include llamacpp. On Windows the daemon is compiled out
-      # and each process loads its own model; this job is what proves that path
-      # still builds.
-      - name: Build (default features)
-        run: cargo build --release -p ck-search
-
-      # The whole workspace, on every OS the binaries ship for. The e2e suites
-      # that need the embedding model run in the `e2e` job instead.
-      - name: Test (whole workspace)
-        run: cargo test --release --workspace
-
-  # The end-to-end suites (`#[ignore]d` with an `e2e:` reason) run the real
-  # binary against real corpora with the real default model. Windows is left
-  # out: it has no daemon, and the suites assert unix behaviour (sockets,
-  # permissions) that does not apply there.
-  e2e:
-    name: e2e (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install CMake
-        uses: lukka/get-cmake@latest
-
-      # Restoring the model cache means the suites embed instead of each
-      # downloading gemma-q4. A miss is fine: the first run downloads it and
-      # the cache is saved for the next one.
-      - name: Restore embedding models
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ck/models
-          key: ck-models-gemma-q4
-
-      - name: Test (e2e, include ignored)
-        run: cargo e2e
-
-  lint:
+  fmt:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # llama-cpp-sys-2 builds llama.cpp from source.
+      - uses: lukka/get-cmake@latest
+      - run: cargo clippy --release --all-targets -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: lukka/get-cmake@latest
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --release -p ck-models -p ck-embed -p ck-chunk --all-targets -- -D warnings
+      - name: Test (offline)
+        run: cargo test --release
+
+  msrv:
+    name: msrv (Rust 1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - uses: lukka/get-cmake@latest
+      - run: cargo check --locked --all-targets
+
+  # The end-to-end suites run the real binary against real corpora with the
+  # real default model. Windows is left out: the suites assert unix behaviour
+  # (sockets, permissions) that does not apply there.
+  e2e:
+    name: e2e (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: lukka/get-cmake@latest
+
+      # A cache miss is fine: the first run downloads the model and the
+      # cache is saved for the next one.
+      - name: Restore embedding models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ck/models
+          key: ckq-models-gemma-q4
+
+      - run: cargo e2e

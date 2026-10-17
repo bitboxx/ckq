@@ -10,7 +10,7 @@ use crate::embed::{Device, Embedder, LlamaEmbedder};
 use crate::models::{self, ModelSpec};
 use crate::store::{FileRecord, IndexMeta, Store};
 use crate::walk::WalkOptions;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use std::time::Instant;
 
 #[derive(Debug, Clone, Default)]
@@ -194,6 +194,18 @@ pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
 
 /// Index or re-index one file (`--add`), leaving the rest as it is.
 pub fn add_file(corpus: &Corpus, rel: &RelPath, opts: &IndexOptions) -> Result<IndexReport> {
+    // A file the walk filters out would be indexed here and then counted
+    // "gone" by every later search -- a permanent staleness warning -- until
+    // the next `--index` silently removed it again. Refuse it up front, by
+    // the same walk rules an index run applies.
+    let walked = crate::walk::walk(corpus, &opts.walk)?;
+    if !walked.iter().any(|f| f.rel == *rel) {
+        bail!(
+            "{} is excluded from the index (ignored, hidden or binary); pass the \
+             walk flags (--hidden, --no-ignore, --no-ckqignore) to index it",
+            corpus.abs(rel).display()
+        );
+    }
     let (spec, meta) = resolve_model(corpus, opts)?;
     if let Some(store) = Store::open_read(corpus)? {
         let existing = store.meta()?;

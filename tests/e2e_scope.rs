@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{Corpus, parse_jsonl, run_ok};
+use common::{Corpus, parse_jsonl, run_exit, run_ok, status_json};
 use serial_test::serial;
 use std::path::Path;
 
@@ -136,4 +136,34 @@ fn regex_topk_with_a_file_argument_returns_that_files_matches() {
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines, vec!["./a.md:", "match one"]);
+}
+
+// ---------------------------------------------------------------------------
+// --add of a file the walk excludes is refused (a-F4)
+// ---------------------------------------------------------------------------
+
+#[test]
+#[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn add_refuses_a_file_the_walk_excludes() {
+    let corpus = Corpus::new();
+    corpus.write("keep.md", "plain text\n");
+    corpus.index(); // writes the default .ckqignore, which ignores *.json
+    corpus.write("data.json", "{\"a\": 1}\n");
+
+    // Used to succeed ("1 added") and then warn stale on every search,
+    // until the next --index silently removed the file again.
+    let (code, _, stderr) = run_exit(corpus.ckq().args(["--add", "data.json"]));
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("excluded from the index"), "{stderr}");
+    assert_eq!(
+        status_json(corpus.path())["total_files"],
+        serde_json::json!(1),
+        "nothing may be added"
+    );
+    run_ok(corpus.ckq().args(["--no-ckqignore", "--add", "data.json"]));
+    assert_eq!(
+        status_json(corpus.path())["total_files"],
+        serde_json::json!(2)
+    );
 }

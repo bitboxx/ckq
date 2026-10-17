@@ -59,7 +59,7 @@ ckq-gpu = { path = "gpu", optional = true }
 libc = "0.2"
 
 [dev-dependencies]
-serial_test = "2.0"
+serial_test = "3.5"
 tempfile = "3"
 
 [build-dependencies]

@@ -1,8 +1,8 @@
 //! The embedding models ckq knows, and where their weights live.
 //!
-//! GGUF only, run by llama.cpp. Ported from `ck-models/src/lib.rs`: the five
-//! aliases, their Hugging Face repo and file, dimensions, pooling, prompts and
-//! default thresholds. `gemma-q4` is the default.
+//! GGUF only, run by llama.cpp: the five aliases, their Hugging Face repo
+//! and file, dimensions, pooling, prompts and default thresholds.
+//! `gemma-q4` is the default.
 
 use anyhow::{Result, anyhow, bail};
 use std::path::PathBuf;

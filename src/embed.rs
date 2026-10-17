@@ -9,10 +9,9 @@
 //! memory-mapped, so a second process shares the pages instead of a copy.
 //! Queries run on the device that is fastest for one short text from a cold
 //! start, which may well be the CPU (no Metal shader compilation); indexing
-//! runs on the GPU where there is one. Port the context and batching logic
-//! from `ck-embed/src/llamacpp.rs`: one context sized for indexing batches, a
-//! small one for a single query, mean or last-token pooling, L2 normalisation.
-//! llama.cpp's own log lines go to stderr or nowhere, never to stdout.
+//! runs on the GPU where there is one. One context sized for indexing
+//! batches, a small one for a single query, mean or last-token pooling,
+//! L2 normalisation. llama.cpp's own log lines go to stderr or nowhere, never to stdout.
 //!
 //! `LlamaContext` borrows the model it decodes in and is neither `Send` nor
 //! `Sync`, so one dedicated thread owns the model and both contexts for the

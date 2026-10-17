@@ -3,9 +3,8 @@
 //! Markdown splits at headings first, then packs sections up to the target
 //! size; other text packs whole lines. Sizes match the old engine (1,024-token
 //! target, 200-token overlap) so the vectors stay comparable with what the
-//! benchmarks measured. Token counts are the old engine's estimate
-//! (`ck-embed/src/tokenizer.rs`), not a real tokenizer: the model's own
-//! context (2,048) leaves room for the error.
+//! benchmarks measured. Token counts are a character-based estimate, not a
+//! real tokenizer: the model's own context (2,048) leaves room for the error.
 
 use crate::corpus::RelPath;
 

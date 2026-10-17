@@ -97,6 +97,19 @@ jobs:
             Add-Content $env:GITHUB_PATH (Split-Path $found)
             Write-Host "Added $(Split-Path $found) to PATH"
           }
+      # The Visual Studio generator's multi-config handling breaks the
+      # vulkan-shaders-gen ExternalProject install step (cmake_install.cmake
+      # not generated where the install rule looks for it, MSB8066). Build
+      # llama.cpp with Ninja in an MSVC developer environment instead.
+      - name: Set up MSVC environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Build llama.cpp with the Ninja generator (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          choco install -y ninja
+          echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
       - name: Test (offline)
         run: cargo test --release
       # Prove the default feature reached the backend: the resolved feature

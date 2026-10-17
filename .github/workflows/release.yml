@@ -98,6 +98,17 @@ jobs:
         with:
           cache: true
           stripdown: true
+      # The Visual Studio generator breaks vulkan-shaders-gen's install
+      # step (see ckq.yaml); Ninja in an MSVC developer environment instead.
+      - name: Set up MSVC environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Build llama.cpp with the Ninja generator (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          choco install -y ninja
+          echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
 
       - name: Build release binary
         run: cargo build --locked --release --target ${{ matrix.target }}

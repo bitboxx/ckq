@@ -152,6 +152,7 @@ impl Store {
         if rows == 0 {
             return Ok(None);
         }
+        check_schema(&conn, corpus)?;
         Ok(Some(Store { conn }))
     }
 
@@ -170,6 +171,7 @@ impl Store {
         // it until the other writer is done. Whether an index was there
         // before is read afterwards, for the same reason.
         schema_with_retry(&conn)?;
+        check_schema(&conn, corpus)?;
         let stored: Option<String> = conn
             .query_row("SELECT value FROM meta WHERE key = 'signature'", [], |r| {
                 r.get(0)
@@ -496,6 +498,43 @@ fn escape_like(s: &str) -> String {
         .replace('_', "\\_")
 }
 
+
+/// Refuse an index written by another schema version: its rows mean
+/// something this build cannot know. An empty `meta` table is a first index
+/// still in flight, not a foreign one. The message names the rebuild,
+/// because there is no migration path.
+fn check_schema(conn: &Connection, corpus: &Corpus) -> Result<()> {
+    let rows: i64 = conn
+        .query_row("SELECT count(*) FROM meta", [], |r| r.get(0))
+        .context("ready check")?;
+    if rows == 0 {
+        return Ok(());
+    }
+    let stored: Option<i64> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'schema_version'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|v| v.parse().ok());
+    if stored == Some(SCHEMA_VERSION) {
+        return Ok(());
+    }
+    match stored {
+        Some(v) => bail!(
+            "the index at {} uses schema version {v}, this ckq uses {SCHEMA_VERSION}; \
+             run `ckq --clean` and `ckq --index` to rebuild it",
+            corpus.index_dir().display()
+        ),
+        None => bail!(
+            "the index at {} carries no readable schema version; \
+             run `ckq --clean` and `ckq --index` to rebuild it",
+            corpus.index_dir().display()
+        ),
+    }
+}
+
 fn schema_with_retry(conn: &Connection) -> Result<()> {
     let mut last: Option<rusqlite::Error> = None;
     for _ in 0..30 {
@@ -662,6 +701,23 @@ mod tests {
         let err = Store::open_write(&c, &other).unwrap_err().to_string();
         assert!(err.contains("different embedding signature"), "{err}");
         assert!(err.contains("--clean"), "{err}");
+    }
+
+    #[test]
+    fn a_future_schema_version_is_refused_by_name() {
+        let (_dir, c) = corpus();
+        drop(Store::open_write(&c, &meta()).unwrap());
+        // What an index written by a later ckq looks like to this one.
+        let conn = Connection::open(c.index_dir().join(DB_FILE)).unwrap();
+        conn.execute("UPDATE meta SET value = '99' WHERE key = 'schema_version'", [])
+            .unwrap();
+        drop(conn);
+        let err = Store::open_read(&c).unwrap_err().to_string();
+        assert!(err.contains("schema version 99"), "{err}");
+        assert!(err.contains("--clean"), "{err}");
+        assert!(err.contains("--index"), "{err}");
+        let err = Store::open_write(&c, &meta()).unwrap_err().to_string();
+        assert!(err.contains("schema version 99"), "{err}");
     }
 
     #[test]

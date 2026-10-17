@@ -133,7 +133,14 @@ impl Corpus {
                 arg.display()
             );
         };
-        let scope = if root == start {
+        // A directory argument at the index root is the whole corpus; one
+        // below it is a subtree. A file argument names the file itself --
+        // taking its parent here would search the parent, and when the
+        // parent is the root the file's scope was silently lost and the
+        // whole corpus was searched instead.
+        let scope = if !abs.is_dir() {
+            Scope::Under(rel_of(&root, &abs)?)
+        } else if root == start {
             Scope::All
         } else {
             Scope::Under(rel_of(&root, start)?)
@@ -256,5 +263,53 @@ fn display_prefix(arg: &Path, abs: &Path) -> PathBuf {
         arg.to_path_buf()
     } else {
         arg.parent().map(Path::to_path_buf).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// A corpus root with an index and `files` in it; the argument is
+    /// `files[0]`, absolute, as `for_search` receives it.
+    fn rooted(files: &[&str]) -> (TempDir, PathBuf) {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join(INDEX_DIR)).unwrap();
+        for f in files {
+            fs::create_dir_all(dir.path().join(f).parent().unwrap()).unwrap();
+            fs::write(dir.path().join(f), "needle\n").unwrap();
+        }
+        let arg = dir.path().join(files[0]);
+        (dir, arg)
+    }
+
+    #[test]
+    fn a_file_argument_scopes_the_search_to_the_file() {
+        // The file's parent holds the index: the old code widened to `All`
+        // and searched the whole corpus.
+        let (_dir, arg) = rooted(&["top.md", "other.md"]);
+        let (_, scope) = Corpus::for_search(&arg).unwrap();
+        assert_eq!(
+            scope,
+            Scope::Under(RelPath::new(Path::new("top.md")).unwrap())
+        );
+
+        // Below the root it took the parent directory; the file is the scope.
+        let (_dir, arg) = rooted(&["sub/in.md", "sub/sibling.md", "other.md"]);
+        let (_, scope) = Corpus::for_search(&arg).unwrap();
+        assert_eq!(
+            scope,
+            Scope::Under(RelPath::new(Path::new("sub/in.md")).unwrap())
+        );
+    }
+
+    #[test]
+    fn a_directory_argument_below_the_root_scopes_to_the_subtree() {
+        let (_dir, arg) = rooted(&["sub/in.md", "other.md"]);
+        let dir = arg.parent().unwrap().to_path_buf();
+        let (_, scope) = Corpus::for_search(&dir).unwrap();
+        assert_eq!(scope, Scope::Under(RelPath::new(Path::new("sub")).unwrap()));
     }
 }

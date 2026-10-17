@@ -6,7 +6,7 @@
 //! everything with
 //!
 //! ```text
-//! cargo test --release -p ck-search -- --include-ignored
+//! cargo e2e
 //! ```
 //!
 //! CI does, with the model cache restored. A test that needs the model must
@@ -26,23 +26,12 @@ pub fn ckq_bin() -> PathBuf {
 }
 
 /// `ckq` with every setting that changes its behaviour cleared, so a test sees
-/// the defaults whatever the developer's shell exports. The daemon gets a short
-/// idle timeout: each test build is a new executable and so a new daemon.
+/// the defaults whatever the developer's shell exports.
 pub fn ckq() -> Command {
     let mut cmd = Command::new(ckq_bin());
-    for var in [
-        "CK_INDEX_DIR",
-        "CKQ_IN_PROCESS",
-        "CKQ_MODEL_ALIAS",
-        "CKQ_GGUF_FILE",
-        "CKQ_ONNX_FILE",
-        "CKQ_PIN",
-        "CKQ_TIMING",
-        "CKQ_COREML",
-    ] {
+    for var in ["CKQ_GGUF_FILE", "CKQ_TIMING", "CKQ_QUERY_DEVICE"] {
         cmd.env_remove(var);
     }
-    cmd.env("CKQ_DAEMON_IDLE_SECS", "60");
     cmd
 }
 
@@ -302,12 +291,47 @@ pub fn uniq_hits(hits: &[Hit]) -> Vec<Hit> {
     out
 }
 
-/// The parsed `.ck/manifest.json` of the index rooted at `root`, for tests
-/// that assert on which files the index believes it has.
-pub fn read_manifest(root: &Path) -> Value {
-    let data = fs::read(root.join(".ck").join("manifest.json"))
-        .expect(".ck/manifest.json should exist after --index");
-    serde_json::from_slice(&data).expect(".ck/manifest.json should be valid JSON")
+/// `--status-json` of the index rooted at `root`, for tests that assert on
+/// what the index believes it holds.
+pub fn status_json(root: &Path) -> Value {
+    let out = run_ok(ckq().current_dir(root).arg("--status-json"));
+    serde_json::from_slice(&out.stdout).expect("--status-json prints one JSON object")
+}
+
+/// The counts parsed out of `--index`'s one-line summary on stderr, the new
+/// engine's observable for what an incremental run actually did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IndexSummary {
+    pub added: usize,
+    pub updated: usize,
+    pub removed: usize,
+    pub unchanged: usize,
+    pub chunks_embedded: usize,
+}
+
+pub fn parse_index_summary(stderr: &str) -> IndexSummary {
+    let line = stderr
+        .lines()
+        .find(|l| l.starts_with("indexed: "))
+        .unwrap_or_else(|| panic!("no index summary line in:\n{stderr}"));
+    let number = |label: &str| -> usize {
+        let i = line
+            .find(&format!(" {label}"))
+            .unwrap_or_else(|| panic!("no '{label}' in {line}"));
+        line[..i]
+            .rsplit(' ')
+            .next()
+            .unwrap_or_else(|| panic!("no number before '{label}' in {line}"))
+            .parse()
+            .unwrap_or_else(|_| panic!("not a number before '{label}' in {line}"))
+    };
+    IndexSummary {
+        added: number("added"),
+        updated: number("updated"),
+        removed: number("removed"),
+        unchanged: number("unchanged"),
+        chunks_embedded: number("embedded"),
+    }
 }
 
 /// Run a command that must fail, and return its exit code with both streams,

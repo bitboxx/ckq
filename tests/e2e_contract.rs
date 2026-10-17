@@ -1,7 +1,6 @@
 //! The output contract of the `ckq` binary: what each search mode promises in
 //! `--json` and `--jsonl`, what the grep flags (-l, -n, -C, -i, -w, -F, --topk)
-//! do, which exit code and message each failure takes, and that the MCP server
-//! speaks JSON-RPC over stdio when asked to `--serve`.
+//! do, and which exit code and message each failure takes.
 //!
 //! These tests pin behaviour, not implementation: a change to a field name, a
 //! span that no longer covers the matched bytes, or a new exit code for a
@@ -11,14 +10,10 @@
 mod common;
 
 use common::{Corpus, Hit};
-use serde_json::{Value, json};
+use serde_json::Value;
 use serial_test::serial;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Stdio};
-use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
 // Output contract: --jsonl
@@ -517,13 +512,13 @@ fn sem_lex_hybrid_json_schema_fields() {
     );
 }
 /// The documented hybrid contract — "one result per file", with a file both
-/// methods find carrying both ranks — is not what the binary does today: it
-/// emits one entry per method, so the corroborating file appears twice, once as
-/// a relative and once as an absolute path, each with only one rank set.
+/// methods find carrying both ranks. The old engine emitted one entry per
+/// method, so the corroborating file appeared twice; v2 fuses by `RelPath`
+/// before anything is printed.
 #[test]
 #[serial]
-#[ignore = "bug: --hybrid emits one entry per method so a file both find appears twice with split ranks instead of one fused entry; also needs the default model (run with --include-ignored)"]
-fn known_bug_hybrid_jsonl_one_fused_result_per_file() {
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn hybrid_jsonl_one_fused_result_per_file() {
     let corpus = semantic_corpus();
     corpus.index();
 
@@ -783,278 +778,4 @@ fn invalid_regex_exits_one_with_regex_error() {
         stderr.contains("Regex error"),
         "the error says it is the regex: {stderr}"
     );
-}
-
-// ---------------------------------------------------------------------------
-// MCP over stdio
-// ---------------------------------------------------------------------------
-
-/// A `ckq --serve` child spoken to as the MCP spec says: newline-delimited
-/// JSON-RPC on stdin/stdout, logs on a file we can read when it dies.
-struct McpStdio {
-    child: Child,
-    stdin: Option<ChildStdin>,
-    rx: mpsc::Receiver<String>,
-    stderr_path: PathBuf,
-}
-
-impl McpStdio {
-    fn start(corpus: &Corpus) -> Self {
-        let stderr_path = corpus.path().join("serve.stderr.log");
-        let err_file = fs::File::create(&stderr_path).expect("create stderr log");
-        let mut child = common::ckq()
-            .arg("--serve")
-            .current_dir(corpus.path())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::from(err_file))
-            .spawn()
-            .expect("spawn ckq --serve");
-        let stdin = child.stdin.take().expect("piped stdin");
-        let stdout = child.stdout.take().expect("piped stdout");
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                match line {
-                    Ok(l) => {
-                        if tx.send(l).is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-        Self {
-            child,
-            stdin: Some(stdin),
-            rx,
-            stderr_path,
-        }
-    }
-
-    fn send(&mut self, message: &Value) {
-        let line = serde_json::to_string(message).expect("serialize request");
-        let stdin = self.stdin.as_mut().expect("stdin open");
-        writeln!(stdin, "{line}").expect("write to server stdin");
-        stdin.flush().expect("flush server stdin");
-    }
-
-    /// The next response with the given id. If the server dies first, its
-    /// stderr — where a startup crash explains itself — goes into the failure.
-    fn response(&mut self, id: u64, timeout: Duration) -> Value {
-        let deadline = Instant::now() + timeout;
-        loop {
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .unwrap_or_else(|| self.fail(&format!("timed out waiting for response {id}")));
-            match self.rx.recv_timeout(remaining) {
-                Ok(line) => {
-                    let v: Value = serde_json::from_str(&line).unwrap_or_else(|e| {
-                        panic!("not a JSON line from the server ({e}): {line}")
-                    });
-                    if v.get("id").and_then(Value::as_u64) == Some(id) {
-                        return v;
-                    }
-                    // Anything else (notifications, server requests) is skipped.
-                }
-                Err(RecvTimeoutError::Timeout) => {
-                    self.fail(&format!("timed out waiting for response {id}"))
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    self.fail(&format!("the server exited before answering request {id}"))
-                }
-            }
-        }
-    }
-
-    fn fail(&mut self, what: &str) -> ! {
-        let stderr = fs::read_to_string(&self.stderr_path).unwrap_or_default();
-        let status = self
-            .child
-            .try_wait()
-            .expect("child is waitable")
-            .map(|s| s.to_string());
-        panic!("ckq --serve {what} (status so far: {status:?})\n--- server stderr\n{stderr}");
-    }
-}
-
-impl Drop for McpStdio {
-    fn drop(&mut self) {
-        // Closing stdin is the client's goodbye; give the server a moment to
-        // exit on it, then kill exactly this child — never a pattern.
-        self.stdin.take();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if self.child.try_wait().expect("child is waitable").is_some() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-/// The full MCP handshake against the real binary: initialize, initialized,
-/// tools/list, then tools/call for the semantic and the hybrid tool (with
-/// terms) on a real corpus. The response shapes are the contract AI clients
-/// code against.
-#[test]
-#[serial]
-#[ignore = "bug: ckq --serve panics at startup ('chunk size must be non-zero', ck-embed/src/embed_daemon.rs:182) so the stdio server never comes up; also needs the default model (run with --include-ignored)"]
-fn known_bug_mcp_stdio_end_to_end() {
-    let corpus = semantic_corpus();
-    corpus.index();
-    const TIMEOUT: Duration = Duration::from_secs(300);
-
-    let mut mcp = McpStdio::start(&corpus);
-
-    mcp.send(&json!({
-        "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": { "name": "ckq-e2e-contract", "version": "1.0" }
-        }
-    }));
-    let init = mcp.response(1, TIMEOUT);
-    assert!(init.get("error").is_none(), "initialize failed: {init}");
-    let result = &init["result"];
-    assert!(
-        result
-            .get("protocolVersion")
-            .and_then(Value::as_str)
-            .is_some(),
-        "initialize answers with a protocol version: {init}"
-    );
-    let server_name = result["serverInfo"]["name"]
-        .as_str()
-        .unwrap_or_else(|| panic!("initialize answers with a server name: {init}"));
-    assert!(!server_name.is_empty());
-    assert!(
-        result["capabilities"].get("tools").is_some(),
-        "tools capability advertised: {init}"
-    );
-
-    mcp.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
-
-    mcp.send(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}));
-    let listed = mcp.response(2, TIMEOUT);
-    assert!(listed.get("error").is_none(), "tools/list failed: {listed}");
-    let tools = listed["result"]["tools"]
-        .as_array()
-        .unwrap_or_else(|| panic!("tools/list returns an array: {listed}"));
-    let names: Vec<String> = tools
-        .iter()
-        .map(|t| {
-            t["name"]
-                .as_str()
-                .unwrap_or_else(|| panic!("tool without a name: {t}"))
-                .to_string()
-        })
-        .collect();
-    for expected in [
-        "health_check",
-        "semantic_search",
-        "lexical_search",
-        "regex_search",
-        "hybrid_search",
-        "index_status",
-        "reindex",
-        "default_ckignore",
-    ] {
-        assert!(
-            names.iter().any(|n| n == expected),
-            "tool {expected} listed; got {names:?}"
-        );
-    }
-
-    // The semantic tool, end to end: query in, structured results out.
-    mcp.send(&json!({
-        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-        "params": {
-            "name": "semantic_search",
-            "arguments": { "query": "folding butter into pastry dough", "path": ".", "top_k": 3 }
-        }
-    }));
-    let sem = mcp.response(3, TIMEOUT);
-    assert!(sem.get("error").is_none(), "semantic_search errored: {sem}");
-    let sc = &sem["result"]["structuredContent"];
-    assert_eq!(
-        sc["search"]["mode"].as_str(),
-        Some("semantic"),
-        "the structured content names its mode: {sc}"
-    );
-    let matches = sc["results"]["matches"]
-        .as_array()
-        .unwrap_or_else(|| panic!("semantic matches array: {sc}"));
-    assert!(
-        matches.iter().any(|m| m["file"]["path"]
-            .as_str()
-            .is_some_and(|p| p.ends_with("croissant.md"))),
-        "the croissant document is among the results: {sc}"
-    );
-    assert!(
-        sc["results"]["count"].as_u64().unwrap_or(0) >= 1,
-        "the count matches the results: {sc}"
-    );
-    for m in matches {
-        let path = m["file"]["path"]
-            .as_str()
-            .unwrap_or_else(|| panic!("file.path: {m}"));
-        assert!(!path.is_empty());
-        assert!(
-            m["file"]["language"].as_str().is_some(),
-            "file.language present: {m}"
-        );
-        span_fields(&m["match"]["span"]);
-        assert!(
-            m["match"]["score"].as_f64().is_some(),
-            "semantic matches carry a score: {m}"
-        );
-        assert_eq!(
-            m["type"].as_str(),
-            Some("semantic_match"),
-            "match type names the mode: {m}"
-        );
-    }
-
-    // The hybrid tool, with explicit terms driving its lexical method.
-    mcp.send(&json!({
-        "jsonrpc": "2.0", "id": 4, "method": "tools/call",
-        "params": {
-            "name": "hybrid_search",
-            "arguments": {
-                "query": "watering the tomato garden",
-                "terms": ["tomates"],
-                "path": ".",
-                "top_k": 5
-            }
-        }
-    }));
-    let hybrid = mcp.response(4, TIMEOUT);
-    assert!(
-        hybrid.get("error").is_none(),
-        "hybrid_search errored: {hybrid}"
-    );
-    let hc = &hybrid["result"]["structuredContent"];
-    assert_eq!(hc["search"]["mode"].as_str(), Some("hybrid"), "mode: {hc}");
-    let matches = hc["results"]["matches"]
-        .as_array()
-        .unwrap_or_else(|| panic!("hybrid matches array: {hc}"));
-    assert!(
-        matches.iter().any(|m| m["file"]["path"]
-            .as_str()
-            .is_some_and(|p| p.ends_with("tomates.md"))),
-        "the tomato document is among the results: {hc}"
-    );
-    for m in matches {
-        assert_eq!(m["type"].as_str(), Some("hybrid_match"), "type: {m}");
-        assert!(
-            m["match"]["rrf_score"].as_f64().is_some(),
-            "hybrid matches carry the fused score: {m}"
-        );
-        span_fields(&m["match"]["span"]);
-    }
 }

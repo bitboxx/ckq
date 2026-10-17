@@ -1,9 +1,10 @@
 //! End-to-end tests for the index lifecycle: build, incremental update,
 //! deletion, `--add`, `.ckignore`, hidden files, robustness against odd
-//! inputs, and the safety rails around the manifest's embedding signature
-//! and the vector cache. Everything runs the real binary on real files,
-//! and almost everything needs the real default model because indexing
-//! embeds — hence the `e2e:` ignores.
+//! inputs, and the safety rails around the store's embedding signature.
+//! Everything runs the real binary on real files, and almost everything needs
+//! the real default model because indexing embeds — hence the `e2e:` ignores.
+//! The index is one SQLite file, `.ck/index.db`; what a test can observe of it
+//! is `--status-json`, the `--index` summary line, and what search returns.
 
 mod common;
 
@@ -15,26 +16,11 @@ use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-/// The files the manifest claims, as corpus-relative paths (`a/b.md`), with
-/// the leading `./` the manifest stores stripped off.
-fn manifest_rels(corpus: &Corpus) -> Vec<String> {
-    common::read_manifest(corpus.path())["files"]
-        .as_object()
-        .expect("manifest.files should be an object")
-        .keys()
-        .map(|k| k.trim_start_matches("./").to_string())
-        .collect()
-}
-
-/// Whether the manifest has an entry for `rel`.
-fn manifest_has(corpus: &Corpus, rel: &str) -> bool {
-    manifest_rels(corpus).iter().any(|r| r == rel)
-}
-
-/// The bytes of the sidecar the index keeps for `rel`, or `None` when there
-/// is no sidecar.
-fn sidecar(corpus: &Corpus, rel: &str) -> Option<Vec<u8>> {
-    fs::read(corpus.path().join(".ck").join(format!("{rel}.ck"))).ok()
+/// Files the index claims, from `--status-json`.
+fn total_files(corpus: &Corpus) -> u64 {
+    common::status_json(corpus.path())["total_files"]
+        .as_u64()
+        .expect("total_files in --status-json")
 }
 
 /// Run a command that must finish within `secs`, or fail the test. Indexing
@@ -128,22 +114,14 @@ fn index_builds_the_ck_layout_and_status_reports_the_corpus() {
 
     corpus.index();
 
-    // The index directory and its parts. The tantivy lexical index is built
-    // by the first lexical search, not by --index itself.
+    // One store file holds the whole index: files, chunks, vectors and the
+    // BM25 index alike, so a lexical search needs no build step of its own.
     let ck = corpus.path().join(".ck");
-    assert!(ck.join("manifest.json").is_file(), "manifest.json missing");
-    assert!(ck.join("vectors.cache").is_file(), "vectors.cache missing");
-    for rel in ["lighthouse.md", "garden.md", "nested/harbour.md"] {
-        assert!(
-            ck.join(format!("{rel}.ck")).is_file(),
-            "sidecar for {rel} missing"
-        );
-    }
-    assert!(!ck.join("tantivy_index").exists());
+    assert!(ck.join("index.db").is_file(), "index.db missing");
     corpus.search(&["--lex", "lighthouse"]);
     assert!(
-        ck.join("tantivy_index").is_dir(),
-        "tantivy_index should exist after a lexical search"
+        ck.join("index.db").is_file(),
+        "a lexical search writes nothing"
     );
 
     // --status with no path argument reads the current directory; the counts
@@ -196,33 +174,22 @@ fn incremental_reindex_reembeds_only_the_edited_file() {
     );
     corpus.index();
 
-    // The observable for "only that file was re-embedded" is the sidecar of
-    // every other file: an untouched file is skipped, so its sidecar must be
-    // byte-for-byte what the first run wrote, while the edited file's changes.
-    let before: Vec<(String, Vec<u8>)> = ["meteor.md", "bakery.md", "ferry.md"]
-        .iter()
-        .map(|rel| ((*rel).to_string(), sidecar(&corpus, rel).expect("sidecar")))
-        .collect();
-
+    // The observable for "only that file was re-embedded" is the summary of
+    // the second run: one file updated, the other two untouched, and only the
+    // edited file's chunks back through the embedder.
     corpus.write(
         "bakery.md",
         "The bakery opens before sunrise and the street smells of warm bread.\n\
          By nine the shelves hold cardamom buns and the queue reaches the corner.\n",
     );
-    corpus.index();
-
-    for (rel, bytes) in &before {
-        let now = sidecar(&corpus, rel).unwrap_or_else(|| panic!("sidecar for {rel} vanished"));
-        if rel == "bakery.md" {
-            assert_ne!(now, *bytes, "edited file's sidecar was not rewritten");
-        } else {
-            assert_eq!(
-                now, *bytes,
-                "unchanged file {rel} was re-embedded by an incremental run"
-            );
-        }
-    }
-    assert_eq!(manifest_rels(&corpus).len(), 3, "entries were lost");
+    let out = run_ok(corpus.ckq().args(["--index", "-q", "."]));
+    let summary = common::parse_index_summary(&String::from_utf8_lossy(&out.stderr));
+    assert_eq!(summary.added, 0, "nothing new: {summary:?}");
+    assert_eq!(summary.updated, 1, "only the edited file: {summary:?}");
+    assert_eq!(summary.removed, 0, "{summary:?}");
+    assert_eq!(summary.unchanged, 2, "{summary:?}");
+    assert!(summary.chunks_embedded > 0, "the edit must be embedded");
+    assert_eq!(total_files(&corpus), 3, "entries were lost");
 
     // The new content is findable, and the unchanged files keep theirs.
     let sem = corpus.search(&["--sem", "cardamom buns fresh from the oven"]);
@@ -240,7 +207,7 @@ fn incremental_reindex_reembeds_only_the_edited_file() {
 #[test]
 #[serial]
 #[ignore = "e2e: needs the default model; run with --include-ignored"]
-fn deleted_file_disappears_from_search_and_clean_orphans_drops_its_sidecar() {
+fn deleted_file_disappears_from_search_and_the_index_drops_it() {
     let corpus = Corpus::new();
     corpus.write(
         "tide.md",
@@ -268,7 +235,9 @@ fn deleted_file_disappears_from_search_and_clean_orphans_drops_its_sidecar() {
     }
 
     corpus.remove("mushroom.md");
-    corpus.index();
+    let out = run_ok(corpus.ckq().args(["--index", "-q", "."]));
+    let summary = common::parse_index_summary(&String::from_utf8_lossy(&out.stderr));
+    assert_eq!(summary.removed, 1, "the deleted file must be dropped: {summary:?}");
 
     for (mode, query) in mushroom_queries {
         expect_no_hits(&corpus, &[mode, query]);
@@ -276,40 +245,24 @@ fn deleted_file_disappears_from_search_and_clean_orphans_drops_its_sidecar() {
     // The survivor is untouched by all of this.
     let hits = corpus.search(&["--sem", "high water marks this season"]);
     assert_eq!(common::rank_of(&hits, "tide"), Some(1));
-
-    // --index leaves the dead sidecar (and its manifest entry) behind;
-    // --clean-orphans is the tool for exactly that.
-    assert!(
-        sidecar(&corpus, "mushroom.md").is_some(),
-        "expected a leftover sidecar to exercise --clean-orphans"
-    );
+    // One store means no orphans can exist: the dead file's rows went with
+    // the same run that noticed the deletion. --clean-orphans stays accepted
+    // and keeps its promise trivially.
     run_ok(corpus.ckq().args(["--clean-orphans", "."]));
-    assert!(
-        sidecar(&corpus, "mushroom.md").is_none(),
-        "--clean-orphans did not remove the orphaned sidecar"
-    );
-    assert!(
-        !manifest_has(&corpus, "mushroom.md"),
-        "--clean-orphans did not drop the orphaned manifest entry"
-    );
-    assert!(
-        sidecar(&corpus, "tide.md").is_some(),
-        "--clean-orphans removed a live sidecar"
-    );
     expect_no_hits(&corpus, &["--lex", "mushrooms"]);
-    // --clean ends the lifecycle: the whole index directory goes away, and
-    // the next lexical search rebuilds it from the files rather than
-    // serving anything stale from the old one.
+    assert_eq!(total_files(&corpus), 1);
+    // --clean ends the lifecycle: the whole index directory goes away. v2
+    // never rebuilds an index from a search (search is read-only), so the
+    // next lexical search must refuse and say how to start over.
     run_ok(corpus.ckq().args(["--clean", "."]));
     assert!(
         !corpus.path().join(".ck").exists(),
         "--clean left .ck behind"
     );
-    let hits = corpus.search(&["--lex", "tide"]);
-    assert_eq!(
-        common::rank_of(&hits, "tide"),
-        Some(1),
-        "a search after --clean should rebuild and find the survivor"
+    let stderr = run_err(corpus.ckq().args(["--lex", "tide", "--jsonl", "-q", "."]));
+    assert!(
+        stderr.contains("--index"),
+        "a search after --clean must point at --index, got:\n{stderr}"
     );
 }
 
@@ -336,7 +289,6 @@ fn add_indexes_one_new_file_without_a_full_run() {
     run_ok(corpus.ckq().args(["--add", "lantern.md"]));
 
     assert_eq!(status_json(&corpus)["total_files"].as_u64(), Some(3));
-    assert!(manifest_has(&corpus, "lantern.md"));
     let lex = corpus.search(&["--lex", "gannets"]);
     assert_eq!(
         common::rank_of(&lex, "lantern"),
@@ -375,9 +327,8 @@ fn ckignore_excludes_files_from_the_start_and_when_added_later() {
     corpus.index();
 
     // A pattern present before the first index: the file never gets in.
-    assert!(!manifest_has(&corpus, "private_journal.md"));
     expect_no_hits(&corpus, &["--lex", "anthem"]);
-    assert!(manifest_has(&corpus, "draft_letter.md"));
+    assert_eq!(total_files(&corpus), 2, "the ignored file was indexed");
     assert_eq!(
         common::rank_of(&corpus.search(&["--lex", "parsnip"]), "draft_letter"),
         Some(1)
@@ -416,14 +367,11 @@ fn hidden_files_are_indexed_only_with_the_hidden_flag() {
     );
     corpus.index();
 
-    assert_eq!(manifest_rels(&corpus), vec!["hall.md"]);
+    assert_eq!(total_files(&corpus), 1, "only the visible file");
     expect_no_hits(&corpus, &["--lex", "quilts"]);
 
     run_ok(corpus.ckq().args(["--index", "--hidden", "-q", "."]));
-    let rels = manifest_rels(&corpus);
-    for rel in [".attic/quilts.md", ".cellar.md", "hall.md"] {
-        assert!(rels.contains(&rel.to_string()), "missing {rel} in {rels:?}");
-    }
+    assert_eq!(total_files(&corpus), 3, "the dot-file and dot-dir join");
     let hits = corpus.search(&["--lex", "quilts", "--hidden"]);
     assert_eq!(
         common::rank_of(&hits, "quilts"),
@@ -468,10 +416,9 @@ fn odd_files_index_and_search_safely() {
     // input must not cost the rest their entries.
     let json = status_json(&corpus);
     assert_eq!(json["total_files"].as_u64(), Some(5), "files: {json}");
-    assert!(!manifest_has(&corpus, "blob_data.bin"));
-    assert!(sidecar(&corpus, "blob_data.bin").is_none());
-    assert!(manifest_has(&corpus, "empty_page.md"));
-    assert!(manifest_has(&corpus, "nested/deep/glacier.md"));
+    expect_no_hits(&corpus, &["--lex", "AAAA"]);
+    assert!(common::rank_of(&corpus.search(&["--lex", "café"]), "notas del café ☕").is_some());
+    assert!(common::rank_of(&corpus.search(&["--lex", "sierra"]), "notas del café ☕").is_some());
 
     // CRLF content: findable, with a span that stays inside the file.
     let pier: PathBuf = corpus.path().join("crlf_pier.md");
@@ -587,21 +534,20 @@ fn symlink_loop_does_not_hang_indexing() {
         "index over a symlink loop failed\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(manifest_rels(&corpus), vec!["anchor.md"]);
+    assert_eq!(total_files(&corpus), 1);
     // Status is command mode, so it walks nothing and must be immediate.
     assert_eq!(status_json(&corpus)["total_files"].as_u64(), Some(1));
 }
 
-/// BUG: a lexical search on a corpus containing a symlink loop never
-/// returns. `--index` walks the same tree fine; the search path expands its
-/// target with the `glob` crate (`path_utils::run_glob`), which follows the
-/// looped directory symlinks forever. Bounded so the failure is a panic,
-/// not a hung run.
+/// v2 search answers from the store, never by walking the query path, so a
+/// symlink loop in the corpus cannot hang it (the old engine expanded the
+/// search target with `glob`, which followed looped symlinks forever).
+/// Bounded so a regression is a panic, not a hung run.
 #[cfg(unix)]
 #[test]
 #[serial]
-#[ignore = "bug: --lex (any search) hangs on a corpus with a symlink loop; run with --include-ignored"]
-fn known_bug_lexical_search_survives_a_symlink_loop() {
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn lexical_search_survives_a_symlink_loop() {
     use std::os::unix::fs::symlink;
     let corpus = Corpus::new();
     corpus.write(
@@ -643,7 +589,7 @@ fn unreadable_file_is_skipped_without_failing_the_index() {
     fs::set_permissions(&vault, fs::Permissions::from_mode(0o000)).unwrap();
 
     corpus.index();
-    assert_eq!(manifest_rels(&corpus), vec!["open_hall.md"]);
+    assert_eq!(total_files(&corpus), 1);
     assert_eq!(
         common::rank_of(&corpus.search(&["--lex", "afternoon"]), "open_hall"),
         Some(1),
@@ -653,51 +599,56 @@ fn unreadable_file_is_skipped_without_failing_the_index() {
     // Once readable again it joins the index on the next run.
     fs::set_permissions(&vault, fs::Permissions::from_mode(0o644)).unwrap();
     corpus.index();
-    assert!(manifest_has(&corpus, "locked_vault.md"));
+    assert_eq!(total_files(&corpus), 2, "the readable-again file joins");
     assert_eq!(
         common::rank_of(&corpus.search(&["--lex", "vault"]), "locked_vault"),
         Some(1)
     );
 }
 
-/// The manifest's embedding signature guards against mixing vectors from
-/// different prompt spaces. A mismatch must be refused loudly, not merged.
+/// The store's embedding signature guards against mixing vectors from
+/// different prompt spaces. A `--model` change means a different signature,
+/// which must rebuild the whole index rather than merge the two spaces.
 #[test]
 #[serial]
 #[ignore = "e2e: needs the default model; run with --include-ignored"]
-fn embedding_signature_mismatch_refuses_to_reindex() {
+fn switching_models_rebuilds_the_whole_index() {
     let corpus = Corpus::new();
     corpus.write(
         "dune.md",
         "The dune moves a hand's width inland with every winter storm.\n",
     );
     corpus.index();
+    assert_eq!(status_json(&corpus)["model"]["alias"].as_str(), Some("gemma-q4"));
 
-    let manifest = corpus.path().join(".ck/manifest.json");
-    let mut tampered = common::read_manifest(corpus.path());
-    tampered["embedding_signature"] = Value::String("tampered-signature".into());
-    fs::write(&manifest, serde_json::to_vec_pretty(&tampered).unwrap()).unwrap();
+    // gemma-gguf is the same architecture at another quantisation: the
+    // switch must re-embed, and the store must end up wholly the new model's.
+    let out = run_ok(corpus.ckq().args(["--index", "-q", "--model", "gemma-gguf", "."]));
+    let summary = common::parse_index_summary(&String::from_utf8_lossy(&out.stderr));
+    assert_eq!(summary.added, 1, "a rebuild starts over: {summary:?}");
+    assert_eq!(summary.unchanged, 0, "no stale vectors may survive: {summary:?}");
+    let json = status_json(&corpus);
+    assert_eq!(json["model"]["alias"].as_str(), Some("gemma-gguf"));
+    assert_eq!(json["total_files"].as_u64(), Some(1));
+    let hits = corpus.search(&["--sem", "sand moved by the winter wind", "--threshold", "0.0"]);
+    assert_eq!(
+        common::rank_of(&hits, "dune"),
+        Some(1),
+        "the rebuilt index must still answer"
+    );
 
-    let stderr = run_err(corpus.ckq().args(["--index", "-q", "."]));
-    assert!(
-        stderr.contains("different embedding prompts"),
-        "refusal should name the problem, got:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("--clean"),
-        "refusal should say what to do, got:\n{stderr}"
-    );
-    // Refused means untouched: the index it refused to mix is still there.
-    assert!(manifest_has(&corpus, "dune.md"));
-    assert!(sidecar(&corpus, "dune.md").is_some());
+    // And a plain store whose signature is tampered with must refuse loudly:
+    // pinned by a unit test in src/store.rs, which can reach the meta table.
 }
 
-/// The vector cache is only ever a copy; garbage or a truncated cache must
-/// be ignored or rebuilt without changing what search returns.
+/// The vectors live in the store itself now, so there is no derived copy to
+/// go stale. The failure mode the cache test guarded against — garbage being
+/// served as if it were results — must stay impossible: a corrupt store is an
+/// error, never quietly wrong answers, and `--clean` recovers.
 #[test]
 #[serial]
 #[ignore = "e2e: needs the default model; run with --include-ignored"]
-fn garbage_and_truncated_vectors_cache_keep_results_right() {
+fn a_corrupt_store_errors_loudly_instead_of_lying() {
     let corpus = Corpus::new();
     corpus.write(
         "saffron.md",
@@ -708,37 +659,29 @@ fn garbage_and_truncated_vectors_cache_keep_results_right() {
         "The cedar shades the fountain where the children play.\n",
     );
     corpus.index();
-    let cache = corpus.path().join(".ck/vectors.cache");
-    assert!(cache.is_file());
-
-    // Garbage in the cache: a miss, not a crash, and results stay right.
-    let garbage: &[u8] = b"NOT A CACHE, JUST GARBAGE BYTES 0123456789";
-    fs::write(&cache, garbage).unwrap();
     let hits = corpus.search(&["--sem", "an expensive spice at the market"]);
-    assert_eq!(
-        common::rank_of(&hits, "saffron"),
-        Some(1),
-        "garbage cache changed the results"
+    assert_eq!(common::rank_of(&hits, "saffron"), Some(1));
+
+    let db = corpus.path().join(".ck/index.db");
+    fs::write(&db, b"NOT A DATABASE, JUST GARBAGE BYTES 0123456789").unwrap();
+    let sem_err = run_err(corpus.ckq().args(["--sem", "expensive spice", "--jsonl", "-q", "."]));
+    assert!(
+        sem_err.contains("Error"),
+        "a corrupt store must fail loudly, got:\n{sem_err}"
     );
-    assert_ne!(
-        fs::read(&cache).unwrap(),
-        garbage,
-        "the cache should have been rebuilt over the garbage"
+    let lex_err = run_err(corpus.ckq().args(["--lex", "saffron", "--jsonl", "-q", "."]));
+    assert!(
+        lex_err.contains("Error"),
+        "got:\n{lex_err}"
     );
 
-    // A truncated cache: the first bytes of a real one, cut short.
-    let rebuilt = fs::read(&cache).unwrap();
-    assert!(rebuilt.len() > 200, "rebuilt cache is suspiciously small");
-    fs::write(&cache, &rebuilt[..100]).unwrap();
+    // And the recovery path is exactly the one the message names.
+    run_ok(corpus.ckq().args(["--clean", "."]));
+    corpus.index();
     let hits = corpus.search(&["--sem", "a tree giving shade by a fountain"]);
     assert_eq!(
         common::rank_of(&hits, "cedar"),
         Some(1),
-        "truncated cache changed the results"
-    );
-    // Lexical search never touches the cache and must be unaffected too.
-    assert_eq!(
-        common::rank_of(&corpus.search(&["--lex", "saffron"]), "saffron"),
-        Some(1)
+        "results must be right again after clean + reindex"
     );
 }

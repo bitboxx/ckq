@@ -1,9 +1,9 @@
 //! Search behaviour end to end, through the real binary and the real default
 //! model: what each mode ranks first, how `--term`, `--threshold` and
-//! `--topk` shape the results, that a search is deterministic, that the daemon
-//! and the in-process path agree, that concurrent searches agree, and that the
-//! index follows an edited file. These replace the three old integration
-//! tests that asserted nothing whenever the command failed.
+//! `--topk` shape the results, that a search is deterministic, that two runs
+//! of the now single (daemonless) path agree, that concurrent searches agree,
+//! and that the index follows an edited file. These replace the three old
+//! integration tests that asserted nothing whenever the command failed.
 
 mod common;
 
@@ -521,49 +521,40 @@ fn the_same_search_twice_is_identical() {
     }
 }
 
-/// The daemon path and `CKQ_IN_PROCESS=1` must agree: same order, scores
-/// within 1e-4. Two deviations keep this ignored: the in-process run puts a
-/// llama-cpp-2 WARN line on stdout (so `--jsonl` is not clean JSON), and its
-/// `--sem` scores differ from the daemon's by about 0.07 with the same order
-/// (17 Oct 2026, gemma-q4: guide.md 0.815 vs 0.743, workshop.md 0.641 vs
-/// 0.580) — the two paths do not embed identically.
+/// There is no daemon any more: every search runs the same in-process path,
+/// so two runs of the same query must agree exactly — same order, same scores
+/// — and stdout must be clean JSONL with no log lines mixed in (a llama.cpp
+/// WARN used to land there in the old in-process path). `parse_jsonl` fails
+/// the test on any line that is not one JSON object.
 #[test]
 #[serial]
-#[ignore = "bug: CKQ_IN_PROCESS=1 puts a WARN line on stdout and its --sem scores differ from the daemon's by ~0.07, not 1e-4"]
-fn known_bug_daemon_and_in_process_agree() {
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn two_runs_of_the_single_path_agree_and_stdout_is_clean_jsonl() {
     let (corpus, query) = fusion_corpus();
     corpus.index();
 
-    let daemon = corpus.search(&["--sem", query]);
-    let mut cmd = corpus.ckq();
-    cmd.env("CKQ_IN_PROCESS", "1")
-        .args(["--sem", query, "--jsonl", "--no-snippet", "-q", "."]);
-    let out = common::run_ok(&mut cmd);
-    let local = common::parse_jsonl(&out.stdout);
+    let first = corpus.search(&["--sem", query]);
+    let second = corpus.search(&["--sem", query]);
+    assert!(!first.is_empty(), "the corpus must answer");
 
-    let a = uniq_hits(&daemon);
-    let b = uniq_hits(&local);
+    let a = uniq_hits(&first);
+    let b = uniq_hits(&second);
     assert_eq!(
         a.iter().map(|h| h.stem()).collect::<Vec<_>>(),
         b.iter().map(|h| h.stem()).collect::<Vec<_>>(),
-        "the daemon and the in-process run returned different orders"
+        "two identical runs returned different orders"
     );
     for (x, y) in a.iter().zip(&b) {
-        let (sx, sy) = (
-            x.score.expect("daemon score"),
-            y.score.expect("in-process score"),
-        );
-        assert!(
-            (sx - sy).abs() <= 1e-4,
-            "scores for {} differ by more than 1e-4: {sx} vs {sy}",
+        assert_eq!(
+            x.score, y.score,
+            "two identical runs disagree on the score of {}",
             x.stem()
         );
     }
 }
 
 /// Six searches started at once, as separate processes, must all succeed and
-/// agree. Catches a daemon that drops a concurrent connection or serves one
-/// client another's request.
+/// agree. Catches concurrent readers racing on the store or the embedder.
 #[test]
 #[serial]
 #[ignore = "e2e: needs the default model; run with --include-ignored"]
@@ -786,13 +777,14 @@ fn stems(hits: &[Hit]) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// A caller that passes an absolute path from some other directory must get
-/// what a caller inside the corpus gets. Found 17 Oct 2026: `--sem` returned
-/// "No matches found" from any working directory outside the searched one,
-/// so `--hybrid` silently fell back to keyword hits only.
+/// what a caller inside the corpus gets. The old engine returned "No matches
+/// found" from any working directory outside the searched one (four path
+/// forms that disagreed); v2 keys every document on its root-relative path,
+/// so this must hold everywhere.
 #[test]
 #[serial]
-#[ignore = "bug: --sem returns nothing when the working directory is outside the searched directory, even with an absolute path"]
-fn known_bug_semantic_search_is_the_same_from_another_directory() {
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn semantic_search_is_the_same_from_another_directory() {
     let corpus = Corpus::new();
     corpus.write(
         "volcano.md",

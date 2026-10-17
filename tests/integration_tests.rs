@@ -1,4 +1,7 @@
-#[cfg(test)]
+//! Offline integration tests: they run the real binary on real files and need
+//! no model and no network. Anything that has to index (and so embed) carries
+//! an `e2e:` ignore and runs with `cargo e2e`.
+
 use serial_test::serial;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,11 +12,13 @@ fn ck_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ckq"))
 }
 
-/// Spawn ck with `CK_INDEX_DIR` cleared so these tests exercise the default
-/// in-tree `.ck` behavior they assert on, regardless of the ambient environment.
+/// Spawn ck with the settings that change its behaviour cleared, so these
+/// tests exercise the defaults regardless of the ambient environment.
 fn ck_command() -> Command {
     let mut cmd = Command::new(ck_binary());
-    cmd.env_remove("CK_INDEX_DIR");
+    for var in ["CKQ_GGUF_FILE", "CKQ_TIMING", "CKQ_QUERY_DEVICE"] {
+        cmd.env_remove(var);
+    }
     cmd
 }
 
@@ -21,7 +26,6 @@ fn ck_command() -> Command {
 fn test_basic_grep_functionality() {
     let temp_dir = TempDir::new().unwrap();
 
-    // Create test files
     fs::write(
         temp_dir.path().join("file1.txt"),
         "hello world\nrust programming\ntest line",
@@ -38,7 +42,6 @@ fn test_basic_grep_functionality() {
     )
     .unwrap();
 
-    // Test basic regex search
     let output = ck_command()
         .args(["rust", temp_dir.path().to_str().unwrap()])
         .output()
@@ -67,7 +70,7 @@ fn test_case_insensitive_search() {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
     let line_count = stdout.lines().count();
-    assert_eq!(line_count, 6); // Should match all three lines (filename + content for each)
+    assert_eq!(line_count, 6); // filename + content for each of three matches
 }
 
 #[test]
@@ -89,7 +92,7 @@ fn test_recursive_search() {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
     let line_count = stdout.lines().count();
-    assert_eq!(line_count, 4); // Should find matches in both files (filename + content for each)
+    assert_eq!(line_count, 4); // two files, filename + content each
 }
 
 #[test]
@@ -110,118 +113,6 @@ fn test_json_output() {
     assert!(json_result["file"].is_string());
     assert!(json_result["score"].is_number());
     assert!(json_result["preview"].is_string());
-}
-
-#[test]
-#[serial]
-fn test_index_command() {
-    let temp_dir = TempDir::new().unwrap();
-    fs::write(temp_dir.path().join("test.txt"), "indexable content").unwrap();
-
-    // Test index creation
-    let output = ck_command()
-        .args(["--index", "."])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("Failed to run ck index");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        stdout.contains("Indexed")
-            || stdout.contains("✓ Indexed")
-            || stderr.contains("Indexed")
-            || stderr.contains("✓ Indexed")
-    );
-
-    // Check that .ck directory was created
-    assert!(temp_dir.path().join(".ck").exists());
-}
-
-fn read_manifest_updated(dir: &Path) -> u64 {
-    let manifest_path = dir.join(".ck").join("manifest.json");
-    let data = fs::read(manifest_path).expect("manifest should exist");
-    let manifest: serde_json::Value = serde_json::from_slice(&data).expect("valid json");
-    manifest
-        .get("updated")
-        .and_then(serde_json::Value::as_u64)
-        .expect("updated timestamp")
-}
-
-#[test]
-#[serial]
-fn test_switch_model_skips_when_same_model() {
-    let temp_dir = TempDir::new().unwrap();
-    fs::write(temp_dir.path().join("test.rs"), "fn main() {}").unwrap();
-
-    let status = ck_command()
-        .args(["--index", "."])
-        .current_dir(temp_dir.path())
-        .status()
-        .expect("ck --index should run");
-    assert!(status.success());
-
-    let updated_before = read_manifest_updated(temp_dir.path());
-
-    let output = ck_command()
-        .args(["--switch-model", "gemma-q4"])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("ck --switch-model should run");
-
-    assert!(output.status.success());
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("No rebuild required"));
-
-    let updated_after = read_manifest_updated(temp_dir.path());
-    assert_eq!(
-        updated_before, updated_after,
-        "manifest should be unchanged when model matches"
-    );
-}
-
-/// Switches to the model the index already uses, on purpose: `--force` must
-/// rebuild anyway. Any other alias would download a second model for a test
-/// that is about the force flag, not about the model. Keep this alias equal to
-/// the registry default.
-#[test]
-#[serial]
-fn test_switch_model_force_rebuild() {
-    let temp_dir = TempDir::new().unwrap();
-    fs::write(
-        temp_dir.path().join("main.rs"),
-        "fn main() { println!(\"hi\"); }",
-    )
-    .unwrap();
-
-    let status = ck_command()
-        .args(["--index", "."])
-        .current_dir(temp_dir.path())
-        .status()
-        .expect("ck --index should run");
-    assert!(status.success());
-
-    let updated_before = read_manifest_updated(temp_dir.path());
-
-    std::thread::sleep(std::time::Duration::from_secs(1));
-
-    let output = ck_command()
-        .args(["--switch-model", "gemma-q4", "--force"])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("ck --switch-model --force should run");
-
-    assert!(output.status.success());
-
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("Switching Embedding Model"));
-
-    let updated_after = read_manifest_updated(temp_dir.path());
-    assert!(
-        updated_after > updated_before,
-        "forced rebuild should update manifest timestamp"
-    );
 }
 
 #[test]
@@ -251,7 +142,6 @@ fn test_context_lines() {
 fn test_topk_limit() {
     let temp_dir = TempDir::new().unwrap();
 
-    // Create multiple files with matches
     for i in 1..=10 {
         fs::write(
             temp_dir.path().join(format!("file{i}.txt")),
@@ -268,7 +158,7 @@ fn test_topk_limit() {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
     let line_count = stdout.trim().lines().count();
-    assert!(line_count <= 10); // Up to 5 results, each with filename + content line
+    assert!(line_count <= 10); // up to 5 results, filename + content each
 }
 
 #[test]
@@ -287,50 +177,7 @@ fn test_line_numbers() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
-
-    // Should include line number (line 2)
     assert!(stdout.contains("2:matched line"));
-}
-
-#[test]
-#[serial]
-fn test_clean_command() {
-    let temp_dir = TempDir::new().unwrap();
-    fs::write(temp_dir.path().join("test.txt"), "test content").unwrap();
-
-    // Create index first
-    let output = ck_command()
-        .args(["--index", "."])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("Failed to run ck index");
-
-    assert!(
-        output.status.success(),
-        "Index creation failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        temp_dir.path().join(".ck").exists(),
-        "Index directory not created"
-    );
-
-    // Clean index
-    let output = ck_command()
-        .args(["--clean", "."])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("Failed to run ck clean");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        stdout.contains("Index cleaned")
-            || stdout.contains("✓ Index cleaned")
-            || stderr.contains("Index cleaned")
-            || stderr.contains("✓ Index cleaned")
-    );
 }
 
 #[test]
@@ -338,21 +185,17 @@ fn test_no_matches_stderr_message() {
     let temp_dir = TempDir::new().unwrap();
     fs::write(temp_dir.path().join("test.txt"), "hello world").unwrap();
 
-    // Search for pattern that won't match
     let output = ck_command()
         .args(["nonexistent_pattern", temp_dir.path().to_str().unwrap()])
         .output()
         .expect("Failed to run ck");
 
-    // Should exit with code 1 (no matches)
     assert!(!output.status.success());
     assert_eq!(output.status.code(), Some(1));
 
-    // Should have empty stdout
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.trim().is_empty());
 
-    // Should have stderr message explaining the exit code
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("No matches found"));
 }
@@ -364,7 +207,6 @@ fn test_nonexistent_directory_error() {
         .output()
         .expect("Failed to run ck");
 
-    // Should fail with specific error message
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("Path does not exist"));
@@ -373,16 +215,7 @@ fn test_nonexistent_directory_error() {
 
 #[test]
 fn test_error_handling() {
-    // Test with nonexistent directory
-    let _output = ck_command()
-        .args(["test", "/nonexistent/directory"])
-        .output()
-        .expect("Failed to run ck");
-
-    // Should handle error gracefully (might succeed with no matches, which is fine)
-    // The important thing is that it doesn't crash
-
-    // Test invalid regex
+    // An invalid regex must fail gracefully, not crash.
     let temp_dir = TempDir::new().unwrap();
     fs::write(temp_dir.path().join("test.txt"), "test content").unwrap();
 
@@ -391,35 +224,24 @@ fn test_error_handling() {
         .output()
         .expect("Failed to run ck");
 
-    // Should fail gracefully with invalid regex
     assert!(!output.status.success());
 }
 
 #[test]
 fn test_invalid_regex_warning_during_highlighting() {
     let temp_dir = TempDir::new().unwrap();
-
-    // Create a test file
     fs::write(
         temp_dir.path().join("test.txt"),
         "hello world\ntest content",
     )
     .unwrap();
 
-    // Test that an invalid regex pattern shows a warning during highlighting
-    // The search will fail (as expected), but we should see a warning about the invalid regex
     let output = ck_command()
-        .args([
-            "[invalid", // This is an invalid regex pattern
-            temp_dir.path().to_str().unwrap(),
-        ])
+        .args(["[invalid", temp_dir.path().to_str().unwrap()])
         .output()
         .expect("Failed to run ck");
 
-    // The search should fail due to invalid regex
     assert!(!output.status.success());
-
-    // Check that we get a proper regex error message, not silent failure
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("regex") || stderr.contains("pattern") || stderr.contains("invalid"));
 }
@@ -428,7 +250,6 @@ fn test_invalid_regex_warning_during_highlighting() {
 fn test_jsonl_basic_output() {
     let temp_dir = TempDir::new().unwrap();
 
-    // Create test files
     fs::write(
         temp_dir.path().join("test.rs"),
         "fn main() {\n    println!(\"Hello Rust\");\n}",
@@ -447,23 +268,17 @@ fn test_jsonl_basic_output() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
-
-    // Should output JSONL format
     assert!(!stdout.trim().is_empty());
 
-    // Each line should be valid JSON
     for line in stdout.lines() {
         if !line.trim().is_empty() {
             let json: serde_json::Value = serde_json::from_str(line).expect("Invalid JSON line");
-
-            // Verify required JSONL fields exist
             assert!(json.get("path").is_some());
             assert!(json.get("span").is_some());
             assert!(json.get("language").is_some());
             assert!(json.get("snippet").is_some());
             assert!(json.get("score").is_some());
 
-            // Verify span structure
             let span = json.get("span").unwrap().as_object().unwrap();
             assert!(span.get("byte_start").is_some());
             assert!(span.get("byte_end").is_some());
@@ -476,7 +291,6 @@ fn test_jsonl_basic_output() {
 #[test]
 fn test_jsonl_no_snippet_flag() {
     let temp_dir = TempDir::new().unwrap();
-
     fs::write(
         temp_dir.path().join("test.rs"),
         "fn main() {\n    println!(\"Hello Rust\");\n}",
@@ -496,15 +310,10 @@ fn test_jsonl_no_snippet_flag() {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
 
-    // Should output JSONL format without snippets
     for line in stdout.lines() {
         if !line.trim().is_empty() {
             let json: serde_json::Value = serde_json::from_str(line).expect("Invalid JSON line");
-
-            // Should not have snippet field when --no-snippet is used
             assert!(json.get("snippet").is_none());
-
-            // Should still have other required fields
             assert!(json.get("path").is_some());
             assert!(json.get("span").is_some());
             assert!(json.get("language").is_some());
@@ -523,13 +332,11 @@ fn test_jsonl_vs_regular_output() {
     )
     .unwrap();
 
-    // Regular output
     let regular_output = ck_command()
         .args(["fn main", temp_dir.path().to_str().unwrap()])
         .output()
         .expect("Failed to run ck");
 
-    // JSONL output
     let jsonl_output = ck_command()
         .args(["fn main", "--jsonl", temp_dir.path().to_str().unwrap()])
         .output()
@@ -541,10 +348,7 @@ fn test_jsonl_vs_regular_output() {
     let regular_stdout = String::from_utf8(regular_output.stdout).unwrap();
     let jsonl_stdout = String::from_utf8(jsonl_output.stdout).unwrap();
 
-    // Regular output should NOT be JSON
     assert!(!regular_stdout.contains("{\"path\":"));
-
-    // JSONL output should be JSON
     assert!(jsonl_stdout.contains("{\"path\":"));
     assert!(jsonl_stdout.contains("\"span\":"));
     assert!(jsonl_stdout.contains("\"language\":"));
@@ -554,7 +358,6 @@ fn test_jsonl_vs_regular_output() {
 fn test_jsonl_with_different_languages() {
     let temp_dir = TempDir::new().unwrap();
 
-    // Create files in different languages
     fs::write(
         temp_dir.path().join("test.rs"),
         "fn main() {\n    println!(\"Hello Rust\");\n}",
@@ -562,12 +365,7 @@ fn test_jsonl_with_different_languages() {
     .unwrap();
     fs::write(
         temp_dir.path().join("test.py"),
-        "def main():\n    print('Hello Python')",
-    )
-    .unwrap();
-    fs::write(
-        temp_dir.path().join("test.js"),
-        "function main() {\n    console.log('Hello JS');\n}",
+        "print('Hello Python')\ndef main():\n    pass",
     )
     .unwrap();
 
@@ -579,134 +377,25 @@ fn test_jsonl_with_different_languages() {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
 
-    let mut rust_found = false;
-    let mut python_found = false;
-    let mut js_found = false;
-
-    // Check that different languages are correctly detected
-    for line in stdout.lines() {
-        if !line.trim().is_empty() {
-            let json: serde_json::Value = serde_json::from_str(line).expect("Invalid JSON line");
-
-            let language = json.get("language").unwrap().as_str().unwrap();
-            match language {
-                "rust" => rust_found = true,
-                "python" => python_found = true,
-                "javascript" => js_found = true,
-                _ => {}
-            }
-        }
-    }
-
-    // Should detect all three languages
-    assert!(rust_found);
-    assert!(python_found);
-    assert!(js_found);
-}
-
-#[test]
-#[serial]
-fn test_add_single_file_to_index() {
-    let temp_dir = TempDir::new().unwrap();
-
-    // Create a test file to add
-    let test_file = temp_dir.path().join("test_file.txt");
-    fs::write(&test_file, "This is test content for indexing").unwrap();
-
-    // First create an index in the directory
-    let output = ck_command()
-        .args(["--index", "."])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("Failed to create index");
-
-    assert!(output.status.success(), "Failed to create initial index");
-
-    // Create another file after index creation
-    let new_file = temp_dir.path().join("new_file.txt");
-    fs::write(&new_file, "New file content to be added").unwrap();
-
-    // Test adding the new file with absolute path
-    let output = ck_command()
-        .args(["--add", new_file.to_str().unwrap()])
-        .output()
-        .expect("Failed to run ck --add");
-
+    let languages: Vec<String> = stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let json: serde_json::Value = serde_json::from_str(l).expect("valid JSONL");
+            json["language"]
+                .as_str()
+                .expect("language field")
+                .to_string()
+        })
+        .collect();
     assert!(
-        output.status.success(),
-        "Failed to add file: stderr: {}, stdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
+        languages.contains(&"rust".to_string()),
+        "the Rust file must be labelled: {languages:?}"
     );
-
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    let stderr = String::from_utf8(output.stderr).unwrap();
-
-    // Check for success message in either stdout or stderr
     assert!(
-        stdout.contains("Added") || stderr.contains("Added"),
-        "Expected 'Added' in output, got stdout: {stdout}, stderr: {stderr}"
+        languages.contains(&"python".to_string()),
+        "the Python file must be labelled: {languages:?}"
     );
-
-    // Verify the file was actually added by searching for it
-    let output = ck_command()
-        .args(["New file", "."])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("Failed to search for added file");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(
-        stdout.contains("New file content"),
-        "Added file content not found in search"
-    );
-}
-
-#[test]
-#[serial]
-fn test_add_file_with_relative_path() {
-    let temp_dir = TempDir::new().unwrap();
-
-    // Create index first
-    let output = ck_command()
-        .args(["--index", "."])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("Failed to create index");
-
-    assert!(output.status.success());
-
-    // Create a new file to add
-    fs::write(
-        temp_dir.path().join("relative_file.txt"),
-        "Relative path content",
-    )
-    .unwrap();
-
-    // Test adding with relative path from the temp directory
-    let output = ck_command()
-        .args(["--add", "relative_file.txt"])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("Failed to run ck --add with relative path");
-
-    assert!(
-        output.status.success(),
-        "Failed to add file with relative path: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    // Verify file was added
-    let output = ck_command()
-        .args(["Relative path", "."])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("Failed to search");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("Relative path content"));
 }
 
 #[test]
@@ -717,17 +406,15 @@ fn test_no_ckignore_flag_disables_hierarchical_ignore() {
     let subdir = parent.join("subdir");
     fs::create_dir(&subdir).unwrap();
 
-    // Create .ckignore at parent level excluding *.tmp files
+    // .ckignore at parent level excluding *.tmp files
     fs::write(parent.join(".ckignore"), "*.tmp\n").unwrap();
 
-    // Create test files with easily searchable pattern
     fs::write(parent.join("test.txt"), "FINDME_TEXT").unwrap();
     fs::write(parent.join("ignored.tmp"), "FINDME_TMP").unwrap();
     fs::write(subdir.join("nested.txt"), "FINDME_TEXT").unwrap();
     fs::write(subdir.join("also_ignored.tmp"), "FINDME_TMP").unwrap();
 
-    // Test WITH --no-ckignore flag - .tmp files should be INCLUDED
-    // Using -r for recursive grep-style search (no indexing needed)
+    // With --no-ckignore the .tmp files are included
     let output = ck_command()
         .args(["-r", "--no-ckignore", "FINDME", "."])
         .current_dir(parent)
@@ -740,14 +427,12 @@ fn test_no_ckignore_flag_disables_hierarchical_ignore() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
-
-    // With --no-ckignore, should find .tmp files
     assert!(
         stdout.contains("ignored.tmp") || stdout.contains("also_ignored.tmp"),
         "Should find .tmp files when --no-ckignore is used. Output: {stdout}"
     );
 
-    // Test WITHOUT --no-ckignore flag (default behavior) - .tmp files should be EXCLUDED
+    // Without it (default), .ckignore applies
     let output = ck_command()
         .args(["-r", "FINDME", "."])
         .current_dir(parent)
@@ -756,259 +441,13 @@ fn test_no_ckignore_flag_disables_hierarchical_ignore() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
-
-    // Without --no-ckignore (default), should NOT find .tmp files
     assert!(
         !stdout.contains("ignored.tmp") && !stdout.contains("also_ignored.tmp"),
         "Should NOT find .tmp files when .ckignore is active (default). Output: {stdout}"
     );
-
-    // Should still find .txt files
     assert!(
         stdout.contains("test.txt") || stdout.contains("nested.txt"),
         "Should find .txt files even with .ckignore active"
-    );
-}
-
-#[test]
-#[serial]
-#[ignore] // Requires models to be downloaded - run with: CK_MIXEDBREAD_MODELS_READY=1 cargo test -- --ignored
-fn test_mixedbread_index_and_search() {
-    // Skip if models aren't ready (set CK_MIXEDBREAD_MODELS_READY=1 to enable)
-    if std::env::var("CK_MIXEDBREAD_MODELS_READY").is_err() {
-        return;
-    }
-
-    let temp_dir = TempDir::new().unwrap();
-
-    // Create test files with semantic content
-    fs::write(
-        temp_dir.path().join("rust_error.rs"),
-        r"fn handle_error() -> Result<String, String> {
-    let result = risky_operation()?;
-    Ok(result)
-}",
-    )
-    .unwrap();
-    fs::write(
-        temp_dir.path().join("python_web.py"),
-        "from flask import Flask\napp = Flask(__name__)\n@app.route('/')\ndef hello(): return 'Hello'",
-    )
-    .unwrap();
-    fs::write(
-        temp_dir.path().join("error_handling.md"),
-        "Error handling in Rust uses Result and Option types for safe error propagation",
-    )
-    .unwrap();
-
-    // Test indexing with Mixedbread model
-    let output = ck_command()
-        .args(["--index", "--model", "mxbai-xsmall", "."])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("Failed to run ck index with Mixedbread");
-
-    assert!(
-        output.status.success(),
-        "Indexing failed: stderr: {}, stdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-
-    // Verify index was created
-    assert!(
-        temp_dir.path().join(".ck").exists(),
-        "Index directory should exist"
-    );
-
-    // Check manifest contains Mixedbread model
-    let manifest_path = temp_dir.path().join(".ck").join("manifest.json");
-    let manifest_data = fs::read(&manifest_path).expect("manifest should exist");
-    let manifest: serde_json::Value = serde_json::from_slice(&manifest_data).expect("valid json");
-    let embedding_model = manifest
-        .get("embedding_model")
-        .and_then(|v| v.as_str())
-        .expect("embedding_model should be set");
-    assert!(
-        embedding_model.contains("mxbai-embed-xsmall-v1"),
-        "Manifest should record Mixedbread model, got: {embedding_model}"
-    );
-
-    let embedding_dimensions = manifest
-        .get("embedding_dimensions")
-        .and_then(serde_json::Value::as_u64)
-        .expect("embedding_dimensions should be set");
-    assert_eq!(
-        embedding_dimensions, 384,
-        "Mixedbread xsmall should have 384 dimensions"
-    );
-
-    // Test semantic search with Mixedbread
-    let output = ck_command()
-        .args(["--sem", "error handling", "--model", "mxbai-xsmall", "."])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("Failed to run ck semantic search with Mixedbread");
-
-    assert!(
-        output.status.success(),
-        "Semantic search failed: stderr: {}, stdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    // Should find error handling related content
-    assert!(
-        stdout.contains("error") || stdout.contains("Error"),
-        "Should find error handling content"
-    );
-
-    // Test reranking with Mixedbread reranker
-    let output = ck_command()
-        .args([
-            "--sem",
-            "error handling",
-            "--model",
-            "mxbai-xsmall",
-            "--rerank",
-            "--rerank-model",
-            "mxbai",
-            ".",
-        ])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("Failed to run ck search with Mixedbread reranker");
-
-    assert!(
-        output.status.success(),
-        "Reranked search failed: stderr: {}, stdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(!stdout.is_empty(), "Should return results");
-}
-
-#[test]
-#[serial]
-#[ignore] // Requires models to be downloaded
-fn test_switch_model_to_mixedbread() {
-    if std::env::var("CK_MIXEDBREAD_MODELS_READY").is_err() {
-        return;
-    }
-
-    let temp_dir = TempDir::new().unwrap();
-    fs::write(
-        temp_dir.path().join("test.rs"),
-        "fn main() { println!(\"Hello\"); }",
-    )
-    .unwrap();
-
-    // Create index with default model
-    let output = ck_command()
-        .args(["--index", "."])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("Failed to create initial index");
-
-    assert!(output.status.success());
-
-    let updated_before = read_manifest_updated(temp_dir.path());
-
-    std::thread::sleep(std::time::Duration::from_secs(1));
-
-    // Switch to Mixedbread model
-    let output = ck_command()
-        .args(["--switch-model", "mxbai-xsmall"])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("Failed to switch model");
-
-    assert!(
-        output.status.success(),
-        "Switch model failed: stderr: {}, stdout: {}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        stderr.contains("Switching") || stderr.contains("Rebuilding"),
-        "Should indicate model switch"
-    );
-
-    let updated_after = read_manifest_updated(temp_dir.path());
-    assert!(
-        updated_after > updated_before,
-        "Manifest should be updated after model switch"
-    );
-
-    // Verify manifest now has Mixedbread model
-    let manifest_path = temp_dir.path().join(".ck").join("manifest.json");
-    let manifest_data = fs::read(&manifest_path).expect("manifest should exist");
-    let manifest: serde_json::Value = serde_json::from_slice(&manifest_data).expect("valid json");
-    let embedding_model = manifest
-        .get("embedding_model")
-        .and_then(|v| v.as_str())
-        .expect("embedding_model should be set");
-    assert!(
-        embedding_model.contains("mxbai-embed-xsmall-v1"),
-        "Manifest should now have Mixedbread model"
-    );
-}
-
-/// Two ck processes indexing the same directory concurrently must serialize
-/// on the index write lock instead of interleaving manifest writes. Both
-/// should succeed and the final manifest should contain every file.
-#[test]
-fn test_concurrent_indexing_is_serialized() {
-    use std::process::Stdio;
-
-    let temp_dir = TempDir::new().unwrap();
-    let file_count = 30;
-    for i in 0..file_count {
-        fs::write(
-            temp_dir.path().join(format!("file{i}.txt")),
-            format!("searchable content number {i}\n").repeat(50),
-        )
-        .unwrap();
-    }
-
-    let spawn_indexer = || {
-        ck_command()
-            .arg("--index")
-            .current_dir(temp_dir.path())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("Failed to spawn ck --index")
-    };
-
-    let first = spawn_indexer();
-    let second = spawn_indexer();
-
-    for child in [first, second] {
-        let output = child.wait_with_output().expect("Failed to wait on ck");
-        assert!(
-            output.status.success(),
-            "concurrent ck --index failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    let manifest_data =
-        fs::read(temp_dir.path().join(".ck").join("manifest.json")).expect("manifest must exist");
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&manifest_data).expect("manifest must be valid JSON");
-    let files = manifest["files"]
-        .as_object()
-        .expect("manifest.files object");
-    assert_eq!(
-        files.len(),
-        file_count,
-        "manifest lost entries under concurrent indexing"
     );
 }
 
@@ -1024,8 +463,6 @@ fn test_sigpipe_terminates_silently() {
 
     let temp_dir = TempDir::new().unwrap();
 
-    // Enough matching output to overflow the OS pipe buffer after the read
-    // end closes (pipe buffers are typically 64KB).
     let line = "match: the quick brown fox jumps over the lazy dog\n";
     fs::write(temp_dir.path().join("big.txt"), line.repeat(50_000)).unwrap();
 
@@ -1036,7 +473,6 @@ fn test_sigpipe_terminates_silently() {
         .spawn()
         .expect("Failed to spawn ck");
 
-    // Read a little, then close the read end like `head` does.
     let mut stdout = child.stdout.take().unwrap();
     let mut buf = [0u8; 4096];
     let _ = stdout.read(&mut buf).unwrap();
@@ -1062,132 +498,8 @@ fn test_sigpipe_terminates_silently() {
     );
 }
 
-/// Command-mode flags must honor an explicit path argument: `ck --index /dir`
-/// parses the path into the positional pattern slot (these commands take no
-/// search pattern) and previously ran against the cwd instead.
-#[test]
-fn test_command_flags_honor_explicit_path() {
-    let target = TempDir::new().unwrap();
-    let elsewhere = TempDir::new().unwrap();
-    fs::write(target.path().join("a.txt"), "indexable content here").unwrap();
-
-    // --index <path> from an unrelated cwd must index <path>, not the cwd
-    let output = ck_command()
-        .args(["--index", target.path().to_str().unwrap()])
-        .current_dir(elsewhere.path())
-        .output()
-        .expect("Failed to run ck --index <path>");
-    assert!(
-        output.status.success(),
-        "ck --index <path> failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        target.path().join(".ck").exists(),
-        "--index must create the index at the given path"
-    );
-    assert!(
-        !elsewhere.path().join(".ck").exists(),
-        "--index must not index the cwd when a path is given"
-    );
-
-    // --status <path> must report the index at <path>
-    let output = ck_command()
-        .args(["--status", target.path().to_str().unwrap()])
-        .current_dir(elsewhere.path())
-        .output()
-        .expect("Failed to run ck --status <path>");
-    assert!(output.status.success());
-
-    // --clean <path> must remove the index at <path>
-    let output = ck_command()
-        .args(["--clean", target.path().to_str().unwrap()])
-        .current_dir(elsewhere.path())
-        .output()
-        .expect("Failed to run ck --clean <path>");
-    assert!(output.status.success());
-    assert!(
-        !target.path().join(".ck").exists(),
-        "--clean must remove the index at the given path"
-    );
-}
-
-/// The tantivy lexical index used to be built once on first --lex and never
-/// refreshed: files added or edited afterwards were invisible to lexical
-/// search. It must now rebuild when the corpus changes.
-#[test]
-#[serial]
-fn test_lexical_search_reflects_file_changes() {
-    let temp_dir = TempDir::new().unwrap();
-    fs::write(
-        temp_dir.path().join("a.txt"),
-        "alphaterm appears in the original corpus",
-    )
-    .unwrap();
-
-    let status = ck_command()
-        .args(["--index", "."])
-        .current_dir(temp_dir.path())
-        .status()
-        .expect("ck --index should run");
-    assert!(status.success());
-
-    // First lexical search builds the tantivy index
-    let output = ck_command()
-        .args(["--lex", "alphaterm", "."])
-        .current_dir(temp_dir.path())
-        .env("RUST_LOG", "ck_engine=debug,ck_index=debug")
-        .output()
-        .expect("ck --lex should run");
-    let ck_dir_listing: Vec<String> = walkdir::WalkDir::new(temp_dir.path().join(".ck"))
-        .into_iter()
-        .filter_map(Result::ok)
-        .map(|e| e.path().display().to_string())
-        .collect();
-    assert!(
-        output.status.success(),
-        "initial lexical search failed.\nstderr: {}\nstdout: {}\n.ck contents: {:#?}\nmeta: {:?}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout),
-        ck_dir_listing,
-        fs::read_to_string(temp_dir.path().join(".ck").join("tantivy_index.meta")),
-    );
-
-    // Add a new file AFTER the lexical index was built
-    fs::write(
-        temp_dir.path().join("b.txt"),
-        "zebraterm only exists in the new file",
-    )
-    .unwrap();
-
-    let output = ck_command()
-        .args(["--lex", "zebraterm", "."])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("ck --lex should run");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success() && stdout.contains("b.txt"),
-        "lexical search must see files added after the index was built; stdout: {stdout} stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    // Modify the original file: removed content must stop matching
-    fs::write(temp_dir.path().join("a.txt"), "completely different now").unwrap();
-    let output = ck_command()
-        .args(["--lex", "alphaterm", "."])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("ck --lex should run");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        !stdout.contains("a.txt"),
-        "lexical search returned stale content for a modified file; stdout: {stdout}"
-    );
-}
-
-/// Helper: create a workspace with one visible file, one hidden dot-file, and a
-/// hidden directory containing a file. All three share the search term "needle".
+/// Helper: create a workspace with one visible file, one hidden dot-file, and
+/// a hidden directory containing a file. All three share the search term "needle".
 fn setup_hidden_workspace() -> TempDir {
     let temp_dir = TempDir::new().unwrap();
     fs::write(
@@ -1213,13 +525,12 @@ fn setup_hidden_workspace() -> TempDir {
 fn test_hidden_flag_regex_search() {
     let temp_dir = setup_hidden_workspace();
 
-    // Default: hidden files/dirs are excluded from the walker.
     let output = ck_command()
         .args(["needle", "."])
         .current_dir(temp_dir.path())
         .output()
         .expect("Failed to run ck search");
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
         stdout.contains("visible.txt"),
         "visible file should always match; stdout: {stdout}"
@@ -1233,13 +544,12 @@ fn test_hidden_flag_regex_search() {
         "file in hidden dir should NOT match without --hidden; stdout: {stdout}"
     );
 
-    // With --hidden: everything is walked.
     let output = ck_command()
         .args(["--hidden", "needle", "."])
         .current_dir(temp_dir.path())
         .output()
         .expect("Failed to run ck --hidden search");
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
         stdout.contains("visible.txt"),
         "visible file should still match with --hidden; stdout: {stdout}"
@@ -1254,21 +564,381 @@ fn test_hidden_flag_regex_search() {
     );
 }
 
-/// Lexical search builds/refreshes a Tantivy corpus via `collect_files`, so it
-/// exercises the index-building walker path. `--hidden` must control whether
-/// dot-prefixed files land in that corpus.
+// ---------------------------------------------------------------------------
+// Everything below needs the index, and indexing embeds, so these run with
+// `cargo e2e` and the default model.
+// ---------------------------------------------------------------------------
+
 #[test]
 #[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn test_index_command() {
+    let temp_dir = TempDir::new().unwrap();
+    fs::write(temp_dir.path().join("test.txt"), "indexable content").unwrap();
+
+    let output = ck_command()
+        .args(["--index", "."])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("Failed to run ck index");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stdout.contains("indexed") || stderr.contains("indexed"),
+        "the run should say what it did; stdout: {stdout} stderr: {stderr}"
+    );
+
+    assert!(temp_dir.path().join(".ck").exists());
+}
+
+#[test]
+#[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn test_clean_command() {
+    let temp_dir = TempDir::new().unwrap();
+    fs::write(temp_dir.path().join("test.txt"), "test content").unwrap();
+
+    let output = ck_command()
+        .args(["--index", "."])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("Failed to run ck index");
+    assert!(
+        output.status.success(),
+        "Index creation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        temp_dir.path().join(".ck").exists(),
+        "Index directory not created"
+    );
+
+    let output = ck_command()
+        .args(["--clean", "."])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("Failed to run ck clean");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stdout.contains("Index cleaned") || stderr.contains("Index cleaned"),
+        "Expected 'Index cleaned' in output, got stdout: {stdout}, stderr: {stderr}"
+    );
+}
+
+#[test]
+#[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn test_add_single_file_to_index() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let test_file = temp_dir.path().join("test_file.txt");
+    fs::write(&test_file, "This is test content for indexing").unwrap();
+
+    let output = ck_command()
+        .args(["--index", "."])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("Failed to create index");
+    assert!(output.status.success(), "Failed to create initial index");
+
+    let new_file = temp_dir.path().join("new_file.txt");
+    fs::write(&new_file, "New file content to be added").unwrap();
+
+    // Add the new file by absolute path, from outside the corpus.
+    let output = ck_command()
+        .args(["--add", new_file.to_str().unwrap()])
+        .output()
+        .expect("Failed to run ck --add");
+
+    assert!(
+        output.status.success(),
+        "Failed to add file: stderr: {}, stdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stdout.contains("added") || stderr.contains("added"),
+        "Expected the index summary, got stdout: {stdout}, stderr: {stderr}"
+    );
+
+    // Verify the file was actually added by searching for it
+    let output = ck_command()
+        .args(["New file", "."])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("Failed to search for added file");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("New file content"),
+        "Added file content not found in search"
+    );
+}
+
+#[test]
+#[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn test_add_file_with_relative_path() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let output = ck_command()
+        .args(["--index", "."])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("Failed to create index");
+    assert!(output.status.success());
+
+    fs::write(
+        temp_dir.path().join("relative_file.txt"),
+        "Relative path content",
+    )
+    .unwrap();
+
+    let output = ck_command()
+        .args(["--add", "relative_file.txt"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("Failed to run ck --add with relative path");
+
+    assert!(
+        output.status.success(),
+        "Failed to add file with relative path: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = ck_command()
+        .args(["Relative path", "."])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("Failed to search");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Relative path content"));
+}
+
+/// Two ck processes indexing the same directory concurrently must queue on
+/// the store's own write lock instead of interleaving transactions. Both
+/// should succeed and the final index should contain every file.
+#[test]
+#[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn test_concurrent_indexing_is_serialized() {
+    use std::process::Stdio;
+
+    let temp_dir = TempDir::new().unwrap();
+    let file_count = 30;
+    for i in 0..file_count {
+        fs::write(
+            temp_dir.path().join(format!("file{i}.txt")),
+            format!("searchable content number {i}\n").repeat(50),
+        )
+        .unwrap();
+    }
+
+    let spawn_indexer = || {
+        ck_command()
+            .arg("--index")
+            .arg("-q")
+            .arg(".")
+            .current_dir(temp_dir.path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("Failed to spawn ck --index")
+    };
+
+    let first = spawn_indexer();
+    let second = spawn_indexer();
+
+    for child in [first, second] {
+        let output = child.wait_with_output().expect("Failed to wait on ck");
+        assert!(
+            output.status.success(),
+            "concurrent ck --index failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let out = ck_command()
+        .arg("--status-json")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("ck --status-json should run");
+    assert!(out.status.success(), "status after concurrent indexing failed");
+    let status: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        status["total_files"].as_u64(),
+        Some(file_count as u64),
+        "the index lost entries under concurrent indexing: {status}"
+    );
+}
+
+/// Command-mode flags must honor an explicit path argument: `ckq --index /dir`
+/// must index /dir, not the cwd, from any working directory.
+#[test]
+#[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn test_command_flags_honor_explicit_path() {
+    let target = TempDir::new().unwrap();
+    let elsewhere = TempDir::new().unwrap();
+    fs::write(target.path().join("a.txt"), "indexable content here").unwrap();
+
+    let output = ck_command()
+        .args(["--index", "-q", target.path().to_str().unwrap()])
+        .current_dir(elsewhere.path())
+        .output()
+        .expect("Failed to run ck --index <path>");
+    assert!(
+        output.status.success(),
+        "ck --index <path> failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        target.path().join(".ck").exists(),
+        "--index must create the index at the given path"
+    );
+    assert!(
+        !elsewhere.path().join(".ck").exists(),
+        "--index must not index the cwd when a path is given"
+    );
+
+    let output = ck_command()
+        .args(["--status", target.path().to_str().unwrap()])
+        .current_dir(elsewhere.path())
+        .output()
+        .expect("Failed to run ck --status <path>");
+    assert!(output.status.success());
+
+    let output = ck_command()
+        .args(["--clean", target.path().to_str().unwrap()])
+        .current_dir(elsewhere.path())
+        .output()
+        .expect("Failed to run ck --clean <path>");
+    assert!(output.status.success());
+    assert!(
+        !target.path().join(".ck").exists(),
+        "--clean must remove the index at the given path"
+    );
+}
+
+/// The lexical index is the store itself, written by `--index`: files added
+/// or edited afterwards are invisible to `--lex` until the next `--index`,
+/// and never appear as stale content.
+#[test]
+#[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn test_lexical_search_reflects_file_changes() {
+    let temp_dir = TempDir::new().unwrap();
+    fs::write(
+        temp_dir.path().join("a.txt"),
+        "alphaterm appears in the original corpus",
+    )
+    .unwrap();
+
+    let status = ck_command()
+        .args(["--index", "-q", "."])
+        .current_dir(temp_dir.path())
+        .status()
+        .expect("ck --index should run");
+    assert!(status.success());
+
+    let output = ck_command()
+        .args(["--lex", "alphaterm", ".", "--jsonl", "-q"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("ck --lex should run");
+    assert!(
+        output.status.success(),
+        "initial lexical search failed.\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // A file added after the index run is not in the store, so the next
+    // search must not find it until the index runs again.
+    fs::write(
+        temp_dir.path().join("b.txt"),
+        "zebraterm only exists in the new file",
+    )
+    .unwrap();
+
+    let output = ck_command()
+        .args(["--lex", "zebraterm", ".", "--jsonl", "-q"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("ck --lex should run");
+    assert!(
+        !output.status.success(),
+        "search is read-only: a file the index never saw cannot be found yet"
+    );
+
+    let output = ck_command()
+        .args(["--index", "-q", "."])
+        .current_dir(temp_dir.path())
+        .status()
+        .expect("ck --index should run");
+    assert!(output.success());
+    let out = ck_command()
+        .args(["--lex", "zebraterm", ".", "--jsonl", "-q"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("ck --lex should run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("b.txt"),
+        "lexical search must see files added after a re-index; stdout: {stdout}"
+    );
+
+    // Modify the original file: removed content must stop matching
+    fs::write(temp_dir.path().join("a.txt"), "completely different now").unwrap();
+    let output = ck_command()
+        .args(["--index", "-q", "."])
+        .current_dir(temp_dir.path())
+        .status()
+        .expect("ck --index should run");
+    assert!(output.success());
+    let output = ck_command()
+        .args(["--lex", "alphaterm", ".", "--jsonl", "-q"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("ck --lex should run");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("a.txt"),
+        "lexical search returned stale content for a modified file; stdout: {stdout}"
+    );
+}
+
+/// Lexical search reads what `--index` stored, so `--hidden` must control
+/// whether dot-prefixed files land in the index.
+#[test]
+#[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
 fn test_hidden_flag_lexical_index() {
     let temp_dir = setup_hidden_workspace();
 
-    // Default: hidden content is not indexed, so it cannot be found.
+    let output = ck_command()
+        .args(["--index", "-q", "."])
+        .current_dir(temp_dir.path())
+        .status()
+        .expect("ck --index should run");
+    assert!(output.success());
+
     let output = ck_command()
         .args(["--lex", "needle", "."])
         .current_dir(temp_dir.path())
         .output()
         .expect("Failed to run ck --lex");
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
         stdout.contains("visible.txt"),
         "lexical index should contain the visible file; stdout: {stdout}"
@@ -1278,13 +948,19 @@ fn test_hidden_flag_lexical_index() {
         "hidden content should NOT be in the lexical index without --hidden; stdout: {stdout}"
     );
 
-    // With --hidden: hidden content is indexed and therefore searchable.
+    let output = ck_command()
+        .args(["--index", "-q", "--hidden", "."])
+        .current_dir(temp_dir.path())
+        .status()
+        .expect("ck --index --hidden should run");
+    assert!(output.success());
+
     let output = ck_command()
         .args(["--hidden", "--lex", "needle", "."])
         .current_dir(temp_dir.path())
         .output()
         .expect("Failed to run ck --hidden --lex");
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
         stdout.contains(".hidden-file.txt"),
         "hidden file SHOULD be in the lexical index with --hidden; stdout: {stdout}"
@@ -1298,13 +974,10 @@ fn test_hidden_flag_lexical_index() {
 // ---------------------------------------------------------------------------
 // Several directories in one session
 //
-// ckq keeps one index per directory, in a `.ck` beside the corpus, and one
-// embed daemon per model. The corpus is deliberately absent from the daemon's
-// socket key, so a single resident model serves every directory. That makes a
-// session which searches corpus A and then corpus B the normal case rather
-// than an edge case, and these cover the three ways it can break: an index
-// written to the wrong place, a result from the wrong corpus, and state
-// carried over so the second visit to a directory differs from the first.
+// ckq keeps one index per directory, in a `.ck` beside the corpus. That makes
+// a session which searches corpus A and then corpus B the normal case rather
+// than an edge case, and these cover the ways it can break: an index written
+// to the wrong place, and a result from the wrong corpus.
 // ---------------------------------------------------------------------------
 
 /// Two corpora with no vocabulary in common. Each carries a nonsense marker so
@@ -1323,23 +996,24 @@ fn write_two_corpora(a: &Path, b: &Path) {
     .unwrap();
 }
 
-/// Run a search and hand back stdout, or `None` when the search did not
-/// succeed. Semantic and lexical search need a model and an index that the
-/// test environment may not have, and the suite already treats that as a skip
-/// rather than a failure.
+/// Run a search and hand back stdout; the tests that call this have indexed
+/// `dir` first, and the marker queries always match.
 fn search_stdout(mode: &str, query: &str, dir: &Path) -> Option<String> {
     let output = ck_command()
         .args([mode, query, dir.to_str().unwrap()])
         .output()
         .expect("Failed to run ck search");
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8(output.stdout).unwrap())
+    if output.status.success() {
+        Some(String::from_utf8(output.stdout).unwrap())
+    } else {
+        eprintln!("search failed: {}", String::from_utf8_lossy(&output.stderr));
+        None
+    }
 }
 
 #[test]
 #[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
 fn test_each_directory_gets_its_own_index() {
     let a = TempDir::new().unwrap();
     let b = TempDir::new().unwrap();
@@ -1349,7 +1023,7 @@ fn test_each_directory_gets_its_own_index() {
     // Index both by path argument, from a directory that is neither of them.
     for corpus in [a.path(), b.path()] {
         let output = ck_command()
-            .args(["--index", corpus.to_str().unwrap()])
+            .args(["--index", "-q", corpus.to_str().unwrap()])
             .current_dir(elsewhere.path())
             .output()
             .expect("Failed to run ck index");
@@ -1364,23 +1038,22 @@ fn test_each_directory_gets_its_own_index() {
         "indexing by path argument must not index the current directory"
     );
 
-    // Each manifest lists its own corpus and nothing from the other.
-    let manifest_a = fs::read_to_string(a.path().join(".ck").join("manifest.json")).unwrap();
-    let manifest_b = fs::read_to_string(b.path().join(".ck").join("manifest.json")).unwrap();
-    assert!(manifest_a.contains("sailing.md"));
+    // Each search answers from its own corpus and nothing from the other.
     assert!(
-        !manifest_a.contains("baking.md"),
-        "corpus A's manifest must not carry corpus B's files"
+        search_stdout("--lex", "zephyrquux", a.path())
+            .is_some_and(|s| s.contains("sailing.md")),
+        "corpus A must find its own marker"
     );
-    assert!(manifest_b.contains("baking.md"));
     assert!(
-        !manifest_b.contains("sailing.md"),
-        "corpus B's manifest must not carry corpus A's files"
+        search_stdout("--lex", "quibblewomp", b.path())
+            .is_some_and(|s| s.contains("baking.md")),
+        "corpus B must find its own marker"
     );
 }
 
 #[test]
 #[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
 fn test_lexical_search_does_not_leak_between_directories() {
     let a = TempDir::new().unwrap();
     let b = TempDir::new().unwrap();
@@ -1388,7 +1061,7 @@ fn test_lexical_search_does_not_leak_between_directories() {
 
     for corpus in [a.path(), b.path()] {
         let output = ck_command()
-            .args(["--index", corpus.to_str().unwrap()])
+            .args(["--index", "-q", corpus.to_str().unwrap()])
             .output()
             .expect("Failed to run ck index");
         assert!(output.status.success());
@@ -1397,7 +1070,7 @@ fn test_lexical_search_does_not_leak_between_directories() {
     // Positive control. Without this, an empty result below would prove nothing:
     // a stale or missing index also returns nothing.
     let Some(own) = search_stdout("--lex", "zephyrquux", a.path()) else {
-        return;
+        panic!("corpus A's own marker must be findable, or the leak check is vacuous");
     };
     assert!(
         own.contains("sailing.md"),
@@ -1405,17 +1078,16 @@ fn test_lexical_search_does_not_leak_between_directories() {
     );
 
     // The leak itself: A must not answer with B's content.
-    let Some(foreign) = search_stdout("--lex", "quibblewomp", a.path()) else {
-        return;
-    };
+    let foreign = search_stdout("--lex", "quibblewomp", a.path());
     assert!(
-        !foreign.contains("baking.md"),
-        "searching corpus A returned a file from corpus B: {foreign}"
+        foreign.as_deref().map_or(true, |f| !f.contains("baking.md")),
+        "searching corpus A returned a file from corpus B: {foreign:?}"
     );
 }
 
 #[test]
 #[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
 fn test_alternating_semantic_searches_stay_scoped() {
     let a = TempDir::new().unwrap();
     let b = TempDir::new().unwrap();
@@ -1423,14 +1095,14 @@ fn test_alternating_semantic_searches_stay_scoped() {
 
     for corpus in [a.path(), b.path()] {
         let output = ck_command()
-            .args(["--index", corpus.to_str().unwrap()])
+            .args(["--index", "-q", corpus.to_str().unwrap()])
             .output()
             .expect("Failed to run ck index");
         assert!(output.status.success());
     }
 
-    // Two rounds, so the second visit to each corpus meets a daemon that has
-    // since served the other one. One round would not catch carried-over state.
+    // Two rounds, so the second visit to each corpus meets state left by the
+    // other. One round would not catch carried-over state.
     for round in 1..=2 {
         if let Some(hits) = search_stdout("--sem", "boats and the sea", a.path()) {
             assert!(

@@ -440,7 +440,11 @@ mod install_tests {
 
     fn aged(path: &std::path::Path) {
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 24 * 60 * 60);
-        std::fs::File::open(path)
+        // write-capable handle: a read-only one cannot set timestamps on
+        // Windows (Access denied), and unix does not care either way.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
             .unwrap()
             .set_modified(old)
             .unwrap();

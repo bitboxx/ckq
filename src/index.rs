@@ -403,7 +403,11 @@ mod tests {
         let path = dir.path().join("fake.md");
         std::fs::write(&path, &bytes).unwrap();
         let when = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
-        std::fs::File::open(&path)
+        // write-capable handle: a read-only one cannot set timestamps on
+        // Windows (Access denied), and unix does not care either way.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
             .unwrap()
             .set_modified(when)
             .unwrap();
@@ -431,7 +435,9 @@ mod tests {
         assert_eq!(report.removed, 0, "{report:?}");
 
         // Touch the file and the mismatch shows up again.
-        std::fs::File::open(&path)
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
             .unwrap()
             .set_modified(std::time::SystemTime::now())
             .unwrap();

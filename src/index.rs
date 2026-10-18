@@ -84,24 +84,34 @@ pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
     // vectors live in a different space and must not be mixed. A rebuild
     // discards the old stats too, so every file is probed afresh.
     let mut known = std::collections::HashMap::new();
-    if let Some(store) = Store::open_read(corpus)? {
-        let existing = store.meta()?;
-        if existing.signature != meta.signature {
-            if !opts.quiet {
-                eprintln!(
-                    "index model changed from {} to {}; rebuilding",
-                    existing.model_alias, meta.model_alias
-                );
+    // The read connection must be gone before `clean` removes the store:
+    // on Windows a file an open handle holds cannot be deleted, and the
+    // sharing violation is the whole difference from unix's unlink.
+    let rebuild = match Store::open_read(corpus)? {
+        Some(store) => {
+            let existing = store.meta()?;
+            if existing.signature != meta.signature {
+                if !opts.quiet {
+                    eprintln!(
+                        "index model changed from {} to {}; rebuilding",
+                        existing.model_alias, meta.model_alias
+                    );
+                }
+                true
+            } else {
+                known = store
+                    .files()
+                    .context("files")?
+                    .into_iter()
+                    .map(|(rel, rec)| (rel, (rec.size, rec.mtime_ns)))
+                    .collect();
+                false
             }
-            clean(corpus)?;
-        } else {
-            known = store
-                .files()
-                .context("files")?
-                .into_iter()
-                .map(|(rel, rec)| (rel, (rec.size, rec.mtime_ns)))
-                .collect();
         }
+        None => false,
+    };
+    if rebuild {
+        clean(corpus)?;
     }
 
     // Files whose stat the index vouches for are not opened (see

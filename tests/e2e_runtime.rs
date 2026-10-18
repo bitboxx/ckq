@@ -7,6 +7,7 @@ mod common;
 
 use common::{Corpus, run_err, run_ok};
 use serial_test::serial;
+#[cfg(unix)]
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

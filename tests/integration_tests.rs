@@ -999,8 +999,10 @@ fn write_two_corpora(a: &Path, b: &Path) {
     .unwrap();
 }
 
-/// Run a search and hand back stdout; the tests that call this have indexed
-/// `dir` first, and the marker queries always match.
+/// Run a search and hand back stdout, or `None` when the process exited
+/// non-zero. That covers a failed run *and* grep's exit 1 on no matches, so
+/// a caller proving absence must treat `None` as "not found", while a caller
+/// proving presence must panic on it: an empty hand proves nothing.
 fn search_stdout(mode: &str, query: &str, dir: &Path) -> Option<String> {
     let output = ckq_command()
         .args([mode, query, dir.to_str().unwrap()])
@@ -1105,18 +1107,31 @@ fn test_alternating_semantic_searches_stay_scoped() {
     // Two rounds, so the second visit to each corpus meets state left by the
     // other. One round would not catch carried-over state.
     for round in 1..=2 {
-        if let Some(hits) = search_stdout("--sem", "boats and the sea", a.path()) {
-            assert!(
-                !hits.contains("baking.md"),
-                "round {round}: corpus A returned a file from corpus B"
-            );
-        }
-        if let Some(hits) = search_stdout("--sem", "bread and yeast", b.path()) {
-            assert!(
-                !hits.contains("sailing.md"),
-                "round {round}: corpus B returned a file from corpus A"
-            );
-        }
+        // Positive controls first: each corpus must answer its own query at
+        // all, or the leak checks below would pass vacuously — a failed or
+        // empty search proves nothing about scoping.
+        let Some(a_hits) = search_stdout("--sem", "boats and the sea", a.path()) else {
+            panic!("round {round}: corpus A must answer its own query");
+        };
+        assert!(
+            a_hits.contains("sailing.md"),
+            "round {round}: corpus A must find its own file"
+        );
+        assert!(
+            !a_hits.contains("baking.md"),
+            "round {round}: corpus A returned a file from corpus B"
+        );
+        let Some(b_hits) = search_stdout("--sem", "bread and yeast", b.path()) else {
+            panic!("round {round}: corpus B must answer its own query");
+        };
+        assert!(
+            b_hits.contains("baking.md"),
+            "round {round}: corpus B must find its own file"
+        );
+        assert!(
+            !b_hits.contains("sailing.md"),
+            "round {round}: corpus B returned a file from corpus A"
+        );
     }
 }
 

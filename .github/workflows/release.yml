@@ -171,14 +171,16 @@ jobs:
             echo "BIN_DIR=target/${{ matrix.target }}/release" >> "$GITHUB_ENV"
           fi
 
-      - name: Build release binary
-        shell: bash
-        run: |
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            cargo build --locked --release
-          else
-            cargo build --locked --release --target ${{ matrix.target }}
-          fi
+      # cargo must run under the default shell on Windows (pwsh): under
+      # bash, link.exe resolves to Git's coreutils link and the build
+      # scripts cannot link.
+      - name: Build release binary (Windows)
+        if: runner.os == 'Windows'
+        run: cargo build --locked --release
+
+      - name: Build release binary (Unix)
+        if: runner.os != 'Windows'
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Sign macOS binary (ad-hoc)
         if: startsWith(matrix.target, 'x86_64-apple-darwin') || startsWith(matrix.target, 'aarch64-apple-darwin')

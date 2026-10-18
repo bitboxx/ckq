@@ -579,7 +579,12 @@ mod tests {
         let bound = socket_ident(&path);
         assert_eq!(socket_ident(&path), bound);
 
-        std::mem::drop(listener);
+        // The theft as `serve` sees it: the file goes while our listener
+        // still holds the old inode open, so that inode cannot be recycled
+        // and the replacement is a different file. Dropping the listener
+        // first would free the inode, and some filesystems (the CI
+        // runners' overlayfs among them) hand the very next file at the
+        // same path the same (dev, ino) pair — the observed CI failure.
         std::fs::remove_file(&path).unwrap();
         assert_eq!(socket_ident(&path), None, "an unlinked socket is gone");
 
@@ -590,6 +595,7 @@ mod tests {
             "a fresh bind on the same path is not the old socket"
         );
         drop(replacement);
+        drop(listener);
     }
 
     #[test]

@@ -25,13 +25,12 @@ fn cached_gguf() -> PathBuf {
         .join(".cache/ckq/models")
         .join("models--ggml-org--embeddinggemma-300M-qat-q4_0-GGUF")
         .join("snapshots");
-    let found = std::fs::read_dir(&snapshots)
+    std::fs::read_dir(&snapshots)
         .expect("the model cache is populated (run any e2e suite first)")
         .flatten()
         .map(|rev| rev.path().join("embeddinggemma-300M-qat-Q4_0.gguf"))
         .find(|path| path.is_file())
-        .expect("the gemma-q4 GGUF in the cache");
-    found
+        .expect("the gemma-q4 GGUF in the cache")
 }
 
 /// A replaced `CKQ_GGUF_FILE` must not keep the old daemon's socket key, and
@@ -51,7 +50,8 @@ fn replaced_weights_get_a_new_daemon_and_a_refused_search() {
     std::os::unix::fs::symlink(&real, &trial).unwrap();
 
     let mut cmd = corpus.ckq();
-    cmd.env("CKQ_GGUF_FILE", &trial).args(["--index", "-q", "."]);
+    cmd.env("CKQ_GGUF_FILE", &trial)
+        .args(["--index", "-q", "."]);
     run_ok(&mut cmd);
 
     let mut cmd = corpus.ckq();
@@ -67,7 +67,10 @@ fn replaced_weights_get_a_new_daemon_and_a_refused_search() {
         .args(["--daemon-socket", "gemma-q4"]);
     let out = run_ok(&mut cmd);
     let with_override = PathBuf::from(String::from_utf8(out.stdout).unwrap().trim());
-    assert!(with_override.exists(), "the override search started a daemon");
+    assert!(
+        with_override.exists(),
+        "the override search started a daemon"
+    );
 
     // Replace the file behind the same path: same name, other bytes.
     std::fs::remove_file(&trial).unwrap();
@@ -123,7 +126,7 @@ fn a_closing_daemon_is_fallen_back_from() {
     });
 
     let out = run_ok(
-        &mut corpus
+        corpus
             .ckq()
             .args(["--sem", "stew", "--jsonl", "--no-snippet", "-q", "."]),
     );
@@ -165,12 +168,14 @@ fn a_silent_daemon_times_out_and_falls_back() {
     });
 
     let start = Instant::now();
-    let out = run_ok(
-        &mut corpus
-            .ckq()
-            .env("CKQ_DAEMON_TIMEOUT_SECS", "2")
-            .args(["--sem", "stew", "--jsonl", "--no-snippet", "-q", "."]),
-    );
+    let out = run_ok(corpus.ckq().env("CKQ_DAEMON_TIMEOUT_SECS", "2").args([
+        "--sem",
+        "stew",
+        "--jsonl",
+        "--no-snippet",
+        "-q",
+        ".",
+    ]));
     // Long enough for the 2 s timeout to have fired, short enough that no
     // 120 s default could have been waited out.
     assert!(

@@ -81,7 +81,8 @@ mod resolve {
     fn an_empty_cache_names_the_download_step() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(
-            dir.path().join("models--ggml-org--embeddinggemma-300M-qat-q4_0-GGUF/snapshots"),
+            dir.path()
+                .join("models--ggml-org--embeddinggemma-300M-qat-q4_0-GGUF/snapshots"),
         )
         .unwrap();
         let (ok, _, stderr) = run(dir.path(), "gemma-q4");

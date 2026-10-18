@@ -440,7 +440,10 @@ mod install_tests {
 
     fn aged(path: &std::path::Path) {
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 24 * 60 * 60);
-        std::fs::File::open(path).unwrap().set_modified(old).unwrap();
+        std::fs::File::open(path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
     }
 
     /// A temp older than a day is a crashed extraction's leftover — nothing
@@ -505,7 +508,6 @@ mod gguf_cache_tests {
         }
     }
 
-
     /// The Hugging Face cache layout hf-hub serves offline: `refs/main`
     /// names the commit, `snapshots/<commit>/<file>` holds the bytes.
     fn fake_cache(dir: &std::path::Path, bytes: &[u8]) {
@@ -513,8 +515,11 @@ mod gguf_cache_tests {
         std::fs::create_dir_all(repo.join("refs")).unwrap();
         std::fs::create_dir_all(repo.join("snapshots").join("deadbeef")).unwrap();
         std::fs::write(repo.join("refs").join("main"), "deadbeef").unwrap();
-        std::fs::write(repo.join("snapshots").join("deadbeef").join("model.gguf"), bytes)
-            .unwrap();
+        std::fs::write(
+            repo.join("snapshots").join("deadbeef").join("model.gguf"),
+            bytes,
+        )
+        .unwrap();
     }
     #[test]
     fn a_cached_gguf_is_verified_against_the_registry() {

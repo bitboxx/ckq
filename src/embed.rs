@@ -85,7 +85,12 @@ pub struct LlamaEmbedder {
 /// handing back the wrong one silently discarded the caller's `device` —
 /// the channel to its thread, its dimensionality and the thread's handle
 /// (for the ordered teardown at shutdown).
-type Worker = ((&'static str, Device), Sender<Job>, usize, thread::JoinHandle<()>);
+type Worker = (
+    (&'static str, Device),
+    Sender<Job>,
+    usize,
+    thread::JoinHandle<()>,
+);
 static WORKERS: LazyLock<Mutex<Vec<Worker>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
 /// The llama.cpp backend, initialised once per process: a second
@@ -231,12 +236,13 @@ fn start_worker(
 /// ggml aborts from a static destructor once the process is already past its
 /// last line. Call it once, last thing, before the process exits.
 pub fn shutdown() {
-    let draining: Vec<thread::JoinHandle<()>> = WORKERS
-        .lock()
-        .expect("worker registry")
-        .drain(..)
-        .map(|(_, _, _, handle)| handle)
-        .collect();
+    // Poison-tolerant on purpose: a test that panicked while holding the
+    // registry must not turn every later teardown into an abort from the
+    // exit hook — the workers still need joining either way.
+    let recover = |poisoned: std::sync::PoisonError<_>| poisoned.into_inner();
+    let mut workers = WORKERS.lock().unwrap_or_else(recover);
+    let draining: Vec<thread::JoinHandle<()>> =
+        workers.drain(..).map(|(_, _, _, handle)| handle).collect();
     for handle in draining {
         let _ = handle.join();
     }
@@ -435,15 +441,32 @@ mod device_tests {
     #[ignore = "e2e: loads the default model twice; run with --include-ignored"]
     fn the_worker_cache_is_keyed_by_alias_and_device() {
         let spec = crate::models::resolve(crate::models::DEFAULT_ALIAS).unwrap();
-        let before = WORKERS.lock().expect("worker registry").len();
+        // Keyed on pairs, not on the registry's length: another test in
+        // this binary (index::tests embeds a file) loads the model on its
+        // own thread while this one runs.
+        let keys = || -> Vec<(String, Device)> {
+            WORKERS
+                .lock()
+                .expect("worker registry")
+                .iter()
+                .map(|((alias, device), ..)| (alias.to_string(), *device))
+                .collect()
+        };
         let mut cpu = LlamaEmbedder::load(spec, Device::Cpu).unwrap();
-        assert_eq!(WORKERS.lock().expect("worker registry").len(), before + 1);
         let mut gpu = LlamaEmbedder::load(spec, Device::Gpu).unwrap();
-        assert_eq!(WORKERS.lock().expect("worker registry").len(), before + 2);
+        let after_two = keys();
+        assert!(
+            after_two.contains(&(spec.alias.to_string(), Device::Cpu)),
+            "the CPU load left no worker: {after_two:?}"
+        );
+        assert!(
+            after_two.contains(&(spec.alias.to_string(), Device::Gpu)),
+            "a second device reused the first device's worker: {after_two:?}"
+        );
         let mut again = LlamaEmbedder::load(spec, Device::Cpu).unwrap();
         assert_eq!(
-            WORKERS.lock().expect("worker registry").len(),
-            before + 2,
+            keys(),
+            after_two,
             "a repeat (alias, device) must reuse its worker"
         );
         // All three handles embed: the two workers answer, and the reused

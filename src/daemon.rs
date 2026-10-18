@@ -538,7 +538,6 @@ fn reap_stale(own: &Path) {
 mod tests {
     use super::*;
 
-
     /// The socket key follows the weights, not just the path: a trial file
     /// replaced at the same path must not share a daemon with the bytes the
     /// old one loaded. Same file, same key; different bytes, different key.

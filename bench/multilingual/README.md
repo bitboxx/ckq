@@ -33,3 +33,6 @@ when air is trapped inside, and the answer is a Hindi document about wedging cla
 never mentions a kiln. The other asks in Hindi how to decide sowing depth, and the answer
 is an Arabic document that gives the rule as twice the seed's diameter. Both need a step of
 inference rather than a closer match, which is the honest limit of a bi-encoder.
+
+`tests/e2e_quality.rs` holds the bar in CI: `--sem` and `--hybrid` with the
+default model must keep 34/40 rank 1 and MRR@5 0.90 (`cargo e2e`).

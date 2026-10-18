@@ -5,7 +5,7 @@
 #   scripts/build-onefile.sh gemma-q4
 #
 # The GGUF is resolved in ~/.cache/ckq/models (the Hugging Face cache layout
-# ckq downloads into) the way hf-hub resolves it -- the revision refs/main
+# ckq downloads into) the way hf-hub resolves it: the revision refs/main
 # names, not whichever snapshot sorts first; see scripts/resolve-gguf.sh. If
 # it is not there yet, run ckq --index once on any folder to download it.
 set -euo pipefail

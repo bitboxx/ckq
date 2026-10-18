@@ -159,16 +159,34 @@ fn socket_dir() -> PathBuf {
 /// rebuild replaced — and a stale daemon never serves a new chunker or prompt
 /// it predates.
 /// Identity of this build and of the weights it would load: the executable's
-/// path, size and mtime, plus `CKQ_GGUF_FILE` when set. The override has to be
-/// in the key: without it a daemon already holding the registry's GGUF would
-/// answer queries for a trial file, and the query and document vectors would
-/// come from different weights. The daemon inherits the variable from the
-/// client that spawns it, so both sides derive the same socket.
+/// path, size and mtime, plus `CKQ_GGUF_FILE` — its path, size and mtime —
+/// when set. The override has to be in the key: without it a daemon already
+/// holding the registry's GGUF would answer queries for a trial file, and the
+/// query and document vectors would come from different weights. The size and
+/// mtime have to be there too, for the same reason: a trial file replaced at
+/// the same path is different weights, and a daemon that loaded the old bytes
+/// must not serve the new ones — the same identity `weights_marker` gives the
+/// index signature. The daemon inherits the variable from the client that
+/// spawns it, so both sides derive the same socket.
 fn exe_stamp() -> String {
+    exe_stamp_with(std::env::var_os("CKQ_GGUF_FILE").as_deref())
+}
+
+fn exe_stamp_with(gguf: Option<&std::ffi::OsStr>) -> String {
     let mut hasher = blake3::Hasher::new();
-    if let Some(gguf) = std::env::var_os("CKQ_GGUF_FILE") {
+    if let Some(gguf) = gguf {
         hasher.update(b"gguf:");
         hasher.update(gguf.to_string_lossy().as_bytes());
+        if let Ok(meta) = std::fs::metadata(gguf) {
+            hasher.update(&meta.len().to_le_bytes());
+            if let Some(mtime) = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            {
+                hasher.update(&mtime.as_nanos().to_le_bytes());
+            }
+        }
         hasher.update(b"\0");
     }
     if let Ok(exe) = std::env::current_exe() {
@@ -451,6 +469,36 @@ fn reap_stale(own: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    /// The socket key follows the weights, not just the path: a trial file
+    /// replaced at the same path must not share a daemon with the bytes the
+    /// old one loaded. Same file, same key; different bytes, different key.
+    #[test]
+    fn the_stamp_tracks_the_override_file_not_just_its_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("trial.gguf");
+        std::fs::write(&a, "weights").unwrap();
+        let stamp = exe_stamp_with(Some(a.as_os_str()));
+        assert_eq!(stamp, exe_stamp_with(Some(a.as_os_str())));
+
+        // Same path, new bytes: the replaced file.
+        std::fs::write(&a, "other weights entirely").unwrap();
+        assert_ne!(
+            stamp,
+            exe_stamp_with(Some(a.as_os_str())),
+            "a replaced override must change the key"
+        );
+
+        // A different path with identical bytes still differs by path.
+        let b = dir.path().join("other.gguf");
+        std::fs::write(&b, "weights").unwrap();
+        std::fs::File::open(&b)
+            .unwrap()
+            .set_modified(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
+        assert_ne!(stamp, exe_stamp_with(Some(b.as_os_str())));
+    }
 
     #[test]
     fn wait_for_client_times_out_with_nobody_there() {

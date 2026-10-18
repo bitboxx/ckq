@@ -347,6 +347,23 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             }
             let meta = store.meta()?;
             let spec = models::resolve(&meta.model_repo)?;
+            // The stored signature says what the index's vectors are; the
+            // one this build computes now says what it would embed a query
+            // with. They differ when CKQ_GGUF_FILE was repointed (or the
+            // file replaced) since indexing, or when the prompts, pooling or
+            // chunker changed under the alias: querying across that mixes
+            // two models' spaces, so refuse and name the rebuild. --index
+            // detects the same mismatch and rebuilds on its own.
+            let now = models::signature(spec);
+            if now != meta.signature {
+                anyhow::bail!(
+                    "the index at {} was built with different weights or settings \
+                     (signature {} != {}); run `ckq --index` to rebuild it",
+                    corpus.index_dir().display(),
+                    meta.signature,
+                    now
+                );
+            }
             let query = search::Query {
                 text: pattern.clone(),
                 terms: cli.terms.clone(),

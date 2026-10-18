@@ -110,19 +110,38 @@ impl Embedder for DaemonEmbedder {
     }
 
     fn embed_query(&mut self, text: &str) -> Result<Vec<f32>> {
-        request(&mut self.stream, text)
+        match request(&mut self.stream, text) {
+            Ok(vector) => Ok(vector),
+            // A daemon that accepted and then failed us — closed the
+            // connection, sat silent past the timeout, or replied with
+            // nonsense. A daemon that could not be reached was fallen back
+            // from at connect time; this is the same fallback one exchange
+            // later, so one sick daemon never fails or hangs a search.
+            Err(e) => {
+                eprintln!(
+                    "ckq: warning: the query daemon failed ({e:#}); \
+                     embedding the query in this process instead"
+                );
+                load_in_process(self.spec)?.embed_query(text)
+            }
+        }
     }
 }
 
 /// One exchange: the bare query as a JSON line out, one JSON line back,
-/// `{"vector": [...]}` or `{"error": "..."}`. No read timeout: the daemon
-/// binds before it loads the model, so a first request may legitimately block
-/// for the whole load. Daemon-side errors come back as errors, not as
-/// silence.
+/// `{"vector": [...]}` or `{"error": "..."}`. The read has a generous
+/// timeout: the daemon binds before it loads the model, so a first request
+/// may legitimately block for the whole cold load, which
+/// [`DEFAULT_REQUEST_TIMEOUT`] covers — but a daemon that accepted and then
+/// went silent must not hang the search forever. Daemon-side errors come
+/// back as errors, not as silence.
 fn request(stream: &mut UnixStream, query: &str) -> Result<Vec<f32>> {
     let payload = json!({ "query": query });
     writeln!(stream, "{payload}").context("writing to the query daemon")?;
     stream.flush()?;
+    stream
+        .set_read_timeout(Some(request_timeout()))
+        .context("arming the query daemon timeout")?;
 
     let mut reader = BufReader::new(stream.try_clone().context("sharing the daemon stream")?);
     let mut line = String::new();
@@ -137,6 +156,20 @@ fn request(stream: &mut UnixStream, query: &str) -> Result<Vec<f32>> {
         return Err(anyhow!("query daemon: {err}"));
     }
     serde_json::from_value(reply["vector"].clone()).context("parsing the daemon's vector")
+}
+
+/// The client's wait for a reply: 120 s by default, or
+/// `CKQ_DAEMON_TIMEOUT_SECS` (the e2e tests set it low). Two minutes is
+/// deliberately far above a cold model load on a slow machine — the load
+/// window is exactly why the daemon binds before loading.
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+fn request_timeout() -> Duration {
+    std::env::var("CKQ_DAEMON_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_REQUEST_TIMEOUT)
 }
 
 /// Where the sockets live: `~/.cache/ckq/sockets`, beside the model cache,

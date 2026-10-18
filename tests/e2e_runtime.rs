@@ -100,3 +100,91 @@ fn replaced_weights_get_a_new_daemon_and_a_refused_search() {
     common::kill_daemon(&repointed);
 }
 
+/// A daemon that accepts and closes must not fail the search: the client
+/// warns and embeds in its own process, the same fallback a daemon that
+/// cannot be started gets.
+#[test]
+#[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+#[cfg(unix)]
+fn a_closing_daemon_is_fallen_back_from() {
+    let corpus = runtime_corpus();
+    corpus.index();
+    let socket = common::daemon_socket("gemma-q4");
+    common::kill_daemon(&socket);
+    let _ = std::fs::remove_file(&socket);
+
+    let listener = UnixListener::bind(&socket).expect("bind the fake daemon");
+    let faker = std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            drop(stream); // accept, then close: the half-dead daemon
+            std::thread::sleep(Duration::from_secs(5));
+        }
+    });
+
+    let out = run_ok(
+        &mut corpus
+            .ckq()
+            .args(["--sem", "stew", "--jsonl", "--no-snippet", "-q", "."]),
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("embedding the query in this process"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("stew.md"),
+        "the fallback search must still find the file"
+    );
+
+    let _ = faker.join();
+    let _ = std::fs::remove_file(&socket);
+}
+
+/// A daemon that accepts and goes silent must not hang the search: the
+/// client's read times out and the same in-process fallback runs.
+#[test]
+#[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+#[cfg(unix)]
+fn a_silent_daemon_times_out_and_falls_back() {
+    let corpus = runtime_corpus();
+    corpus.index();
+    let socket = common::daemon_socket("gemma-q4");
+    common::kill_daemon(&socket);
+    let _ = std::fs::remove_file(&socket);
+
+    let listener = UnixListener::bind(&socket).expect("bind the fake daemon");
+    let faker = std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            use std::io::{BufRead, BufReader};
+            let mut line = String::new();
+            let _ = BufReader::new(stream).read_line(&mut line); // take the query
+            std::thread::sleep(Duration::from_secs(5)); // ... and never answer
+        }
+    });
+
+    let start = Instant::now();
+    let out = run_ok(
+        &mut corpus
+            .ckq()
+            .env("CKQ_DAEMON_TIMEOUT_SECS", "2")
+            .args(["--sem", "stew", "--jsonl", "--no-snippet", "-q", "."]),
+    );
+    // Long enough for the 2 s timeout to have fired, short enough that no
+    // 120 s default could have been waited out.
+    assert!(
+        start.elapsed() < Duration::from_secs(60),
+        "the silent daemon was waited out"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("embedding the query in this process"),
+        "stderr: {stderr}"
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("stew.md"));
+
+    let _ = faker.join();
+    let _ = std::fs::remove_file(&socket);
+}
+

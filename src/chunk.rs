@@ -4,7 +4,8 @@
 //! size; other text packs whole lines. Sizes match the old engine (1,024-token
 //! target, 200-token overlap) so the vectors stay comparable with what the
 //! benchmarks measured. Token counts are a character-based estimate, not a
-//! real tokenizer: the model's own context (2,048) leaves room for the error.
+//! real tokenizer: per-script rates chosen to err high, so the gap the
+//! estimate still leaves is covered by the model's own context (2,048).
 
 use crate::corpus::RelPath;
 
@@ -237,12 +238,30 @@ fn pack(mut units: Vec<Unit<'_>>) -> Vec<Unit<'_>> {
     chunks
 }
 
-/// Estimated token count, as the old engine counted.
+/// Estimated token count. A character-based guess, deliberately lopsided:
+/// underestimating is what lets a chunk past the model's context, where embed
+/// truncates it, so each class of characters gets a rate on the safe side of
+/// what the real tokenizer measures (emoji ≈1 token per character, Arabic and
+/// the Indic scripts ≈3 characters per token) rather than the English ~4.8
+/// the old engine assumed for everything but CJK.
 pub fn estimate_tokens(text: &str) -> usize {
     if text.is_empty() {
         return 0;
     }
-    let char_count = text.chars().count();
+    let mut wide = 0usize;
+    let mut dense = 0usize;
+    let mut symbol = 0usize;
+    for c in text.chars() {
+        let code = c as u32;
+        if is_wide_script(code) {
+            wide += 1;
+        } else if is_dense_script(code) {
+            dense += 1;
+        } else if is_symbol_ish(code) {
+            symbol += 1;
+        }
+    }
+    let rest = text.chars().count() - wide - dense - symbol;
     let code_indicators = count_code_indicators(text);
     let total_lines = text.lines().count().max(1);
     let code_density = code_indicators as f32 / total_lines as f32;
@@ -253,32 +272,65 @@ pub fn estimate_tokens(text: &str) -> usize {
     } else {
         4.8 // natural language
     };
-    let wide = count_wide_script_chars(text);
-    let narrow = char_count - wide;
-    let tokens = wide as f32 / 1.2 + narrow as f32 / chars_per_token;
+    // Wide ≈1.2 chars/token, dense ≈2 (measured ≈3), symbols and the
+    // joiners emoji ride on ≈1 each, everything else at the Latin rate.
+    let tokens =
+        wide as f32 / 1.2 + dense as f32 / 2.0 + symbol as f32 + rest as f32 / chars_per_token;
     tokens.ceil() as usize
 }
 
 /// Characters from scripts whose tokenizers spend roughly one token per
 /// character: Han, kana, Hangul, Thai, Lao, Khmer and Myanmar.
-fn count_wide_script_chars(text: &str) -> usize {
-    fn is_wide(code: u32) -> bool {
-        matches!(code,
-            0x3400..=0x4DBF     // CJK Extension A
-            | 0x4E00..=0x9FFF   // CJK Unified
-            | 0xF900..=0xFAFF   // CJK Compatibility Ideographs
-            | 0x20000..=0x2A6DF // CJK Extension B
-            | 0x3040..=0x30FF   // Hiragana, Katakana
-            | 0x1100..=0x11FF   // Hangul Jamo
-            | 0x3130..=0x318F   // Hangul Compatibility Jamo
-            | 0xAC00..=0xD7AF   // Hangul Syllables
-            | 0x0E00..=0x0E7F   // Thai
-            | 0x0E80..=0x0EFF   // Lao
-            | 0x1780..=0x17FF   // Khmer
-            | 0x1000..=0x109F   // Myanmar
-        )
-    }
-    text.chars().filter(|c| is_wide(*c as u32)).count()
+fn is_wide_script(code: u32) -> bool {
+    matches!(code,
+        0x3400..=0x4DBF     // CJK Extension A
+        | 0x4E00..=0x9FFF   // CJK Unified
+        | 0xF900..=0xFAFF   // CJK Compatibility Ideographs
+        | 0x20000..=0x2A6DF // CJK Extension B
+        | 0x3040..=0x30FF   // Hiragana, Katakana
+        | 0x1100..=0x11FF   // Hangul Jamo
+        | 0x3130..=0x318F   // Hangul Compatibility Jamo
+        | 0xAC00..=0xD7AF   // Hangul Syllables
+        | 0x0E00..=0x0E7F   // Thai
+        | 0x0E80..=0x0EFF   // Lao
+        | 0x1780..=0x17FF   // Khmer
+        | 0x1000..=0x109F   // Myanmar
+    )
+}
+
+/// Scripts the old engine left at the Latin rate although the tokenizer
+/// spends ~3 characters per token on them: counted at 2, the safe side of
+/// every measurement.
+fn is_dense_script(code: u32) -> bool {
+    matches!(code,
+        0x0530..=0x05FF   // Armenian, Hebrew
+        | 0x0600..=0x08FF // Arabic, Syriac, Thaana, N'Ko
+        | 0x0900..=0x0DFF // Devanagari through Sinhala
+        | 0x0F00..=0x0FFF // Tibetan
+        | 0x10A0..=0x10FF // Georgian
+        | 0x1200..=0x139F // Ethiopic
+        | 0x13A0..=0x167F // Cherokee, Canadian Aboriginal
+        | 0xFB50..=0xFDFF // Arabic Presentation Forms-A
+        | 0xFE70..=0xFEFF // Arabic Presentation Forms-B
+    )
+}
+
+/// Emoji, pictographs, and the joiners and selectors they ride on: measured
+/// at one token per character (a few cost more), never lumped in with
+/// English prose.
+fn is_symbol_ish(code: u32) -> bool {
+    matches!(code,
+        0x200D            // zero-width joiner
+        | 0x20E3          // combining enclosing keycap
+        | 0xFE0F          // variation selector-16
+        | 0x2190..=0x21FF // arrows
+        | 0x2300..=0x23FF // misc technical
+        | 0x25A0..=0x25FF // geometric shapes
+        | 0x2600..=0x27BF // misc symbols, dingbats
+        | 0x2B00..=0x2BFF // misc symbols and arrows
+        | 0xFF00..=0xFF5F // fullwidth forms
+        | 0x1F000..=0x1FFFF // emoji, pictographs, regional indicators
+    )
 }
 
 fn count_code_indicators(text: &str) -> usize {
@@ -485,5 +537,46 @@ mod tests {
         assert!(estimate_tokens(cjk) >= 9, "wide script undercounted");
         assert!(estimate_tokens(latin) >= 4);
         assert_eq!(estimate_tokens(""), 0);
+    }
+
+    #[test]
+    fn token_estimate_does_not_undercount_emoji_or_dense_scripts() {
+        // Measured on the real gemma tokenizer: emoji ≈1 token per character,
+        // Arabic ≈3 characters per token. The old Latin-only rates gave 4.8
+        // characters per token to both, so an at-target chunk of emoji
+        // tokenized to ~5,000 tokens and embed truncated it.
+        let emoji: String = "😀".repeat(100);
+        assert!(estimate_tokens(&emoji) >= 100, "emoji undercounted");
+        let arabic: String = "ع".repeat(4_500);
+        assert!(
+            estimate_tokens(&arabic) >= 4_500 / 2,
+            "Arabic undercounted: {}",
+            estimate_tokens(&arabic)
+        );
+        let devanagari: String = "क".repeat(100);
+        assert!(
+            estimate_tokens(&devanagari) >= 50,
+            "Devanagari undercounted"
+        );
+    }
+
+    #[test]
+    fn latin_and_cjk_estimates_stay_where_they_were() {
+        // The bench's Latin and CJK documents must keep packing exactly as
+        // before; only the newly classified scripts may estimate higher.
+        assert_eq!(estimate_tokens("hello world of text"), 4);
+        assert!(estimate_tokens("山中的寺庙藏于云雾之间") >= 9);
+    }
+
+    #[test]
+    fn an_emoji_line_cannot_slip_past_the_context() {
+        // 3,000 emoji estimated at the old Latin rate fit one "target-size"
+        // chunk that really tokenizes near 3,000 tokens.
+        let text = format!("{}\n", "😀".repeat(3_000));
+        let chunks = chunk(&rel("emoji.txt"), &text);
+        assert!(chunks.len() > 1, "one chunk for 3,000 emoji");
+        for c in &chunks {
+            assert!(estimate_tokens(&text[c.byte_start..c.byte_end]) <= TARGET_TOKENS);
+        }
     }
 }

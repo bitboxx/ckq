@@ -227,12 +227,16 @@ jobs:
       - name: Warm the model cache
         shell: bash
         run: |
-          d=$(mktemp -d)
-          echo "a line to embed" > "$d/warm.md"
           warm() {
+            # A fresh directory per model: warming must not exercise the
+            # model-switch rebuild, only the download.
+            local d
+            d=$(mktemp -d)
+            echo "a line to embed" > "$d/warm.md"
             for attempt in 1 2 3; do
               if target/release/ckq --index -q --model "$1" "$d" >/dev/null 2>&1; then
                 echo "$1: in the cache"
+                rm -rf "$d"
                 return 0
               fi
               echo "$1: download attempt $attempt failed; retrying in 10s"

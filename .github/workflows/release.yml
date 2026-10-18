@@ -1,6 +1,13 @@
 # A release is a tag X.Y.Z (no v prefix) that matches the version in
 # Cargo.toml. Binaries only: no crates.io, no npm.
 #
+# workflow_dispatch runs the same matrix as a dry run: every archive is
+# built, smoke-tested and uploaded as a workflow artifact, and no release is
+# created, uploaded to or published. A tag run additionally creates the
+# draft release, uploads the archives to it, and publishes it with the
+# CHANGELOG section for that version as its notes plus one combined
+# SHA256SUMS file.
+#
 # Linux and Windows binaries build with Vulkan on (the cargo default away
 # from macOS), so the runners need the Vulkan build dependencies: apt
 # packages on Linux (native x86_64 and arm runners alike) and the LunarG SDK
@@ -16,6 +23,7 @@ on:
   push:
     tags:
       - '[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,7 +32,7 @@ env:
 jobs:
   # A tag push matches no branch filter in ckq.yaml, so nothing verified the
   # tagged commit before this workflow built and uploaded it. Gate the
-  # upload on the same checks a push to main faces.
+  # upload on the same checks a push to main faces. Runs on a dry run too.
   verify:
     name: Verify (fmt, clippy, offline tests)
     runs-on: ubuntu-latest
@@ -44,8 +52,10 @@ jobs:
       - run: cargo clippy --release --locked --all-targets -- -D warnings
       - run: cargo test --release --locked
 
+  # Tag runs only: a dry run must not create anything.
   create-release:
     name: Create GitHub Release
+    if: github.event_name == 'push'
     needs: verify
     runs-on: ubuntu-latest
     steps:
@@ -70,7 +80,7 @@ jobs:
             gh release create "${{ github.ref_name }}" \
               --title "Release ${{ github.ref_name }}" \
               --draft \
-              --generate-notes
+              --notes ""
           fi
 
   build:
@@ -87,6 +97,8 @@ jobs:
           # dependencies inside the cross image, out of our control.
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+          # Cross-compiled on an arm64 runner; the smoke test runs it through
+          # Rosetta 2 when the runner has it and skips with a message when not.
           - os: macos-latest
             target: x86_64-apple-darwin
           - os: macos-latest
@@ -133,6 +145,19 @@ jobs:
           choco install -y ninja
           echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
 
+      # The tag name on a tag run, the Cargo.toml version on a dry run, so
+      # the archives are named for the release either way.
+      - name: Determine version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            v="${{ github.ref_name }}"
+          else
+            v=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "ARCHIVE_NAME=ckq-$v-${{ matrix.target }}" >> "$GITHUB_ENV"
+
       - name: Build release binary
         run: cargo build --locked --release --target ${{ matrix.target }}
 
@@ -140,12 +165,8 @@ jobs:
         if: startsWith(matrix.target, 'x86_64-apple-darwin') || startsWith(matrix.target, 'aarch64-apple-darwin')
         run: codesign --force --sign - target/${{ matrix.target }}/release/ckq
 
-      - name: Determine archive name
-        run: echo "ARCHIVE_NAME=ckq-${{ github.ref_name }}-${{ matrix.target }}" >> "$GITHUB_ENV"
-        shell: bash
-
       - name: Create archive (Windows)
-        if: matrix.os == 'windows-latest'
+        if: runner.os == 'Windows'
         run: |
           mkdir dist
           cp target/${{ matrix.target }}/release/ckq.exe dist/
@@ -155,7 +176,7 @@ jobs:
         shell: bash
 
       - name: Create archive (Unix)
-        if: matrix.os != 'windows-latest'
+        if: runner.os != 'Windows'
         run: |
           mkdir dist
           cp target/${{ matrix.target }}/release/ckq dist/
@@ -164,32 +185,142 @@ jobs:
 
       - name: Generate SHA256
         run: |
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+          if [ "${{ runner.os }}" = "Windows" ]; then
             powershell -Command "(Get-FileHash -Algorithm SHA256 '${{ env.ARCHIVE_NAME }}.zip').Hash.ToLower() + '  ${{ env.ARCHIVE_NAME }}.zip'" > ${{ env.ARCHIVE_NAME }}.zip.sha256
-          elif [ "${{ matrix.os }}" = "macos-latest" ]; then
+          elif [ "${{ runner.os }}" = "macOS" ]; then
             shasum -a 256 ${{ env.ARCHIVE_NAME }}.tar.gz > ${{ env.ARCHIVE_NAME }}.tar.gz.sha256
           else
             sha256sum ${{ env.ARCHIVE_NAME }}.tar.gz > ${{ env.ARCHIVE_NAME }}.tar.gz.sha256
           fi
         shell: bash
 
+      # The binary links vulkan-1.dll; recent SDKs install it straight into
+      # System32, older layouts keep it in the SDK (same step as ckq.yaml).
+      - name: Locate vulkan-1.dll (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "$env:VULKAN_SDK\runtime\x64\vulkan-1.dll",
+            "$env:VULKAN_SDK\Bin\vulkan-1.dll",
+            "C:\Windows\System32\vulkan-1.dll"
+          )
+          $found = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $found) { throw "vulkan-1.dll not found in any of: $($candidates -join ', ')" }
+          Write-Host "vulkan-1.dll: $found"
+          if ($found -notlike 'C:\Windows\*') {
+            Add-Content $env:GITHUB_PATH (Split-Path $found)
+            Write-Host "Added $(Split-Path $found) to PATH"
+          }
+
+      # Run the binary we just built, on its own runner: the version line
+      # must carry the release version, and a regex search over a two-file
+      # corpus must find a known line. The x86_64 macOS binary is
+      # cross-compiled on an arm64 runner and runs through Rosetta 2; a
+      # runner without Rosetta cannot execute it, and the step says so and
+      # skips rather than fail.
+      - name: Smoke-test the binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            BIN=dist/ckq.exe
+          else
+            BIN=dist/ckq
+          fi
+          if [ "${{ matrix.target }}" = "x86_64-apple-darwin" ] && ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+            echo "smoke test skipped: this arm64 runner has no Rosetta 2 and cannot execute the x86_64-apple-darwin binary"
+            exit 0
+          fi
+          "$BIN" --version
+          "$BIN" --version | grep -qx "ckq $VERSION"
+          mkdir smoke
+          printf 'the moka pot needs a coarse grind\n' > smoke/coffee.md
+          printf 'pack a spare inner tube and a pump\n' > smoke/bike.md
+          out=$("$BIN" -F 'coarse grind' smoke)
+          printf '%s\n' "$out"
+          case "$out" in *"the moka pot needs a coarse grind"*) ;; *) echo "expected line not found" >&2; exit 1;; esac
+
+      # Always: the artifact is the dry run's product.
+      - name: Upload archive as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_NAME }}
+          path: |
+            ${{ env.ARCHIVE_NAME }}.*
+          if-no-files-found: error
+
+      # Tag runs only.
       - name: Upload release archive
+        if: github.event_name == 'push'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+          if [ "${{ runner.os }}" = "Windows" ]; then
             gh release upload "${{ github.ref_name }}" ${{ env.ARCHIVE_NAME }}.zip ${{ env.ARCHIVE_NAME }}.zip.sha256 --clobber
           else
             gh release upload "${{ github.ref_name }}" ${{ env.ARCHIVE_NAME }}.tar.gz ${{ env.ARCHIVE_NAME }}.tar.gz.sha256 --clobber
           fi
         shell: bash
 
-  publish-release:
-    name: Finalize GitHub Release
+  # Runs on dry runs too: it proves the checksums file assembles and the
+  # CHANGELOG section for the version extracts. On a dry run it only
+  # uploads SHA256SUMS as an artifact.
+  finalize:
+    name: Checksums and publish
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Publish release
+      - uses: actions/checkout@v7
+
+      - name: Determine version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            v="${{ github.ref_name }}"
+          else
+            v=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+
+      - name: Download archives
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Build SHA256SUMS
+        run: |
+          cd dist
+          ls -l
+          cat *.sha256 > ../SHA256SUMS
+          cat ../SHA256SUMS
+
+      - name: Extract release notes from CHANGELOG
+        run: |
+          awk -v ver="$VERSION" '
+            $0 == "## " ver || index($0, "## " ver " ") == 1 { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "no CHANGELOG.md section for $VERSION" >&2
+            exit 1
+          fi
+          head -5 notes.md
+
+      - name: Upload SHA256SUMS artifact (dry run)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: SHA256SUMS
+          path: SHA256SUMS
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: github.event_name == 'push'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "${{ github.ref_name }}" --draft=false --repo=${{ github.repository }}
+        run: |
+          gh release upload "${{ github.ref_name }}" SHA256SUMS --clobber
+          gh release edit "${{ github.ref_name }}" --draft=false --notes-file notes.md --repo=${{ github.repository }}

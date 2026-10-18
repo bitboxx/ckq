@@ -98,9 +98,16 @@ pub struct FileInfo {
     pub size: u64,
     /// Modification time in nanoseconds since the epoch.
     pub mtime_ns: i64,
+    /// The head could not be read (permissions, a failing disk): not the
+    /// same as binary. The file is still walked, so an index keeps its rows
+    /// and reports it skipped instead of silently treating it as deleted.
+    pub unreadable: bool,
 }
 
-/// Every indexable text file under the root, sorted by path.
+/// Every indexable text file under the root, sorted by path — plus files
+/// whose head could not be read, marked [`FileInfo::unreadable`]: dropping
+/// them here would make `--index` delete a previously indexed file over a
+/// transient permission error.
 pub fn walk(corpus: &Corpus, opts: &WalkOptions) -> Result<Vec<FileInfo>> {
     let mut builder = ignore::WalkBuilder::new(&corpus.root);
     builder
@@ -139,9 +146,11 @@ pub fn walk(corpus: &Corpus, opts: &WalkOptions) -> Result<Vec<FileInfo>> {
         let Ok(meta) = entry.metadata() else {
             continue;
         };
-        if !is_text(entry.path()) {
-            continue;
-        }
+        let unreadable = match probe(entry.path()) {
+            Probe::Text => false,
+            Probe::Binary => continue,
+            Probe::Unreadable => true,
+        };
         let mtime_ns = meta
             .modified()
             .ok()
@@ -152,20 +161,34 @@ pub fn walk(corpus: &Corpus, opts: &WalkOptions) -> Result<Vec<FileInfo>> {
             rel,
             size: meta.len(),
             mtime_ns,
+            unreadable,
         });
     }
     out.sort_by(|a, b| a.rel.cmp(&b.rel));
     Ok(out)
 }
 
+/// What reading the first 8 KiB concluded. An open or read error is its own
+/// verdict: treating it as "not text" made an unreadable file vanish from
+/// the walk, and from the index with it.
+enum Probe {
+    Text,
+    Binary,
+    Unreadable,
+}
+
 /// Read the first 8 KiB and hand them to [`looks_binary`].
-fn is_text(path: &Path) -> bool {
+fn probe(path: &Path) -> Probe {
     let mut head = [0u8; 8192];
     let n = match File::open(path).and_then(|mut f| f.read(&mut head)) {
         Ok(n) => n,
-        Err(_) => return false,
+        Err(_) => return Probe::Unreadable,
     };
-    !looks_binary(&head[..n])
+    if looks_binary(&head[..n]) {
+        Probe::Binary
+    } else {
+        Probe::Text
+    }
 }
 
 /// A file is binary when its first 8 KiB hold a NUL byte or are not UTF-8

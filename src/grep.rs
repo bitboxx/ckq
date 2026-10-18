@@ -35,20 +35,52 @@ pub struct Match {
     pub after: Vec<(usize, String)>,
 }
 
+/// The result of one regex search: the matches, and how many files in the
+/// scope could not be read. grep exits 2 when an error occurred and nothing
+/// matched; ckq does the same, and keeps exit 0 when something was found,
+/// so a wrapper that reads nonzero as "no hits" still sees its hits.
+#[derive(Debug, Clone, Default)]
+pub struct GrepOutcome {
+    pub matches: Vec<Match>,
+    /// Files in the scope that could not be read. Each already produced one
+    /// stderr warning naming it.
+    pub read_errors: usize,
+}
+
 /// Every match, in path then line order, from `scope` only: files outside it
 /// are neither read nor counted, so `--topk` limits in-scope matches alone
 /// and a file argument pays for itself, not for its parent tree. An invalid
 /// regex is an error whose message starts "Regex error".
-pub fn grep(corpus: &Corpus, opts: &GrepOptions, scope: &Scope) -> Result<Vec<Match>> {
+pub fn grep(corpus: &Corpus, opts: &GrepOptions, scope: &Scope) -> Result<GrepOutcome> {
     let re = build_regex(opts)?;
     let files = crate::walk::walk(corpus, &opts.walk)?;
     let mut out = Vec::new();
+    let mut read_errors = 0usize;
     'files: for file in files {
         if !scope.contains(&file.rel) {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(corpus.abs(&file.rel)) else {
+        if file.unreadable {
+            read_errors += 1;
+            eprintln!(
+                "ckq: warning: cannot read {}",
+                corpus.abs(&file.rel).display()
+            );
             continue;
+        }
+        let text = match std::fs::read_to_string(corpus.abs(&file.rel)) {
+            Ok(text) => text,
+            // Invalid UTF-8 past the probed head is a binary file, not an
+            // error; anything else is, and is reported the way grep would.
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => continue,
+            Err(e) => {
+                read_errors += 1;
+                eprintln!(
+                    "ckq: warning: cannot read {}: {e}",
+                    corpus.abs(&file.rel).display()
+                );
+                continue;
+            }
         };
         // (line number, byte offset of the line, display text) per line; the
         // display text is the line without its break, a prefix of the raw.
@@ -96,7 +128,10 @@ pub fn grep(corpus: &Corpus, opts: &GrepOptions, scope: &Scope) -> Result<Vec<Ma
             }
         }
     }
-    Ok(out)
+    Ok(GrepOutcome {
+        matches: out,
+        read_errors,
+    })
 }
 
 /// The compiled pattern: `-F` escapes it, `-w` wraps it in word boundaries,

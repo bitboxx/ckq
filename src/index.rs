@@ -115,6 +115,17 @@ pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
             report.unchanged += 1;
             continue;
         }
+        // A file whose head the walk could not open is skipped, not removed:
+        // its rows stay (it is in the live set below), one warning names it,
+        // and the next run that can read it embeds it again.
+        if file.unreadable {
+            report.skipped += 1;
+            eprintln!(
+                "ckq: warning: cannot read {}; keeping its indexed rows",
+                corpus.abs(&file.rel).display()
+            );
+            continue;
+        }
         match std::fs::read(corpus.abs(&file.rel)) {
             Ok(bytes) => {
                 let hash = blake3::hash(&bytes).to_hex().to_string();
@@ -150,8 +161,12 @@ pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
                 }
                 to_embed.push((rec, text, chunks));
             }
-            Err(_) => {
+            Err(e) => {
                 report.skipped += 1;
+                eprintln!(
+                    "ckq: warning: cannot read {}: {e}; keeping its indexed rows",
+                    corpus.abs(&file.rel).display()
+                );
             }
         }
     }
@@ -303,4 +318,59 @@ pub fn clean(corpus: &Corpus) -> Result<bool> {
         std::fs::remove_dir_all(&dir)?;
     }
     Ok(corpus.root.join(crate::corpus::LEGACY_INDEX_DIR).exists())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::corpus::{Corpus, RelPath};
+    use crate::store::{FileRecord, IndexMeta, Store};
+
+    fn spec() -> &'static ModelSpec {
+        models::resolve(models::DEFAULT_ALIAS).unwrap()
+    }
+
+    /// A file that turns unreadable between runs is skipped, not deleted:
+    /// its rows survive so a transient permission error does not cost a
+    /// re-embed of the whole file. Unix only: the error is modelled with
+    /// chmod, and root ignores permissions.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_file_keeps_its_rows_and_counts_skipped() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let corpus = Corpus::for_index(dir.path()).unwrap();
+        std::fs::write(dir.path().join("gone.md"), "needle\n").unwrap();
+        std::fs::write(dir.path().join("keep.md"), "safe\n").unwrap();
+        let rec = FileRecord {
+            rel: RelPath::new(std::path::Path::new("gone.md")).unwrap(),
+            hash: "h".to_string(),
+            size: 7,
+            mtime_ns: 1,
+        };
+        let chunk = crate::chunk::Chunk {
+            byte_start: 0,
+            byte_end: 6,
+            line_start: 1,
+            line_end: 1,
+        };
+        let mut store = Store::open_write(&corpus, &IndexMeta::for_model(spec())).unwrap();
+        store.put_file(&rec, "needle", &[chunk], &[]).unwrap();
+        drop(store);
+
+        let locked = dir.path().join("gone.md");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let report = update(&corpus, &IndexOptions::default()).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert_eq!(report.removed, 0, "{report:?}");
+        assert_eq!(report.skipped, 1, "{report:?}");
+        let store = Store::open_read(&corpus).unwrap().unwrap();
+        assert!(
+            store
+                .files()
+                .unwrap()
+                .contains_key(&RelPath::new(std::path::Path::new("gone.md")).unwrap())
+        );
+    }
 }

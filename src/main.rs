@@ -318,6 +318,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     };
     warn_inert_flags(&cli);
     let mut found = 0usize;
+    // Regex mode only: files that could not be read (see `grep`).
+    let mut read_errors = 0usize;
 
     for path in &paths {
         let show_filenames = paths.len() > 1 || path.is_dir();
@@ -375,12 +377,18 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 limit: cli.topk,
                 walk: walk_opts.clone(),
             };
-            let matches = grep::grep(&corpus, &opts, &scope)?;
-            found += output::print_matches(&corpus, &matches, &out_opts)?;
+            let outcome = grep::grep(&corpus, &opts, &scope)?;
+            found += output::print_matches(&corpus, &outcome.matches, &out_opts)?;
+            read_errors += outcome.read_errors;
         }
     }
 
     if found == 0 {
+        // grep's third exit code: an error occurred and nothing matched.
+        // The warnings on stderr said what could not be read.
+        if read_errors > 0 {
+            return Ok(ExitCode::from(2));
+        }
         eprintln!("No matches found");
         return Ok(ExitCode::from(1));
     }

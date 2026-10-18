@@ -1168,3 +1168,37 @@ fn test_no_ckqignore_does_not_write_one() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(plain.path().join(".ckqignore").exists());
 }
+
+/// Regex mode on a corpus with an unreadable file: the file is named on
+/// stderr, and grep's error exit (2) is used when nothing matched — the
+/// match the file might have held must not vanish as a silent miss.
+#[cfg(unix)]
+#[test]
+fn test_regex_mode_reports_unreadable_files() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp_dir = TempDir::new().unwrap();
+    fs::write(temp_dir.path().join("locked.md"), "the needle is hidden\n").unwrap();
+    fs::write(temp_dir.path().join("open.md"), "nothing relevant\n").unwrap();
+    let locked = temp_dir.path().join("locked.md");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+    // The only file holding the pattern is unreadable: a silent miss would
+    // be exit 1 pretending the corpus was searched.
+    let out = ckq_command()
+        .args(["needle", temp_dir.path().to_str().unwrap()])
+        .output()
+        .expect("Failed to run ckq");
+    assert_eq!(out.status.code(), Some(2), "the only match was unreadable");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("cannot read"), "stderr: {stderr}");
+    assert!(stderr.contains("locked.md"), "stderr: {stderr}");
+
+    // Something matched elsewhere: exit stays 0, the warning still fires.
+    let out = ckq_command()
+        .args(["relevant", temp_dir.path().to_str().unwrap()])
+        .output()
+        .expect("Failed to run ckq");
+    assert_eq!(out.status.code(), Some(0), "with a match elsewhere");
+
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).unwrap();
+}

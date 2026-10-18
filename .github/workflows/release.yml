@@ -150,7 +150,11 @@ jobs:
           echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
 
       # The tag name on a tag run, the Cargo.toml version on a dry run, so
-      # the archives are named for the release either way.
+      # the archives are named for the release either way. BIN_DIR is where
+      # the binary lands: on Windows the build runs without --target (see
+      # the build step) so the build tree stays short enough for MSVC's
+      # object path limit, and the host triple is x86_64-pc-windows-msvc
+      # anyway.
       - name: Determine version
         shell: bash
         run: |
@@ -161,9 +165,20 @@ jobs:
           fi
           echo "VERSION=$v" >> "$GITHUB_ENV"
           echo "ARCHIVE_NAME=ckq-$v-${{ matrix.target }}" >> "$GITHUB_ENV"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            echo "BIN_DIR=target/release" >> "$GITHUB_ENV"
+          else
+            echo "BIN_DIR=target/${{ matrix.target }}/release" >> "$GITHUB_ENV"
+          fi
 
       - name: Build release binary
-        run: cargo build --locked --release --target ${{ matrix.target }}
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cargo build --locked --release
+          else
+            cargo build --locked --release --target ${{ matrix.target }}
+          fi
 
       - name: Sign macOS binary (ad-hoc)
         if: startsWith(matrix.target, 'x86_64-apple-darwin') || startsWith(matrix.target, 'aarch64-apple-darwin')
@@ -173,7 +188,7 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           mkdir dist
-          cp target/${{ matrix.target }}/release/ckq.exe dist/
+          cp ${{ env.BIN_DIR }}/ckq.exe dist/
           cp README.md LICENSE-MIT LICENSE-APACHE dist/ 2>/dev/null || true
           cd dist
           7z a ../${{ env.ARCHIVE_NAME }}.zip *

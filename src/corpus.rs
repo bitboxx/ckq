@@ -249,11 +249,22 @@ impl Corpus {
                 // The scope's own file: nothing below the base.
                 .unwrap_or("")
         };
+        // Joined with '/', not Path::join: a PathBuf join spells the
+        // platform's separator (".\\a.md" on Windows) while `rel` is
+        // already '/'-separated, and the printed path — the text prefix
+        // and the --jsonl path field alike — is part of the output
+        // contract, the same bytes on every platform. Windows APIs take
+        // '/' in stride, so the result is still a usable path there.
+        let root = self.display_root.to_string_lossy().replace('\\', "/");
         if below.is_empty() {
-            self.display_root.clone()
-        } else {
-            self.display_root.join(below)
+            return PathBuf::from(root);
         }
+        let sep = if root.is_empty() || root.ends_with('/') {
+            ""
+        } else {
+            "/"
+        };
+        PathBuf::from(format!("{root}{sep}{below}"))
     }
 }
 

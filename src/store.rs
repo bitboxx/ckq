@@ -130,6 +130,9 @@ impl Store {
         // Before the first index switches the file to WAL, a reader can meet
         // the writer's exclusive journal lock; wait it out instead of failing.
         conn.busy_timeout(std::time::Duration::from_secs(30))?;
+        // A scope's LIKE must compare case-sensitively, like `=` and
+        // `RelPath::starts_with` do: `notes` must not match `Notes/x.md`.
+        conn.pragma_update(None, "case_sensitive_like", true)?;
         // Schema without meta rows is another process's first `--index`
         // still in flight: to every reader that is no index yet. The table
         // check runs first because querying an absent table is an error.
@@ -149,6 +152,7 @@ impl Store {
         if rows == 0 {
             return Ok(None);
         }
+        check_schema(&conn, corpus)?;
         Ok(Some(Store { conn }))
     }
 
@@ -160,13 +164,14 @@ impl Store {
         let path = corpus.index_dir().join(DB_FILE);
         let conn = Connection::open(&path)?;
         conn.busy_timeout(std::time::Duration::from_secs(30))?;
-        conn.pragma_update(None, "foreign_keys", true)?;
+        conn.pragma_update(None, "case_sensitive_like", true)?;
         // A journal-mode change wants the file to itself and does not honour
         // busy_timeout, so a second `--index` racing the first one's schema
         // creation sees BUSY from the batch. The batch is idempotent; retry
         // it until the other writer is done. Whether an index was there
         // before is read afterwards, for the same reason.
         schema_with_retry(&conn)?;
+        check_schema(&conn, corpus)?;
         let stored: Option<String> = conn
             .query_row("SELECT value FROM meta WHERE key = 'signature'", [], |r| {
                 r.get(0)
@@ -193,8 +198,14 @@ impl Store {
             } = meta;
             // One statement, so a concurrent reader never meets a half-written
             // meta and mistakes it for an index built by another model.
+            // OR IGNORE, because two first `--index` runs can both see an
+            // empty meta and both insert; a plain INSERT failed the loser
+            // with a raw UNIQUE error after it had already walked the corpus.
+            // SQLite serialises the writers, so whichever row lost the race
+            // reads back committed after the no-op — and if it is not the
+            // signature this run assumed, that is the refusal below.
             store.conn.execute(
-                "INSERT INTO meta (key, value) VALUES \
+                "INSERT OR IGNORE INTO meta (key, value) VALUES \
                  ('schema_version', ?1), ('model_alias', ?2), ('model_repo', ?3), \
                  ('dims', ?4), ('signature', ?5)",
                 params![
@@ -205,6 +216,18 @@ impl Store {
                     signature.clone()
                 ],
             )?;
+            let raced: String = store.conn.query_row(
+                "SELECT value FROM meta WHERE key = 'signature'",
+                [],
+                |r| r.get(0),
+            )?;
+            if raced != *signature {
+                bail!(
+                    "the index at {} was built with a different embedding signature \
+                     ({raced} != {signature}); run `ckq --clean` and index again",
+                    corpus.index_dir().display()
+                );
+            }
         }
         Ok(store)
     }
@@ -387,7 +410,7 @@ impl Store {
         let mut rows = match scope {
             Scope::All => stmt.query([])?,
             Scope::Under(prefix) => {
-                let like = format!("{}%", escape_like(prefix.as_str()));
+                let like = format!("{}/%", escape_like(prefix.as_str()));
                 stmt.query(params![prefix.as_str(), like])?
             }
         };
@@ -440,7 +463,7 @@ impl Store {
         let mut rows = match scope {
             Scope::All => stmt.query(params![match_expr, limit as i64])?,
             Scope::Under(prefix) => {
-                let like = format!("{}%", escape_like(prefix.as_str()));
+                let like = format!("{}/%", escape_like(prefix.as_str()));
                 stmt.query(params![match_expr, limit as i64, prefix.as_str(), like])?
             }
         };
@@ -491,6 +514,42 @@ fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
+}
+
+/// Refuse an index written by another schema version: its rows mean
+/// something this build cannot know. An empty `meta` table is a first index
+/// still in flight, not a foreign one. The message names the rebuild,
+/// because there is no migration path.
+fn check_schema(conn: &Connection, corpus: &Corpus) -> Result<()> {
+    let rows: i64 = conn
+        .query_row("SELECT count(*) FROM meta", [], |r| r.get(0))
+        .context("ready check")?;
+    if rows == 0 {
+        return Ok(());
+    }
+    let stored: Option<i64> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'schema_version'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|v| v.parse().ok());
+    if stored == Some(SCHEMA_VERSION) {
+        return Ok(());
+    }
+    match stored {
+        Some(v) => bail!(
+            "the index at {} uses schema version {v}, this ckq uses {SCHEMA_VERSION}; \
+             run `ckq --clean` and `ckq --index` to rebuild it",
+            corpus.index_dir().display()
+        ),
+        None => bail!(
+            "the index at {} carries no readable schema version; \
+             run `ckq --clean` and `ckq --index` to rebuild it",
+            corpus.index_dir().display()
+        ),
+    }
 }
 
 fn schema_with_retry(conn: &Connection) -> Result<()> {
@@ -661,6 +720,93 @@ mod tests {
         assert!(err.contains("--clean"), "{err}");
     }
 
+    /// Two first writes race the meta insert: both see an empty table and
+    /// both insert. The loser used to die on a raw UNIQUE constraint error;
+    /// now the winner's row stands and a same-signature loser proceeds.
+    /// The schema is pre-created so the race is exactly the insert; through
+    /// `open_write` the WAL pragma would serialise the threads instead and
+    /// drown the round in busy retries.
+    #[test]
+    fn concurrent_first_writes_initialize_meta_once() {
+        for _ in 0..200 {
+            let dir = TempDir::new().unwrap();
+            let c = Corpus::for_index(dir.path()).unwrap();
+            std::fs::create_dir_all(c.index_dir()).unwrap();
+            let setup = Connection::open(c.index_dir().join(DB_FILE)).unwrap();
+            setup.execute_batch(SCHEMA).unwrap();
+            drop(setup);
+            let barrier = std::sync::Barrier::new(2);
+            let (a, b) = std::thread::scope(|s| {
+                let a = s.spawn(|| {
+                    barrier.wait();
+                    Store::open_write(&c, &meta())
+                });
+                let b = s.spawn(|| {
+                    barrier.wait();
+                    Store::open_write(&c, &meta())
+                });
+                (a.join().unwrap(), b.join().unwrap())
+            });
+            assert!(a.is_ok() && b.is_ok(), "{a:?} {b:?}");
+        }
+    }
+
+    /// The same race between two different models must not let the loser
+    /// index into a store whose meta names the winner's model: exactly one
+    /// side wins, and the loser is refused by name, not by SQLite.
+    #[test]
+    fn a_concurrent_first_write_of_another_signature_is_refused_by_name() {
+        for _ in 0..20 {
+            let dir = TempDir::new().unwrap();
+            let c = Corpus::for_index(dir.path()).unwrap();
+            std::fs::create_dir_all(c.index_dir()).unwrap();
+            let setup = Connection::open(c.index_dir().join(DB_FILE)).unwrap();
+            setup.execute_batch(SCHEMA).unwrap();
+            drop(setup);
+            let m = meta();
+            let mut other = m.clone();
+            other.signature = "tampered-signature".to_string();
+            let barrier = std::sync::Barrier::new(2);
+            let (a, b) = std::thread::scope(|s| {
+                let a = s.spawn(|| {
+                    barrier.wait();
+                    Store::open_write(&c, &m)
+                });
+                let b = s.spawn(|| {
+                    barrier.wait();
+                    Store::open_write(&c, &other)
+                });
+                (a.join().unwrap(), b.join().unwrap())
+            });
+            assert!(a.is_ok() ^ b.is_ok(), "both: {a:?} {b:?}");
+            let err = [a.err(), b.err()].into_iter().flatten().next().unwrap();
+            assert!(
+                err.to_string().contains("different embedding signature"),
+                "{err:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_future_schema_version_is_refused_by_name() {
+        let (_dir, c) = corpus();
+        drop(Store::open_write(&c, &meta()).unwrap());
+        // What an index written by a later ckq looks like to this one.
+        let conn = Connection::open(c.index_dir().join(DB_FILE)).unwrap();
+        conn.execute(
+            "UPDATE meta SET value = '99' WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let err = Store::open_read(&c).unwrap_err().to_string();
+        assert!(err.contains("schema version 99"), "{err}");
+        assert!(err.contains("--clean"), "{err}");
+        assert!(err.contains("--index"), "{err}");
+        let err = Store::open_write(&c, &meta()).unwrap_err().to_string();
+        assert!(err.contains("schema version 99"), "{err}");
+    }
+
     #[test]
     fn scope_limits_vectors_and_bm25() {
         let (_dir, c) = corpus();
@@ -689,6 +835,51 @@ mod tests {
         let hits = store.bm25("needle", &sub, 10).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].0.as_str(), "sub/needle.md");
+    }
+
+    #[test]
+    fn scope_under_matches_the_prefix_and_its_children_only() {
+        // `LIKE 'notes%'` would also return the siblings `notes2.md` and
+        // `notes-old.md`, and ASCII-case-insensitive LIKE would return
+        // `Notes/up.md`; `RelPath::starts_with` allows none of them.
+        let (_dir, c) = corpus();
+        let mut store = Store::open_write(&c, &meta()).unwrap();
+        let chunk = Chunk {
+            byte_start: 0,
+            byte_end: 6,
+            line_start: 1,
+            line_end: 1,
+        };
+        for rel in [
+            "notes/in.md",
+            "notes",
+            "notes2.md",
+            "notes-old.md",
+            "Notes/up.md",
+        ] {
+            store
+                .put_file(&rec(rel, "h"), "needle", &[chunk], &[vec![0.5; 768]])
+                .unwrap();
+        }
+        let sub = Scope::Under(RelPath::new(std::path::Path::new("notes")).unwrap());
+        let want = vec!["notes".to_string(), "notes/in.md".to_string()];
+        let mut paths: Vec<String> = store
+            .vectors(&sub)
+            .unwrap()
+            .chunks
+            .iter()
+            .map(|c| c.rel.as_str().to_string())
+            .collect();
+        paths.sort();
+        assert_eq!(paths, want, "vectors");
+        let mut paths: Vec<String> = store
+            .bm25("needle", &sub, 10)
+            .unwrap()
+            .into_iter()
+            .map(|(rel, _)| rel.as_str().to_string())
+            .collect();
+        paths.sort();
+        assert_eq!(paths, want, "bm25");
     }
 
     #[test]

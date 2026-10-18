@@ -51,7 +51,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libvulkan-dev glslc spirv-headers
-      - run: cargo clippy --release --all-targets -- -D warnings
+      - run: cargo clippy --release --locked --all-targets -- -D warnings
 
   test:
     name: test (${{ matrix.os }})
@@ -111,7 +111,7 @@ jobs:
           choco install -y ninja
           echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
       - name: Test (offline)
-        run: cargo test --release
+        run: cargo test --release --locked
       # Prove the default feature reached the backend: the resolved feature
       # graph, the loader the binary links, and the compiled SPIR-V shaders
       # (vulkan-shaders-gen only runs with GGML_VULKAN on).
@@ -145,14 +145,18 @@ jobs:
       - run: cargo check --locked --all-targets
 
   # The end-to-end suites run the real binary against real corpora with the
-  # real default model. Windows is left out: the suites assert unix behaviour
-  # (sockets, permissions) that does not apply there.
+  # real default model, on every platform a release binary ships for. The
+  # suites that assert unix behaviour (sockets, permissions) are #[cfg(unix)]
+  # and compile out on Windows; the rest — ranked modes, the store, indexing,
+  # --jsonl path formatting — is exactly what Windows coverage was missing.
+  # On Windows the runners have a Vulkan loader but no device, so llama.cpp
+  # falls back to the CPU (same setup steps as the offline test job).
   e2e:
     name: e2e (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -164,6 +168,39 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libvulkan-dev glslc spirv-headers
+      # Same Windows toolchain as the offline test job: the sys crate expects
+      # VULKAN_SDK, and the Ninja generator works where the VS one breaks.
+      - name: Install Vulkan SDK (Windows)
+        if: runner.os == 'Windows'
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          cache: true
+          stripdown: true
+      - name: Locate vulkan-1.dll (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "$env:VULKAN_SDK\runtime\x64\vulkan-1.dll",
+            "$env:VULKAN_SDK\Bin\vulkan-1.dll",
+            "C:\Windows\System32\vulkan-1.dll"
+          )
+          $found = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $found) { throw "vulkan-1.dll not found in any of: $($candidates -join ', ')" }
+          Write-Host "vulkan-1.dll: $found"
+          if ($found -notlike 'C:\Windows\*') {
+            Add-Content $env:GITHUB_PATH (Split-Path $found)
+            Write-Host "Added $(Split-Path $found) to PATH"
+          }
+      - name: Set up MSVC environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Build llama.cpp with the Ninja generator (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          choco install -y ninja
+          echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
 
       # A cache miss is fine: the first run downloads the model and the
       # cache is saved for the next one.
@@ -171,6 +208,59 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/ckq/models
-          key: ckq-models-gemma-q4
+          # Keyed on the registry itself: any change to a repo, file or
+          # blake3 rotates the key, so the gate can never keep scoring
+          # weights the registry no longer names (the blake3 of every
+          # download is verified in models.rs). restore-keys let a
+          # rotation reuse every model that did not change.
+          key: ckq-models-${{ hashFiles('src/models.rs') }}
+          restore-keys: ckq-models-
 
-      - run: cargo e2e
+      - name: Build the binary
+        run: cargo build --release --locked
+
+      # The suites touch two models: gemma-q4 everywhere, and gemma-gguf in
+      # the model-switch rebuild test. Warm both before the tests, retrying
+      # a flaky download, so no test depends on the network at test time and
+      # a download failure fails a clearly-named step instead of a suite.
+      # (The cache still only saves on a green run.)
+      - name: Warm the model cache
+        shell: bash
+        run: |
+          warm() {
+            # A fresh directory per model: warming must not exercise the
+            # model-switch rebuild, only the download.
+            local d
+            d=$(mktemp -d)
+            echo "a line to embed" > "$d/warm.md"
+            for attempt in 1 2 3; do
+              if target/release/ckq --index -q --model "$1" "$d" >/dev/null 2>&1; then
+                echo "$1: in the cache"
+                rm -rf "$d"
+                return 0
+              fi
+              echo "$1: download attempt $attempt failed; retrying in 10s"
+              sleep 10
+            done
+            echo "$1: still failing after 3 attempts, last error:"
+            target/release/ckq --index -q --model "$1" "$d"
+          }
+          warm gemma-q4
+          warm gemma-gguf
+
+      # `cargo e2e --locked` would put --locked after the alias's `--`, where
+      # the test harness reads it, so the alias is expanded here.
+      - run: cargo test --release --locked -- --include-ignored --skip known_bug_
+      # The embedded-model feature (the one-file build) has no other
+      # coverage: its unit tests are cfg-gated on the feature and build.rs
+      # needs CKQ_EMBED_GGUF/CKQ_EMBED_ALIAS, so a break ships invisible.
+      # The model is already in the cache here; one platform is enough.
+      # (--bin: the crate is a lone binary, there is no lib target.)
+      - name: Build and test the embedded-model feature (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          scripts/build-onefile.sh gemma-q4
+          gguf=$(scripts/resolve-gguf.sh gemma-q4)
+          CKQ_EMBED_GGUF=$gguf CKQ_EMBED_ALIAS=gemma-q4 \
+            cargo test --release --locked --features embedded-model --bin ckq
+

@@ -104,6 +104,10 @@ pub struct Corpus {
     /// absolute (a wrapper strips that prefix from every result), otherwise the
     /// caller's relative argument, `.` when none was given.
     display_root: PathBuf,
+    /// What [`Corpus::display`] strips off a root-relative path before the
+    /// join: the scope a search argument named below the index root. Empty
+    /// for the corpora whose paths already count from `display_root`.
+    display_base: String,
 }
 
 impl Corpus {
@@ -133,12 +137,26 @@ impl Corpus {
                 arg.display()
             );
         };
-        let scope = if root == start {
+        // A directory argument at the index root is the whole corpus; one
+        // below it is a subtree. A file argument names the file itself --
+        // taking its parent here would search the parent, and when the
+        // parent is the root the file's scope was silently lost and the
+        // whole corpus was searched instead.
+        let scope = if !abs.is_dir() {
+            Scope::Under(rel_of(&root, &abs)?)
+        } else if root == start {
             Scope::All
         } else {
             Scope::Under(rel_of(&root, start)?)
         };
-        Ok((Corpus::at(&root, &display_prefix(arg, &abs)), scope))
+        // Output counts from the argument: joining `rel` (which counts from
+        // the root) onto the argument would print the scope twice
+        // (`notes/notes/in.md`), so the scope is stripped first.
+        let base = match &scope {
+            Scope::All => "",
+            Scope::Under(p) => p.as_str(),
+        };
+        Ok((Corpus::at_below(&root, arg, base), scope))
     }
 
     /// A corpus with no index, for regex mode: `arg` itself when it is a
@@ -184,9 +202,16 @@ impl Corpus {
     }
 
     fn at(root: &Path, display_root: &Path) -> Corpus {
+        Corpus::at_below(root, display_root, "")
+    }
+
+    /// A corpus whose output paths count from `base` (a root-relative path
+    /// the search argument named) rather than from the root.
+    fn at_below(root: &Path, display_root: &Path, base: &str) -> Corpus {
         Corpus {
             root: root.to_path_buf(),
             display_root: display_root.to_path_buf(),
+            display_base: base.to_string(),
         }
     }
 
@@ -210,10 +235,36 @@ impl Corpus {
         self.root.join(rel.as_str())
     }
 
-    /// How the file is printed: `display_root` joined with `rel`. Every output
-    /// path goes through here, whichever method found the file.
+    /// How the file is printed: `display_root` joined with the part of `rel`
+    /// below `display_base` — all of `rel` unless the search argument sat
+    /// below the index root, in which case the path counts from the argument
+    /// down, as it was given, and never prints the argument twice. Every
+    /// output path goes through here, whichever method found the file.
     pub fn display(&self, rel: &RelPath) -> PathBuf {
-        self.display_root.join(rel.as_str())
+        let below = if self.display_base.is_empty() {
+            rel.as_str()
+        } else {
+            rel.as_str()
+                .strip_prefix(&format!("{}/", self.display_base))
+                // The scope's own file: nothing below the base.
+                .unwrap_or("")
+        };
+        // Joined with '/', not Path::join: a PathBuf join spells the
+        // platform's separator (".\\a.md" on Windows) while `rel` is
+        // already '/'-separated, and the printed path — the text prefix
+        // and the --jsonl path field alike — is part of the output
+        // contract, the same bytes on every platform. Windows APIs take
+        // '/' in stride, so the result is still a usable path there.
+        let root = self.display_root.to_string_lossy().replace('\\', "/");
+        if below.is_empty() {
+            return PathBuf::from(root);
+        }
+        let sep = if root.is_empty() || root.ends_with('/') {
+            ""
+        } else {
+            "/"
+        };
+        PathBuf::from(format!("{root}{sep}{below}"))
     }
 }
 
@@ -256,5 +307,69 @@ fn display_prefix(arg: &Path, abs: &Path) -> PathBuf {
         arg.to_path_buf()
     } else {
         arg.parent().map(Path::to_path_buf).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// A corpus root with an index and `files` in it; the argument is
+    /// `files[0]`, absolute, as `for_search` receives it.
+    fn rooted(files: &[&str]) -> (TempDir, PathBuf) {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join(INDEX_DIR)).unwrap();
+        for f in files {
+            fs::create_dir_all(dir.path().join(f).parent().unwrap()).unwrap();
+            fs::write(dir.path().join(f), "needle\n").unwrap();
+        }
+        let arg = dir.path().join(files[0]);
+        (dir, arg)
+    }
+
+    #[test]
+    fn a_file_argument_scopes_the_search_to_the_file() {
+        // The file's parent holds the index: the old code widened to `All`
+        // and searched the whole corpus.
+        let (_dir, arg) = rooted(&["top.md", "other.md"]);
+        let (_, scope) = Corpus::for_search(&arg).unwrap();
+        assert_eq!(
+            scope,
+            Scope::Under(RelPath::new(Path::new("top.md")).unwrap())
+        );
+
+        // Below the root it took the parent directory; the file is the scope.
+        let (_dir, arg) = rooted(&["sub/in.md", "sub/sibling.md", "other.md"]);
+        let (_, scope) = Corpus::for_search(&arg).unwrap();
+        assert_eq!(
+            scope,
+            Scope::Under(RelPath::new(Path::new("sub/in.md")).unwrap())
+        );
+    }
+
+    #[test]
+    fn a_directory_argument_below_the_root_scopes_to_the_subtree() {
+        let (_dir, arg) = rooted(&["sub/in.md", "other.md"]);
+        let dir = arg.parent().unwrap().to_path_buf();
+        let (_, scope) = Corpus::for_search(&dir).unwrap();
+        assert_eq!(scope, Scope::Under(RelPath::new(Path::new("sub")).unwrap()));
+    }
+
+    #[test]
+    fn display_counts_from_the_argument_not_the_index_root() {
+        // The index root sits two levels above the argument; paths used to
+        // print the argument's components twice (`docs/notes/docs/notes/…`).
+        let (_dir, arg) = rooted(&["docs/notes/in.md"]);
+        let notes = arg.parent().unwrap().to_path_buf();
+        let rel = RelPath::new(Path::new("docs/notes/in.md")).unwrap();
+
+        let (corpus, _) = Corpus::for_search(&notes).unwrap();
+        assert_eq!(corpus.display(&rel), notes.join("in.md"));
+
+        // A file argument prints as the file itself, the way it was given.
+        let (corpus, _) = Corpus::for_search(&arg).unwrap();
+        assert_eq!(corpus.display(&rel), arg);
     }
 }

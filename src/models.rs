@@ -4,7 +4,7 @@
 //! and file, dimensions, pooling, prompts and default thresholds.
 //! `gemma-q4` is the default.
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,15 +151,75 @@ pub fn gguf_path(spec: &ModelSpec) -> Result<PathBuf> {
     if Some(spec.alias) == embedded_alias() {
         return embedded_gguf_path();
     }
+    gguf_from_cache(models_cache_dir(), spec)
+}
+
+/// The registry's file out of the Hugging Face cache at `dir`, downloaded on
+/// first use — and verified where the registry pins its blake3. hf-hub
+/// serves a cached snapshot without touching the network, so this one pass
+/// gates both a fresh download and whatever the cache already holds.
+fn gguf_from_cache(dir: PathBuf, spec: &ModelSpec) -> Result<PathBuf> {
     let cache = hf_hub::api::sync::ApiBuilder::new()
-        .with_cache_dir(models_cache_dir())
+        .with_cache_dir(dir)
         .build()
         .map_err(|e| anyhow::anyhow!("hf-hub: {e}"))?;
     let repo = cache.model(spec.repo.to_string());
     let path = repo
         .get(spec.file)
         .map_err(|e| anyhow::anyhow!("downloading {} ({e})", spec.repo))?;
+    verify_blake3(&path, spec)?;
     Ok(path)
+}
+
+/// Where the registry knows a file's blake3, one streaming pass over the
+/// bytes before they are loaded. A mismatch — a corrupted or rewritten
+/// download — is an error naming the file: a silently different model would
+/// embed every query in a space its index knows nothing about.
+///
+/// A pass that succeeds leaves a marker beside the file holding its size,
+/// mtime and the hash it matched, and a later load whose file still has that
+/// size and mtime skips the pass: hashing 278 MB costs 0.2 s, paid on every
+/// daemon start, index run and in-process search otherwise. Writing the
+/// file changes its mtime, so a rewrite is hashed again.
+fn verify_blake3(path: &std::path::Path, spec: &ModelSpec) -> Result<()> {
+    let Some(expect) = spec.blake3 else {
+        return Ok(());
+    };
+    let meta = std::fs::metadata(path).with_context(|| format!("verifying {}", path.display()))?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos());
+    let stamp = format!("{} {mtime} {expect}", meta.len());
+    let marker = verified_marker(path);
+    if std::fs::read_to_string(&marker).is_ok_and(|s| s == stamp) {
+        return Ok(());
+    }
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("verifying {}", path.display()))?;
+    let mut hasher = blake3::Hasher::new();
+    std::io::copy(&mut file, &mut hasher)
+        .with_context(|| format!("verifying {}", path.display()))?;
+    let got = &hasher.finalize().to_hex()[..16];
+    if got != expect {
+        bail!(
+            "{} is not the {} the registry pins (blake3 {got}, expected {expect}); \
+             remove the file and let ckq download it again",
+            path.display(),
+            spec.file
+        );
+    }
+    // Best effort: a cache directory we cannot write only costs the pass again.
+    let _ = std::fs::write(&marker, stamp);
+    Ok(())
+}
+
+/// `<file>.ckq-verified` beside the snapshot entry; hf-hub owns `blobs/`.
+fn verified_marker(path: &std::path::Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".ckq-verified");
+    path.with_file_name(name)
 }
 
 fn models_cache_dir() -> PathBuf {
@@ -209,16 +269,32 @@ fn embedded_gguf_path() -> Result<PathBuf> {
 /// left behind by a crashed process) is replaced by writing a per-process
 /// temp file in the same directory, fsync, and an atomic rename — two
 /// processes racing both end up with one complete file.
-#[cfg(feature = "embedded-model")]
+///
+/// A process that dies between create and rename leaves the temp behind:
+/// nothing else reaps it, so every crash parked another full-size file in
+/// the cache. Entry removes temps older than a day (a live writer's temp is
+/// minutes old at most; the age, not the embedded pid, is the safety — a
+/// pid can be recycled or belong to anyone), and this process's own temp
+/// is dropped even on a panic.
+#[cfg(any(test, feature = "embedded-model"))]
 fn install_gguf(dir: &std::path::Path, name: &str, bytes: &[u8]) -> Result<PathBuf> {
     let path = dir.join(name);
     if let Ok(meta) = std::fs::metadata(&path)
         && meta.len() == bytes.len() as u64
     {
+        reap_old_temps(dir);
         return Ok(path);
     }
     std::fs::create_dir_all(dir)?;
+    reap_old_temps(dir);
     let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    struct TmpOnPanic(std::path::PathBuf);
+    impl Drop for TmpOnPanic {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0); // gone already when the rename worked
+        }
+    }
+    let _guard = TmpOnPanic(tmp.clone());
     {
         use std::io::Write as _;
         let mut file = std::fs::File::create(&tmp)?;
@@ -227,6 +303,37 @@ fn install_gguf(dir: &std::path::Path, name: &str, bytes: &[u8]) -> Result<PathB
     }
     std::fs::rename(&tmp, &path)?;
     Ok(path)
+}
+
+/// Remove `.<something>.tmp` files older than [`TMP_KEEP`]: leftovers of
+/// extractions whose process died, safe to delete because no live write
+/// takes a day.
+#[cfg(any(test, feature = "embedded-model"))]
+const TMP_KEEP: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+#[cfg(any(test, feature = "embedded-model"))]
+fn reap_old_temps(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with('.') || !name.ends_with(".tmp") {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > TMP_KEEP);
+        if old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// What has to match for two vectors to be comparable: the model, the
@@ -249,6 +356,7 @@ pub fn signature(spec: &ModelSpec) -> String {
     hasher.update(b"\0");
     hasher.update(&crate::chunk::TARGET_TOKENS.to_le_bytes());
     hasher.update(&crate::chunk::OVERLAP_TOKENS.to_le_bytes());
+    hasher.update(&crate::chunk::CHUNKER_VERSION.to_le_bytes());
     if let Some(marker) = weights_marker(spec) {
         hasher.update(b"\0");
         hasher.update(marker.as_bytes());
@@ -353,6 +461,133 @@ mod tests {
 }
 
 #[cfg(test)]
+mod install_tests {
+    use super::install_gguf;
+    use tempfile::TempDir;
+
+    fn aged(path: &std::path::Path) {
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 24 * 60 * 60);
+        // write-capable handle: a read-only one cannot set timestamps on
+        // Windows (Access denied), and unix does not care either way.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+    }
+
+    /// A temp older than a day is a crashed extraction's leftover — nothing
+    /// else ever removed it, so every crash parked another full-size file
+    /// in the cache. Install reaps it; a fresh temp may belong to a live
+    /// writer and stays.
+    #[test]
+    fn an_old_leftover_temp_is_reaped_and_a_fresh_one_kept() {
+        let dir = TempDir::new().unwrap();
+        let stale = dir.path().join(".hash.gguf.424242.tmp");
+        std::fs::write(&stale, "half a model").unwrap();
+        aged(&stale);
+        let fresh = dir.path().join(".hash.gguf.434343.tmp");
+        std::fs::write(&fresh, "in flight").unwrap();
+
+        install_gguf(dir.path(), "hash.gguf", b"gguf bytes").unwrap();
+
+        assert!(!stale.exists(), "an aged temp must be reaped");
+        assert!(fresh.exists(), "a fresh temp may be a live writer's");
+    }
+
+    /// The same reap runs when the target is already trusted and nothing is
+    /// written: that is the path a healthy cache takes.
+    #[test]
+    fn a_trusted_target_still_reaps_aged_temps() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("hash.gguf"), "gguf bytes").unwrap();
+        let stale = dir.path().join(".other.gguf.99.tmp");
+        std::fs::write(&stale, "x").unwrap();
+        aged(&stale);
+
+        let path = install_gguf(dir.path(), "hash.gguf", b"gguf bytes").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"gguf bytes");
+        assert!(!stale.exists());
+    }
+}
+
+#[cfg(test)]
+mod gguf_cache_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// The bytes a fake cache holds, and the pin a registry would carry for
+    /// them. A static, because `ModelSpec::blake3` is `'static` and leaking
+    /// test memory to fake that is worse than the indirection.
+    const BYTES: &[u8] = b"these would be 278 MB of gguf";
+    static PINNED: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| blake3::hash(BYTES).to_hex()[..16].to_string());
+
+    fn spec_for(blake3: Option<&'static str>) -> ModelSpec {
+        ModelSpec {
+            alias: "test-gguf",
+            repo: "org/test-model",
+            file: "model.gguf",
+            dims: 8,
+            context: 128,
+            pooling: Pooling::Mean,
+            query_prefix: "",
+            document_prefix: "",
+            threshold: 0.0,
+            blake3,
+        }
+    }
+
+    /// The Hugging Face cache layout hf-hub serves offline: `refs/main`
+    /// names the commit, `snapshots/<commit>/<file>` holds the bytes.
+    fn fake_cache(dir: &std::path::Path, bytes: &[u8]) {
+        let repo = dir.join("models--org--test-model");
+        std::fs::create_dir_all(repo.join("refs")).unwrap();
+        std::fs::create_dir_all(repo.join("snapshots").join("deadbeef")).unwrap();
+        std::fs::write(repo.join("refs").join("main"), "deadbeef").unwrap();
+        std::fs::write(
+            repo.join("snapshots").join("deadbeef").join("model.gguf"),
+            bytes,
+        )
+        .unwrap();
+    }
+    #[test]
+    fn a_cached_gguf_is_verified_against_the_registry() {
+        let spec = spec_for(Some(PINNED.as_str()));
+
+        let good = TempDir::new().unwrap();
+        fake_cache(good.path(), BYTES);
+        let path = gguf_from_cache(good.path().to_path_buf(), &spec).unwrap();
+        assert!(path.ends_with("model.gguf"));
+
+        let bad = TempDir::new().unwrap();
+        fake_cache(bad.path(), b"corrupted or rewritten bytes");
+        let err = gguf_from_cache(bad.path().to_path_buf(), &spec)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("model.gguf"), "{err}");
+        assert!(err.contains("blake3"), "{err}");
+
+        // A passed check is remembered, and a rewrite of the file is not
+        // excused by it: the new mtime sends it through the hash again.
+        assert!(verified_marker(&path).is_file());
+        gguf_from_cache(good.path().to_path_buf(), &spec).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&path, b"same length, other bytes!!!!!").unwrap();
+        let err = gguf_from_cache(good.path().to_path_buf(), &spec)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("blake3"), "{err}");
+
+        // No pin, no gate: models the registry does not vouch for still load.
+        let unpinned = spec_for(None);
+        let path = gguf_from_cache(bad.path().to_path_buf(), &unpinned).unwrap();
+        assert!(path.ends_with("model.gguf"));
+    }
+}
+
+#[cfg(test)]
 mod signature_tests {
     use super::*;
 
@@ -379,10 +614,11 @@ mod signature_tests {
 
     #[test]
     fn the_plain_gemma_signature_is_unchanged() {
-        // The value existing v2 indexes carry. A change here forces every
-        // index to be rebuilt, so it has to be deliberate.
+        // The value a fresh chunker-v2 index carries. A change here forces
+        // every index to be rebuilt, so it has to be deliberate: it last
+        // moved when the chunker learned to split over-long lines.
         if std::env::var_os("CKQ_GGUF_FILE").is_none() && embedded_alias() != Some("gemma-q4") {
-            assert_eq!(signature(resolve("gemma-q4").unwrap()), "c23fdf7835ede659");
+            assert_eq!(signature(resolve("gemma-q4").unwrap()), "0fc9533b8317c2f0");
         }
     }
 }

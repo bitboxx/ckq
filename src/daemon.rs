@@ -110,19 +110,38 @@ impl Embedder for DaemonEmbedder {
     }
 
     fn embed_query(&mut self, text: &str) -> Result<Vec<f32>> {
-        request(&mut self.stream, text)
+        match request(&mut self.stream, text) {
+            Ok(vector) => Ok(vector),
+            // A daemon that accepted and then failed us — closed the
+            // connection, sat silent past the timeout, or replied with
+            // nonsense. A daemon that could not be reached was fallen back
+            // from at connect time; this is the same fallback one exchange
+            // later, so one sick daemon never fails or hangs a search.
+            Err(e) => {
+                eprintln!(
+                    "ckq: warning: the query daemon failed ({e:#}); \
+                     embedding the query in this process instead"
+                );
+                load_in_process(self.spec)?.embed_query(text)
+            }
+        }
     }
 }
 
 /// One exchange: the bare query as a JSON line out, one JSON line back,
-/// `{"vector": [...]}` or `{"error": "..."}`. No read timeout: the daemon
-/// binds before it loads the model, so a first request may legitimately block
-/// for the whole load. Daemon-side errors come back as errors, not as
-/// silence.
+/// `{"vector": [...]}` or `{"error": "..."}`. The read has a generous
+/// timeout: the daemon binds before it loads the model, so a first request
+/// may legitimately block for the whole cold load, which
+/// [`DEFAULT_REQUEST_TIMEOUT`] covers — but a daemon that accepted and then
+/// went silent must not hang the search forever. Daemon-side errors come
+/// back as errors, not as silence.
 fn request(stream: &mut UnixStream, query: &str) -> Result<Vec<f32>> {
     let payload = json!({ "query": query });
     writeln!(stream, "{payload}").context("writing to the query daemon")?;
     stream.flush()?;
+    stream
+        .set_read_timeout(Some(request_timeout()))
+        .context("arming the query daemon timeout")?;
 
     let mut reader = BufReader::new(stream.try_clone().context("sharing the daemon stream")?);
     let mut line = String::new();
@@ -137,6 +156,20 @@ fn request(stream: &mut UnixStream, query: &str) -> Result<Vec<f32>> {
         return Err(anyhow!("query daemon: {err}"));
     }
     serde_json::from_value(reply["vector"].clone()).context("parsing the daemon's vector")
+}
+
+/// The client's wait for a reply: 120 s by default, or
+/// `CKQ_DAEMON_TIMEOUT_SECS` (the e2e tests set it low). Two minutes is
+/// deliberately far above a cold model load on a slow machine — the load
+/// window is exactly why the daemon binds before loading.
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+fn request_timeout() -> Duration {
+    std::env::var("CKQ_DAEMON_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_REQUEST_TIMEOUT)
 }
 
 /// Where the sockets live: `~/.cache/ckq/sockets`, beside the model cache,
@@ -159,16 +192,34 @@ fn socket_dir() -> PathBuf {
 /// rebuild replaced — and a stale daemon never serves a new chunker or prompt
 /// it predates.
 /// Identity of this build and of the weights it would load: the executable's
-/// path, size and mtime, plus `CKQ_GGUF_FILE` when set. The override has to be
-/// in the key: without it a daemon already holding the registry's GGUF would
-/// answer queries for a trial file, and the query and document vectors would
-/// come from different weights. The daemon inherits the variable from the
-/// client that spawns it, so both sides derive the same socket.
+/// path, size and mtime, plus `CKQ_GGUF_FILE` — its path, size and mtime —
+/// when set. The override has to be in the key: without it a daemon already
+/// holding the registry's GGUF would answer queries for a trial file, and the
+/// query and document vectors would come from different weights. The size and
+/// mtime have to be there too, for the same reason: a trial file replaced at
+/// the same path is different weights, and a daemon that loaded the old bytes
+/// must not serve the new ones — the same identity `weights_marker` gives the
+/// index signature. The daemon inherits the variable from the client that
+/// spawns it, so both sides derive the same socket.
 fn exe_stamp() -> String {
+    exe_stamp_with(std::env::var_os("CKQ_GGUF_FILE").as_deref())
+}
+
+fn exe_stamp_with(gguf: Option<&std::ffi::OsStr>) -> String {
     let mut hasher = blake3::Hasher::new();
-    if let Some(gguf) = std::env::var_os("CKQ_GGUF_FILE") {
+    if let Some(gguf) = gguf {
         hasher.update(b"gguf:");
         hasher.update(gguf.to_string_lossy().as_bytes());
+        if let Ok(meta) = std::fs::metadata(gguf) {
+            hasher.update(&meta.len().to_le_bytes());
+            if let Some(mtime) = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            {
+                hasher.update(&mtime.as_nanos().to_le_bytes());
+            }
+        }
         hasher.update(b"\0");
     }
     if let Ok(exe) = std::env::current_exe() {
@@ -294,6 +345,7 @@ pub fn serve(alias: &str) -> Result<()> {
     let Some(listener) = bind(&path)? else {
         return Ok(()); // another daemon won the startup race and is serving
     };
+    let mut listener = listener;
     eprintln!(
         "ckq: query daemon {} pid {} on {}",
         spec.alias,
@@ -317,8 +369,27 @@ pub fn serve(alias: &str) -> Result<()> {
     // interval to every search.
     listener.set_nonblocking(true)?;
     let mut last = Instant::now();
+    // The inode the socket path must keep resolving to: if the file is
+    // unlinked out from under the listener (the check-then-unlink races in
+    // remove_dead_socket and reap_stale can do it; so can anything else),
+    // new clients see ENOENT and start a second daemon. The loop watches
+    // for that and heals it — reclaim the path, or bow out to the daemon
+    // that already owns it — instead of orphaning a resident model.
+    let mut ident = socket_ident(&path);
     loop {
-        let remaining = idle_timeout().saturating_sub(last.elapsed());
+        if socket_ident(&path) != ident {
+            match bind(&path)? {
+                Some(fresh) => {
+                    fresh.set_nonblocking(true)?;
+                    listener = fresh;
+                    ident = socket_ident(&path);
+                }
+                None => return Ok(()), // another daemon owns the key now
+            }
+        }
+        let remaining = idle_timeout()
+            .saturating_sub(last.elapsed())
+            .min(SOCKET_CHECK_INTERVAL);
         if remaining.is_zero() {
             break;
         }
@@ -365,6 +436,19 @@ fn wait_for_client(listener: &UnixListener, timeout: Duration) -> Result<bool> {
         0 => Ok(false),
         _ => Ok(true),
     }
+}
+
+/// How often the daemon rechecks that its socket path still resolves to the
+/// inode it bound: the price of noticing a stolen socket in about a second
+/// is one stat per second.
+const SOCKET_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+
+/// The `(device, inode)` of the socket file at `path`: `None` when the path
+/// is gone. Two binds on the same path never share an inode, so this is
+/// what tells the daemon its file was unlinked and replaced.
+fn socket_ident(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
 }
 
 /// Claim the socket without loading anything. `Ok(None)` means another daemon
@@ -424,7 +508,9 @@ fn reap_stale(own: &Path) {
             continue;
         }
         let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
+        let Some(name) = name.to_str() else {
+            continue;
+        };
         if !name.starts_with("ckq-") {
             continue;
         }
@@ -451,6 +537,66 @@ fn reap_stale(own: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The socket key follows the weights, not just the path: a trial file
+    /// replaced at the same path must not share a daemon with the bytes the
+    /// old one loaded. Same file, same key; different bytes, different key.
+    #[test]
+    fn the_stamp_tracks_the_override_file_not_just_its_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("trial.gguf");
+        std::fs::write(&a, "weights").unwrap();
+        let stamp = exe_stamp_with(Some(a.as_os_str()));
+        assert_eq!(stamp, exe_stamp_with(Some(a.as_os_str())));
+
+        // Same path, new bytes: the replaced file.
+        std::fs::write(&a, "other weights entirely").unwrap();
+        assert_ne!(
+            stamp,
+            exe_stamp_with(Some(a.as_os_str())),
+            "a replaced override must change the key"
+        );
+
+        // A different path with identical bytes still differs by path.
+        let b = dir.path().join("other.gguf");
+        std::fs::write(&b, "weights").unwrap();
+        std::fs::File::open(&b)
+            .unwrap()
+            .set_modified(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
+        assert_ne!(stamp, exe_stamp_with(Some(b.as_os_str())));
+    }
+
+    /// The daemon's own test for a stolen socket: the ident it captured at
+    /// bind time stops matching when the file is unlinked, and a fresh bind
+    /// on the same path is a different inode — so the loop in `serve`
+    /// notices the theft and heals instead of orphaning its model.
+    #[test]
+    fn socket_ident_distinguishes_the_bound_file_from_a_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let bound = socket_ident(&path);
+        assert_eq!(socket_ident(&path), bound);
+
+        // The theft as `serve` sees it: the file goes while our listener
+        // still holds the old inode open, so that inode cannot be recycled
+        // and the replacement is a different file. Dropping the listener
+        // first would free the inode, and some filesystems (the CI
+        // runners' overlayfs among them) hand the very next file at the
+        // same path the same (dev, ino) pair — the observed CI failure.
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(socket_ident(&path), None, "an unlinked socket is gone");
+
+        let replacement = UnixListener::bind(&path).unwrap();
+        assert_ne!(
+            socket_ident(&path),
+            bound,
+            "a fresh bind on the same path is not the old socket"
+        );
+        drop(replacement);
+        drop(listener);
+    }
 
     #[test]
     fn wait_for_client_times_out_with_nobody_there() {

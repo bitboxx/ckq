@@ -5,7 +5,7 @@
 //! it skips what indexing skips. Output goes through `output`, like the ranked
 //! methods: JSONL hits carry the span of the matching line and score 1.0.
 
-use crate::corpus::{Corpus, RelPath};
+use crate::corpus::{Corpus, RelPath, Scope};
 use crate::walk::WalkOptions;
 use anyhow::{Result, anyhow};
 use regex::Regex;
@@ -35,20 +35,59 @@ pub struct Match {
     pub after: Vec<(usize, String)>,
 }
 
-/// Every match, in path then line order. An invalid regex is an error whose
-/// message starts "Regex error".
-pub fn grep(corpus: &Corpus, opts: &GrepOptions) -> Result<Vec<Match>> {
+/// The result of one regex search: the matches, and how many files in the
+/// scope could not be read. grep exits 2 when an error occurred and nothing
+/// matched; ckq does the same, and keeps exit 0 when something was found,
+/// so a wrapper that reads nonzero as "no hits" still sees its hits.
+#[derive(Debug, Clone, Default)]
+pub struct GrepOutcome {
+    pub matches: Vec<Match>,
+    /// Files in the scope that could not be read. Each already produced one
+    /// stderr warning naming it.
+    pub read_errors: usize,
+}
+
+/// Every match, in path then line order, from `scope` only: files outside it
+/// are neither read nor counted, so `--topk` limits in-scope matches alone
+/// and a file argument pays for itself, not for its parent tree. An invalid
+/// regex is an error whose message starts "Regex error".
+pub fn grep(corpus: &Corpus, opts: &GrepOptions, scope: &Scope) -> Result<GrepOutcome> {
     let re = build_regex(opts)?;
     let files = crate::walk::walk(corpus, &opts.walk)?;
     let mut out = Vec::new();
+    let mut read_errors = 0usize;
     'files: for file in files {
-        let Ok(text) = std::fs::read_to_string(corpus.abs(&file.rel)) else {
+        if !scope.contains(&file.rel) {
             continue;
+        }
+        if file.unreadable {
+            read_errors += 1;
+            eprintln!(
+                "ckq: warning: cannot read {}",
+                corpus.abs(&file.rel).display()
+            );
+            continue;
+        }
+        let text = match std::fs::read_to_string(corpus.abs(&file.rel)) {
+            Ok(text) => text,
+            // Invalid UTF-8 past the probed head is a binary file, not an
+            // error; anything else is, and is reported the way grep would.
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => continue,
+            Err(e) => {
+                read_errors += 1;
+                eprintln!(
+                    "ckq: warning: cannot read {}: {e}",
+                    corpus.abs(&file.rel).display()
+                );
+                continue;
+            }
         };
         // (line number, byte offset of the line, display text) per line; the
         // display text is the line without its break, a prefix of the raw.
+        // `\r` alone breaks a line as well, matching the chunker's line
+        // numbers (classic-Mac endings).
         let lines: Vec<(usize, usize, &str)> = text
-            .split_inclusive('\n')
+            .split_inclusive(['\n', '\r'])
             .scan((1usize, 0usize), |(no, off), raw| {
                 let trimmed = raw.trim_end_matches(['\n', '\r']);
                 let entry = (*no, *off, trimmed);
@@ -91,7 +130,10 @@ pub fn grep(corpus: &Corpus, opts: &GrepOptions) -> Result<Vec<Match>> {
             }
         }
     }
-    Ok(out)
+    Ok(GrepOutcome {
+        matches: out,
+        read_errors,
+    })
 }
 
 /// The compiled pattern: `-F` escapes it, `-w` wraps it in word boundaries,
@@ -113,4 +155,31 @@ fn build_regex(opts: &GrepOptions) -> Result<Regex> {
         body
     };
     Regex::new(&body).map_err(|e| anyhow!("Regex error: invalid pattern: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lone_cr_endings_count_lines_like_the_chunker() {
+        let dir = std::env::temp_dir().join(format!("ckq-grep-cr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("cr.txt"),
+            "alpha needle one\rneedle two\rno match\r",
+        )
+        .unwrap();
+        let (corpus, scope) = Corpus::plain(&dir).unwrap();
+        let opts = GrepOptions {
+            pattern: "needle".to_string(),
+            ..Default::default()
+        };
+        let out = grep(&corpus, &opts, &scope).unwrap();
+        let texts: Vec<&str> = out.matches.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, vec!["alpha needle one", "needle two"]);
+        let lines: Vec<usize> = out.matches.iter().map(|m| m.line).collect();
+        assert_eq!(lines, vec![1, 2], "CR must end a line, as in the chunker");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

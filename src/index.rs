@@ -10,7 +10,7 @@ use crate::embed::{Device, Embedder, LlamaEmbedder};
 use crate::models::{self, ModelSpec};
 use crate::store::{FileRecord, IndexMeta, Store};
 use crate::walk::WalkOptions;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use std::time::Instant;
 
 #[derive(Debug, Clone, Default)]
@@ -72,25 +72,52 @@ fn resolve_model(corpus: &Corpus, opts: &IndexOptions) -> Result<(&'static Model
 pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
     let timing = std::env::var_os("CKQ_TIMING").is_some();
     let t0 = Instant::now();
-    crate::walk::ensure_ckqignore(corpus)?;
-    let walked = crate::walk::walk(corpus, &opts.walk)?;
-    let t_walk = t0.elapsed();
-
+    // --no-ckqignore means the run ignores .ckqignore files; writing a
+    // default one into a corpus that has none would mutate the very tree
+    // the flag asked to leave alone, and later runs would read a file the
+    // user never authored.
+    if !opts.walk.no_ckqignore {
+        crate::walk::ensure_ckqignore(corpus)?;
+    }
     let (spec, meta) = resolve_model(corpus, opts)?;
     // A different model than the index holds means a full rebuild: its
-    // vectors live in a different space and must not be mixed.
-    if let Some(store) = Store::open_read(corpus)? {
-        let existing = store.meta()?;
-        if existing.signature != meta.signature {
-            if !opts.quiet {
-                eprintln!(
-                    "index model changed from {} to {}; rebuilding",
-                    existing.model_alias, meta.model_alias
-                );
+    // vectors live in a different space and must not be mixed. A rebuild
+    // discards the old stats too, so every file is probed afresh.
+    let mut known = std::collections::HashMap::new();
+    // The read connection must be gone before `clean` removes the store:
+    // on Windows a file an open handle holds cannot be deleted, and the
+    // sharing violation is the whole difference from unix's unlink.
+    let rebuild = match Store::open_read(corpus)? {
+        Some(store) => {
+            let existing = store.meta()?;
+            if existing.signature != meta.signature {
+                if !opts.quiet {
+                    eprintln!(
+                        "index model changed from {} to {}; rebuilding",
+                        existing.model_alias, meta.model_alias
+                    );
+                }
+                true
+            } else {
+                known = store
+                    .files()
+                    .context("files")?
+                    .into_iter()
+                    .map(|(rel, rec)| (rel, (rec.size, rec.mtime_ns)))
+                    .collect();
+                false
             }
-            clean(corpus)?;
         }
+        None => false,
+    };
+    if rebuild {
+        clean(corpus)?;
     }
+
+    // Files whose stat the index vouches for are not opened (see
+    // `walk_known`); only new or changed files pay the 8 KiB probe.
+    let walked = crate::walk::walk_known(corpus, &opts.walk, &known)?;
+    let t_walk = t0.elapsed();
 
     let mut store = Store::open_write(corpus, &meta).context("open_write")?;
     let indexed = store.files().context("files")?;
@@ -107,6 +134,17 @@ pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
             .is_some_and(|p| p.size == file.size && p.mtime_ns == file.mtime_ns)
         {
             report.unchanged += 1;
+            continue;
+        }
+        // A file whose head the walk could not open is skipped, not removed:
+        // its rows stay (it is in the live set below), one warning names it,
+        // and the next run that can read it embeds it again.
+        if file.unreadable {
+            report.skipped += 1;
+            eprintln!(
+                "ckq: warning: cannot read {}; keeping its indexed rows",
+                corpus.abs(&file.rel).display()
+            );
             continue;
         }
         match std::fs::read(corpus.abs(&file.rel)) {
@@ -144,8 +182,12 @@ pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
                 }
                 to_embed.push((rec, text, chunks));
             }
-            Err(_) => {
+            Err(e) => {
                 report.skipped += 1;
+                eprintln!(
+                    "ckq: warning: cannot read {}: {e}; keeping its indexed rows",
+                    corpus.abs(&file.rel).display()
+                );
             }
         }
     }
@@ -194,6 +236,18 @@ pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
 
 /// Index or re-index one file (`--add`), leaving the rest as it is.
 pub fn add_file(corpus: &Corpus, rel: &RelPath, opts: &IndexOptions) -> Result<IndexReport> {
+    // A file the walk filters out would be indexed here and then counted
+    // "gone" by every later search -- a permanent staleness warning -- until
+    // the next `--index` silently removed it again. Refuse it up front, by
+    // the same walk rules an index run applies.
+    let walked = crate::walk::walk(corpus, &opts.walk)?;
+    if !walked.iter().any(|f| f.rel == *rel) {
+        bail!(
+            "{} is excluded from the index (ignored, hidden or binary); pass the \
+             walk flags (--hidden, --no-ignore, --no-ckqignore) to index it",
+            corpus.abs(rel).display()
+        );
+    }
     let (spec, meta) = resolve_model(corpus, opts)?;
     if let Some(store) = Store::open_read(corpus)? {
         let existing = store.meta()?;
@@ -251,15 +305,20 @@ fn mtime_ns(meta: &std::fs::Metadata) -> i64 {
 }
 
 /// Files whose size or mtime differ from the index, plus files on disk the
-/// index lacks and files it holds that are gone. Cheap: no reading, no
-/// hashing. A search prints a one-line stderr warning when this is non-zero;
-/// it never updates the index itself.
+/// index lacks and files it holds that are gone. Cheap by construction: it
+/// stats every file but opens only the new and changed ones — a file whose
+/// stat matches the index is never read. A search prints a one-line stderr
+/// warning when this is non-zero; it never updates the index itself.
 pub fn stale_count(corpus: &Corpus, opts: &WalkOptions) -> Result<usize> {
     let Some(store) = Store::open_read(corpus)? else {
         return Ok(0);
     };
     let indexed = store.files().context("files")?;
-    let walked = crate::walk::walk(corpus, opts)?;
+    let known: std::collections::HashMap<RelPath, (u64, i64)> = indexed
+        .iter()
+        .map(|(rel, rec)| (rel.clone(), (rec.size, rec.mtime_ns)))
+        .collect();
+    let walked = crate::walk::walk_known(corpus, opts, &known)?;
     let mut stale = 0usize;
     for file in &walked {
         match indexed.get(&file.rel) {
@@ -285,4 +344,117 @@ pub fn clean(corpus: &Corpus) -> Result<bool> {
         std::fs::remove_dir_all(&dir)?;
     }
     Ok(corpus.root.join(crate::corpus::LEGACY_INDEX_DIR).exists())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::corpus::{Corpus, RelPath};
+    use crate::store::{FileRecord, IndexMeta, Store};
+
+    fn spec() -> &'static ModelSpec {
+        models::resolve(models::DEFAULT_ALIAS).unwrap()
+    }
+
+    /// A file that turns unreadable between runs is skipped, not deleted:
+    /// its rows survive so a transient permission error does not cost a
+    /// re-embed of the whole file. Unix only: the error is modelled with
+    /// chmod, and root ignores permissions.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_file_keeps_its_rows_and_counts_skipped() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let corpus = Corpus::for_index(dir.path()).unwrap();
+        std::fs::write(dir.path().join("gone.md"), "needle\n").unwrap();
+        std::fs::write(dir.path().join("keep.md"), "safe\n").unwrap();
+        let rec = FileRecord {
+            rel: RelPath::new(std::path::Path::new("gone.md")).unwrap(),
+            hash: "h".to_string(),
+            size: 7,
+            mtime_ns: 1,
+        };
+        let chunk = crate::chunk::Chunk {
+            byte_start: 0,
+            byte_end: 6,
+            line_start: 1,
+            line_end: 1,
+        };
+        let mut store = Store::open_write(&corpus, &IndexMeta::for_model(spec())).unwrap();
+        store.put_file(&rec, "needle", &[chunk], &[]).unwrap();
+        drop(store);
+
+        let locked = dir.path().join("gone.md");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let report = update(&corpus, &IndexOptions::default()).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert_eq!(report.removed, 0, "{report:?}");
+        assert_eq!(report.skipped, 1, "{report:?}");
+        let store = Store::open_read(&corpus).unwrap().unwrap();
+        assert!(
+            store
+                .files()
+                .unwrap()
+                .contains_key(&RelPath::new(std::path::Path::new("gone.md")).unwrap())
+        );
+    }
+
+    /// A file whose size and mtime match the index is never opened: its
+    /// content here is binary, which a probe would see and drop, yet the
+    /// stat is what the index vouches for — so staleness stays 0 and
+    /// `--index` counts the file unchanged without reading it.
+    #[test]
+    fn stale_count_and_update_never_open_a_stat_matching_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let corpus = Corpus::for_index(dir.path()).unwrap();
+        let mut bytes = vec![b'x'; 100];
+        bytes[50] = 0; // a NUL: any 8 KiB probe would call this binary
+        let path = dir.path().join("fake.md");
+        std::fs::write(&path, &bytes).unwrap();
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        // write-capable handle: a read-only one cannot set timestamps on
+        // Windows (Access denied), and unix does not care either way.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+        let mtime_ns = when
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as i64;
+        let rec = FileRecord {
+            rel: RelPath::new(std::path::Path::new("fake.md")).unwrap(),
+            hash: "h".to_string(),
+            size: bytes.len() as u64,
+            mtime_ns,
+        };
+        let mut store = Store::open_write(&corpus, &IndexMeta::for_model(spec())).unwrap();
+        store.put_file(&rec, "indexed text", &[], &[]).unwrap();
+        drop(store);
+
+        assert_eq!(
+            stale_count(&corpus, &WalkOptions::default()).unwrap(),
+            0,
+            "a matching stat must not be probed"
+        );
+        let report = update(&corpus, &IndexOptions::default()).unwrap();
+        assert_eq!(report.unchanged, 1, "{report:?}");
+        assert_eq!(report.removed, 0, "{report:?}");
+
+        // Touch the file and the mismatch shows up again.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now())
+            .unwrap();
+        assert_eq!(
+            stale_count(&corpus, &WalkOptions::default()).unwrap(),
+            1,
+            "a changed stat must be seen"
+        );
+    }
 }

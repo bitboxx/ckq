@@ -79,7 +79,7 @@ struct Cli {
     /// Number of results (default 10 for ranked modes).
     #[arg(long, visible_alias = "limit", value_name = "N")]
     topk: Option<usize>,
-    /// Minimum semantic score, 0.0 to 1.0 (default: the model's own).
+    /// Minimum semantic score, -1.0 to 1.0 (default: the model's own).
     #[arg(long)]
     threshold: Option<f32>,
     /// Show scores in text output.
@@ -185,6 +185,16 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         no_ckqignore: cli.no_ckqignore,
         no_ignore: cli.no_ignore,
     };
+
+    // NaN parses as f32 and then compares false against everything, so a
+    // bogus threshold used to end in a bare "No matches found" (or silently
+    // disabled the filter on --lex).
+    if cli.threshold.is_some_and(|t| !(-1.0..=1.0).contains(&t)) {
+        anyhow::bail!(
+            "--threshold must be a number between -1.0 and 1.0 (got {})",
+            cli.threshold.unwrap()
+        );
+    }
 
     // ---- Daemon ----------------------------------------------------------
     #[cfg(unix)]
@@ -306,7 +316,10 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         files_only: cli.files_with_matches,
         filenames: false,
     };
+    warn_inert_flags(&cli);
     let mut found = 0usize;
+    // Regex mode only: files that could not be read (see `grep`).
+    let mut read_errors = 0usize;
 
     for path in &paths {
         let show_filenames = paths.len() > 1 || path.is_dir();
@@ -334,6 +347,23 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             }
             let meta = store.meta()?;
             let spec = models::resolve(&meta.model_repo)?;
+            // The stored signature says what the index's vectors are; the
+            // one this build computes now says what it would embed a query
+            // with. They differ when CKQ_GGUF_FILE was repointed (or the
+            // file replaced) since indexing, or when the prompts, pooling or
+            // chunker changed under the alias: querying across that mixes
+            // two models' spaces, so refuse and name the rebuild. --index
+            // detects the same mismatch and rebuilds on its own.
+            let now = models::signature(spec);
+            if now != meta.signature {
+                anyhow::bail!(
+                    "the index at {} was built with different weights or settings \
+                     (signature {} != {}); run `ckq --index` to rebuild it",
+                    corpus.index_dir().display(),
+                    meta.signature,
+                    now
+                );
+            }
             let query = search::Query {
                 text: pattern.clone(),
                 terms: cli.terms.clone(),
@@ -364,18 +394,66 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 limit: cli.topk,
                 walk: walk_opts.clone(),
             };
-            let mut matches = grep::grep(&corpus, &opts)?;
-            // A file argument scopes the search to that file.
-            matches.retain(|m| scope.contains(&m.rel));
-            found += output::print_matches(&corpus, &matches, &out_opts)?;
+            let outcome = grep::grep(&corpus, &opts, &scope)?;
+            found += output::print_matches(&corpus, &outcome.matches, &out_opts)?;
+            read_errors += outcome.read_errors;
         }
     }
 
     if found == 0 {
+        // grep's third exit code: an error occurred and nothing matched.
+        // The warnings on stderr said what could not be read.
+        if read_errors > 0 {
+            return Ok(ExitCode::from(2));
+        }
         eprintln!("No matches found");
         return Ok(ExitCode::from(1));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// One stderr line per flag that does nothing in the chosen mode, so a user
+/// narrowing a semantic search with `--term` hears that nothing happened.
+/// Not an error — grep-style muscle memory keeps working — and `-n` and `-l`
+/// are absent because ranked output honours them. The wrapper `vq` passes
+/// none of these flags, so it never sees a warning.
+fn warn_inert_flags(cli: &Cli) {
+    if cli.quiet {
+        return;
+    }
+    let ranked = cli.sem || cli.lex || cli.hybrid;
+    let mode = if cli.sem {
+        "--sem"
+    } else if cli.lex {
+        "--lex"
+    } else if cli.hybrid {
+        "--hybrid"
+    } else {
+        "regex"
+    };
+    let mut inert: Vec<&str> = Vec::new();
+    if ranked {
+        if cli.ignore_case {
+            inert.push("-i");
+        }
+        if cli.word_regexp {
+            inert.push("-w");
+        }
+        if cli.fixed_strings {
+            inert.push("-F");
+        }
+        if cli.context.is_some() {
+            inert.push("-C");
+        }
+    }
+    // `--term` feeds the lexical method, which --lex and --hybrid have and
+    // --sem and regex mode do not.
+    if !cli.terms.is_empty() && (cli.sem || !ranked) {
+        inert.push("--term");
+    }
+    for flag in inert {
+        eprintln!("ckq: warning: {flag} has no effect in {mode} mode");
+    }
 }
 
 /// The paths an index command works on: the arguments, or `.` when none.
@@ -443,7 +521,9 @@ fn status(cli: &Cli) -> anyhow::Result<ExitCode> {
             println!("{}", serde_json::to_string_pretty(&json)?);
             continue;
         }
-        if stats.files == 0 {
+        // An existing index with no files is still an index: report it as
+        // one (0 files) rather than claiming there is none.
+        if store.is_none() {
             eprintln!("No index found at {}", corpus.root.display());
             eprintln!("Run `ckq --index .` to create an index");
             continue;

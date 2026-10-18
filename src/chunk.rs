@@ -4,12 +4,19 @@
 //! size; other text packs whole lines. Sizes match the old engine (1,024-token
 //! target, 200-token overlap) so the vectors stay comparable with what the
 //! benchmarks measured. Token counts are a character-based estimate, not a
-//! real tokenizer: the model's own context (2,048) leaves room for the error.
+//! real tokenizer: per-script rates chosen to err high, so the gap the
+//! estimate still leaves is covered by the model's own context (2,048).
 
 use crate::corpus::RelPath;
 
 pub const TARGET_TOKENS: usize = 1024;
 pub const OVERLAP_TOKENS: usize = 200;
+
+/// Bumped whenever the chunker's output for the same text changes shape (a
+/// new split rule, a different token estimate). Folded into the index
+/// signature, so an index built before the change is refused instead of
+/// mixing incomparable vectors.
+pub const CHUNKER_VERSION: u16 = 2;
 
 /// A span of a document. Bytes are a half-open range into the file's UTF-8
 /// text, on char boundaries; lines are 1-based and inclusive.
@@ -71,11 +78,13 @@ pub fn chunk(rel: &RelPath, text: &str) -> Vec<Chunk> {
 
 /// One unit per non-blank line: byte end excludes the line break. Blank lines
 /// are dropped: chunks need not cover them, and dropping them keeps an
-/// all-blank document chunk-free.
+/// all-blank document chunk-free. `\r` alone ends a line too (classic-Mac
+/// endings), the way `\r\n` and `\n` do, so such a file is not one giant
+/// unit numbered line 1.
 fn split_lines(text: &str) -> Vec<Unit<'_>> {
     let mut out = Vec::new();
     let mut offset = 0usize;
-    for (i, raw) in text.split_inclusive('\n').enumerate() {
+    for (i, raw) in text.split_inclusive(['\n', '\r']).enumerate() {
         let trimmed = raw.trim_end_matches(['\n', '\r']);
         let start = offset;
         let end = start + trimmed.len();
@@ -83,16 +92,102 @@ fn split_lines(text: &str) -> Vec<Unit<'_>> {
         if trimmed.trim().is_empty() {
             continue;
         }
-        out.push(Unit {
-            text: trimmed,
-            byte_start: start,
-            byte_end: end,
-            line_start: i + 1,
-            line_end: i + 1,
-            tokens: estimate_tokens(trimmed),
-        });
+        let tokens = estimate_tokens(trimmed);
+        if tokens > TARGET_TOKENS {
+            // A line past the target leaves `pack` no choice but one chunk
+            // over the model's whole context, and embed truncates that,
+            // losing the line's tail from every semantic result. Cut it into
+            // pieces that fit before it reaches the packer.
+            out.extend(split_oversized(text, start, end, i + 1));
+        } else {
+            out.push(Unit {
+                text: trimmed,
+                byte_start: start,
+                byte_end: end,
+                line_start: i + 1,
+                line_end: i + 1,
+                tokens,
+            });
+        }
     }
     out
+}
+
+/// Pieces of one line longer than the target, each within it: cuts prefer
+/// whitespace and never land inside a character. Every piece keeps the line's
+/// own number, so spans still point into the line they came from.
+fn split_oversized(doc: &str, start: usize, end: usize, line: usize) -> Vec<Unit<'_>> {
+    let mut out = Vec::new();
+    let mut from = start;
+    while from < end {
+        let cut = next_cut(doc, from, end);
+        let piece = &doc[from..cut];
+        out.push(Unit {
+            text: piece,
+            byte_start: from,
+            byte_end: cut,
+            line_start: line,
+            line_end: line,
+            tokens: dense_estimate(piece),
+        });
+        from = cut;
+    }
+    out
+}
+
+/// Token estimate for a piece of an over-long line. A line too long for the
+/// target is dense by nature — minified code measures near two characters
+/// per token on the real tokenizer — so the prose rates (4.8, or 4.2 for
+/// code-indicator-bearing lines) undercount it by more than the 2x the
+/// context gives; never more optimistic than 2.5 characters per token.
+/// Wide-script and emoji pieces keep their higher rates, which this takes
+/// the max with.
+fn dense_estimate(piece: &str) -> usize {
+    let chars = piece.chars().count();
+    estimate_tokens(piece).max(((chars as f32) / 2.5).ceil() as usize)
+}
+
+/// Where to cut the next piece of `doc[from..end]`: the longest prefix that
+/// still fits the target, moved back to just after the last whitespace in a
+/// short window so words stay whole when there is one. The estimate grows
+/// monotonically with a prefix of a single line, so a binary search finds the
+/// bound; one character always fits, so the cut always makes progress.
+fn next_cut(doc: &str, from: usize, end: usize) -> usize {
+    let first = doc[from..end].chars().next().expect("non-empty").len_utf8();
+    let mut lo = from + first;
+    let mut hi = end;
+    while lo < hi {
+        let mut mid = (lo + hi).div_ceil(2);
+        while !doc.is_char_boundary(mid) {
+            mid += 1;
+        }
+        if dense_estimate(&doc[from..mid]) <= TARGET_TOKENS {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+            while !doc.is_char_boundary(hi) {
+                hi -= 1;
+            }
+        }
+    }
+    debug_assert!(
+        dense_estimate(&doc[from..lo]) <= TARGET_TOKENS,
+        "the estimate is not monotonic over a single line"
+    );
+    // Whitespace within the last quarter of the piece: cutting there leaves
+    // whole words on both sides. Without one in the window (minified text)
+    // the longest fitting prefix stands.
+    let mut window = from + (lo - from) * 3 / 4;
+    while !doc.is_char_boundary(window) {
+        window += 1;
+    }
+    let mut cut = lo;
+    for (i, c) in doc[window..lo].char_indices() {
+        if c.is_whitespace() {
+            cut = window + i + c.len_utf8();
+        }
+    }
+    cut
 }
 
 /// Markdown sections: a section is a heading line plus everything up to the
@@ -100,13 +195,21 @@ fn split_lines(text: &str) -> Vec<Unit<'_>> {
 /// section too big for one chunk is hard-split back into lines.
 fn split_sections<'a>(lines: &[Unit<'a>]) -> Vec<Unit<'a>> {
     let mut sections: Vec<Vec<Unit<'_>>> = Vec::new();
-    let mut fence = false;
+    // The opening fence's marker and its length, as CommonMark has it: only
+    // a run of the same character at least as long closes it. One shared
+    // flag let a ``` block be closed by a ~~~ line inside it, and a heading
+    // after that line started a section mid-fence.
+    let mut fence: Option<(u8, usize)> = None;
     for line in lines {
         let t = line.text.trim_start();
-        if t.starts_with("```") || t.starts_with("~~~") {
-            fence = !fence;
+        match (fence, fence_run(t)) {
+            (None, Some(run)) => fence = Some(run),
+            (Some((open, open_len)), Some((marker, len))) if marker == open && len >= open_len => {
+                fence = None;
+            }
+            _ => {}
         }
-        let is_heading = !fence && t.starts_with('#') && t[1..].starts_with([' ', '#']);
+        let is_heading = fence.is_none() && t.starts_with('#') && t[1..].starts_with([' ', '#']);
         if is_heading || sections.is_empty() {
             sections.push(vec![*line]);
         } else {
@@ -123,6 +226,17 @@ fn split_sections<'a>(lines: &[Unit<'a>]) -> Vec<Unit<'a>> {
         }
     }
     units
+}
+
+/// A fence marker opening `t`: which character and how many of it, CommonMark
+/// requiring three or more. `None` when the line is no fence.
+fn fence_run(t: &str) -> Option<(u8, usize)> {
+    let first = t.as_bytes().first()?;
+    if *first != b'`' && *first != b'~' {
+        return None;
+    }
+    let len = t.as_bytes().iter().take_while(|&&b| b == *first).count();
+    (len >= 3).then_some((*first, len))
 }
 
 /// Accumulate units into chunks of at most `TARGET_TOKENS`, starting each new
@@ -155,12 +269,30 @@ fn pack(mut units: Vec<Unit<'_>>) -> Vec<Unit<'_>> {
     chunks
 }
 
-/// Estimated token count, as the old engine counted.
+/// Estimated token count. A character-based guess, deliberately lopsided:
+/// underestimating is what lets a chunk past the model's context, where embed
+/// truncates it, so each class of characters gets a rate on the safe side of
+/// what the real tokenizer measures (emoji ≈1 token per character, Arabic and
+/// the Indic scripts ≈3 characters per token) rather than the English ~4.8
+/// the old engine assumed for everything but CJK.
 pub fn estimate_tokens(text: &str) -> usize {
     if text.is_empty() {
         return 0;
     }
-    let char_count = text.chars().count();
+    let mut wide = 0usize;
+    let mut dense = 0usize;
+    let mut symbol = 0usize;
+    for c in text.chars() {
+        let code = c as u32;
+        if is_wide_script(code) {
+            wide += 1;
+        } else if is_dense_script(code) {
+            dense += 1;
+        } else if is_symbol_ish(code) {
+            symbol += 1;
+        }
+    }
+    let rest = text.chars().count() - wide - dense - symbol;
     let code_indicators = count_code_indicators(text);
     let total_lines = text.lines().count().max(1);
     let code_density = code_indicators as f32 / total_lines as f32;
@@ -171,32 +303,65 @@ pub fn estimate_tokens(text: &str) -> usize {
     } else {
         4.8 // natural language
     };
-    let wide = count_wide_script_chars(text);
-    let narrow = char_count - wide;
-    let tokens = wide as f32 / 1.2 + narrow as f32 / chars_per_token;
+    // Wide ≈1.2 chars/token, dense ≈2 (measured ≈3), symbols and the
+    // joiners emoji ride on ≈1 each, everything else at the Latin rate.
+    let tokens =
+        wide as f32 / 1.2 + dense as f32 / 2.0 + symbol as f32 + rest as f32 / chars_per_token;
     tokens.ceil() as usize
 }
 
 /// Characters from scripts whose tokenizers spend roughly one token per
 /// character: Han, kana, Hangul, Thai, Lao, Khmer and Myanmar.
-fn count_wide_script_chars(text: &str) -> usize {
-    fn is_wide(code: u32) -> bool {
-        matches!(code,
-            0x3400..=0x4DBF     // CJK Extension A
-            | 0x4E00..=0x9FFF   // CJK Unified
-            | 0xF900..=0xFAFF   // CJK Compatibility Ideographs
-            | 0x20000..=0x2A6DF // CJK Extension B
-            | 0x3040..=0x30FF   // Hiragana, Katakana
-            | 0x1100..=0x11FF   // Hangul Jamo
-            | 0x3130..=0x318F   // Hangul Compatibility Jamo
-            | 0xAC00..=0xD7AF   // Hangul Syllables
-            | 0x0E00..=0x0E7F   // Thai
-            | 0x0E80..=0x0EFF   // Lao
-            | 0x1780..=0x17FF   // Khmer
-            | 0x1000..=0x109F   // Myanmar
-        )
-    }
-    text.chars().filter(|c| is_wide(*c as u32)).count()
+fn is_wide_script(code: u32) -> bool {
+    matches!(code,
+        0x3400..=0x4DBF     // CJK Extension A
+        | 0x4E00..=0x9FFF   // CJK Unified
+        | 0xF900..=0xFAFF   // CJK Compatibility Ideographs
+        | 0x20000..=0x2A6DF // CJK Extension B
+        | 0x3040..=0x30FF   // Hiragana, Katakana
+        | 0x1100..=0x11FF   // Hangul Jamo
+        | 0x3130..=0x318F   // Hangul Compatibility Jamo
+        | 0xAC00..=0xD7AF   // Hangul Syllables
+        | 0x0E00..=0x0E7F   // Thai
+        | 0x0E80..=0x0EFF   // Lao
+        | 0x1780..=0x17FF   // Khmer
+        | 0x1000..=0x109F   // Myanmar
+    )
+}
+
+/// Scripts the old engine left at the Latin rate although the tokenizer
+/// spends ~3 characters per token on them: counted at 2, the safe side of
+/// every measurement.
+fn is_dense_script(code: u32) -> bool {
+    matches!(code,
+        0x0530..=0x05FF   // Armenian, Hebrew
+        | 0x0600..=0x08FF // Arabic, Syriac, Thaana, N'Ko
+        | 0x0900..=0x0DFF // Devanagari through Sinhala
+        | 0x0F00..=0x0FFF // Tibetan
+        | 0x10A0..=0x10FF // Georgian
+        | 0x1200..=0x139F // Ethiopic
+        | 0x13A0..=0x167F // Cherokee, Canadian Aboriginal
+        | 0xFB50..=0xFDFF // Arabic Presentation Forms-A
+        | 0xFE70..=0xFEFF // Arabic Presentation Forms-B
+    )
+}
+
+/// Emoji, pictographs, and the joiners and selectors they ride on: measured
+/// at one token per character (a few cost more), never lumped in with
+/// English prose.
+fn is_symbol_ish(code: u32) -> bool {
+    matches!(code,
+        0x200D            // zero-width joiner
+        | 0x20E3          // combining enclosing keycap
+        | 0xFE0F          // variation selector-16
+        | 0x2190..=0x21FF // arrows
+        | 0x2300..=0x23FF // misc technical
+        | 0x25A0..=0x25FF // geometric shapes
+        | 0x2600..=0x27BF // misc symbols, dingbats
+        | 0x2B00..=0x2BFF // misc symbols and arrows
+        | 0xFF00..=0xFF5F // fullwidth forms
+        | 0x1F000..=0x1FFFF // emoji, pictographs, regional indicators
+    )
 }
 
 fn count_code_indicators(text: &str) -> usize {
@@ -330,11 +495,171 @@ mod tests {
     }
 
     #[test]
+    fn lone_cr_endings_break_lines_like_lf() {
+        // Classic-Mac endings: without `\r` as a break the whole file is one
+        // unit numbered line 1, one chunk over the context, truncated at
+        // embed time and every line number wrong.
+        let text: String = (1..=400)
+            .map(|i| format!("Line {i} of a classic Mac note\r"))
+            .collect();
+        let chunks = chunk(&rel("cr.md"), &text);
+        assert_eq!(chunks.last().unwrap().line_end, 400, "line numbers");
+        let mut covered = vec![false; 400];
+        for c in &chunks {
+            for seen in covered.iter_mut().take(c.line_end).skip(c.line_start - 1) {
+                *seen = true;
+            }
+        }
+        assert!(covered.iter().all(|b| *b), "some line in no chunk");
+    }
+
+    #[test]
+    fn a_line_past_the_context_is_split_within_the_target() {
+        // One ~21,000-char line: a single chunk would estimate past the
+        // model's whole 2,048-token context, and embed would truncate it.
+        let line: String = "unbroken paragraph of running text and more words ".repeat(400);
+        let text = format!("{line}\n");
+        let chunks = chunk(&rel("long.txt"), &text);
+        assert!(chunks.len() > 1, "one oversized chunk: {}", chunks.len());
+        let mut covered = vec![false; line.len()];
+        for c in &chunks {
+            assert_eq!(c.line_start, 1, "pieces must keep the line's number");
+            assert_eq!(c.line_end, 1);
+            let body = &text[c.byte_start..c.byte_end];
+            assert!(
+                estimate_tokens(body) <= TARGET_TOKENS,
+                "chunk estimates {} tokens",
+                estimate_tokens(body)
+            );
+            for seen in covered.iter_mut().take(c.byte_end).skip(c.byte_start) {
+                *seen = true;
+            }
+        }
+        assert!(
+            covered.iter().all(|b| *b),
+            "part of the line is in no chunk"
+        );
+    }
+
+    #[test]
+    fn oversized_line_pieces_never_split_a_character() {
+        // Multibyte, no whitespace: cuts must fall between characters even
+        // when there is no word boundary to prefer.
+        let line: String = "é".repeat(12_000);
+        let text = format!("{line}\n");
+        let chunks = chunk(&rel("accents.txt"), &text);
+        assert!(chunks.len() > 1);
+        for c in &chunks {
+            assert!(
+                text.is_char_boundary(c.byte_start) && text.is_char_boundary(c.byte_end),
+                "cut inside a character"
+            );
+            let body = &text[c.byte_start..c.byte_end];
+            assert!(estimate_tokens(body) <= TARGET_TOKENS);
+        }
+        let total: usize = chunks.iter().map(|c| c.byte_end - c.byte_start).sum();
+        assert!(total >= line.len(), "the line must stay covered");
+    }
+
+    #[test]
     fn token_estimate_counts_wide_scripts_at_full_rate() {
         let latin = "hello world of text"; // 19 chars
         let cjk = "山中的寺庙藏于云雾之间"; // 11 wide chars
         assert!(estimate_tokens(cjk) >= 9, "wide script undercounted");
         assert!(estimate_tokens(latin) >= 4);
         assert_eq!(estimate_tokens(""), 0);
+    }
+
+    #[test]
+    fn token_estimate_does_not_undercount_emoji_or_dense_scripts() {
+        // Measured on the real gemma tokenizer: emoji ≈1 token per character,
+        // Arabic ≈3 characters per token. The old Latin-only rates gave 4.8
+        // characters per token to both, so an at-target chunk of emoji
+        // tokenized to ~5,000 tokens and embed truncated it.
+        let emoji: String = "😀".repeat(100);
+        assert!(estimate_tokens(&emoji) >= 100, "emoji undercounted");
+        let arabic: String = "ع".repeat(4_500);
+        assert!(
+            estimate_tokens(&arabic) >= 4_500 / 2,
+            "Arabic undercounted: {}",
+            estimate_tokens(&arabic)
+        );
+        let devanagari: String = "क".repeat(100);
+        assert!(
+            estimate_tokens(&devanagari) >= 50,
+            "Devanagari undercounted"
+        );
+    }
+
+    #[test]
+    fn latin_and_cjk_estimates_stay_where_they_were() {
+        // The bench's Latin and CJK documents must keep packing exactly as
+        // before; only the newly classified scripts may estimate higher.
+        assert_eq!(estimate_tokens("hello world of text"), 4);
+        assert!(estimate_tokens("山中的寺庙藏于云雾之间") >= 9);
+    }
+
+    #[test]
+    fn a_fence_is_closed_only_by_its_own_marker() {
+        // A ~~~ line inside a ``` block is literal text; the heading after
+        // it must not start a section. The reverse pairing behaves the same.
+        // Each small section arrives as one merged unit, so a section's
+        // leader line is the unit's line_start (1 and 6, never 4).
+        for open in ["```", "~~~"] {
+            let close = if open == "```" { "~~~" } else { "```" };
+            let text = format!(
+                "# Head\n{open}text\n{close} not a closing fence\n# not a heading\n{open}\n# Tail\n"
+            );
+            let sections = split_sections(&split_lines(&text));
+            let leaders: Vec<usize> = sections.iter().map(|u| u.line_start).collect();
+            assert_eq!(
+                leaders,
+                vec![1, 6],
+                "{open} fence closed by {close}: sections start at {leaders:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_shorter_run_of_the_same_marker_does_not_close_a_fence() {
+        let text = "# Head\n````text\n```\n# not a heading\n````\n# Tail\n";
+        let sections = split_sections(&split_lines(text));
+        let leaders: Vec<usize> = sections.iter().map(|u| u.line_start).collect();
+        assert_eq!(
+            leaders,
+            vec![1, 6],
+            "a three-backtick line closed a four-backtick fence: sections start at {leaders:?}"
+        );
+    }
+
+    #[test]
+    fn an_emoji_line_cannot_slip_past_the_context() {
+        // 3,000 emoji estimated at the old Latin rate fit one "target-size"
+        // chunk that really tokenizes near 3,000 tokens.
+        let text = format!("{}\n", "😀".repeat(3_000));
+        let chunks = chunk(&rel("emoji.txt"), &text);
+        assert!(chunks.len() > 1, "one chunk for 3,000 emoji");
+        for c in &chunks {
+            assert!(estimate_tokens(&text[c.byte_start..c.byte_end]) <= TARGET_TOKENS);
+        }
+    }
+
+    #[test]
+    fn minified_line_pieces_estimate_at_a_dense_rate() {
+        // Dense single-line code measures near two characters per token on
+        // the real tokenizer, so the prose rates would let a piece pack
+        // ~4,300 characters and tokenize past the context again. Pieces of
+        // an over-long line are capped at 2.5 characters per token.
+        let unit = r#"function f(){return "payload"+1;};var x={a:1,b:"tag"};"#;
+        let text = format!("{}\n", unit.repeat(200));
+        let chunks = chunk(&rel("bundle.js"), &text);
+        assert!(chunks.len() > 1);
+        for c in &chunks {
+            let chars = text[c.byte_start..c.byte_end].chars().count();
+            assert!(
+                chars <= TARGET_TOKENS * 5 / 2,
+                "{chars} chars in one chunk can tokenize past the context"
+            );
+        }
     }
 }

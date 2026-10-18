@@ -2,25 +2,12 @@
 //! no model and no network. Anything that has to index (and so embed) carries
 //! an `e2e:` ignore and runs with `cargo e2e`.
 
+mod common;
+
 use serial_test::serial;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 use tempfile::TempDir;
-
-fn ckq_binary() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_ckq"))
-}
-
-/// Spawn ckq with the settings that change its behaviour cleared, so these
-/// tests exercise the defaults regardless of the ambient environment.
-fn ckq_command() -> Command {
-    let mut cmd = Command::new(ckq_binary());
-    for var in ["CKQ_GGUF_FILE", "CKQ_TIMING", "CKQ_QUERY_DEVICE"] {
-        cmd.env_remove(var);
-    }
-    cmd
-}
 
 #[test]
 fn test_basic_grep_functionality() {
@@ -42,7 +29,7 @@ fn test_basic_grep_functionality() {
     )
     .unwrap();
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["rust", temp_dir.path().to_str().unwrap()])
         .output()
         .expect("Failed to run ckq");
@@ -62,7 +49,7 @@ fn test_case_insensitive_search() {
     )
     .unwrap();
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["-i", "HELLO", temp_dir.path().to_str().unwrap()])
         .output()
         .expect("Failed to run ckq");
@@ -84,7 +71,7 @@ fn test_recursive_search() {
     )
     .unwrap();
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["-r", "target", temp_dir.path().to_str().unwrap()])
         .output()
         .expect("Failed to run ckq");
@@ -100,7 +87,7 @@ fn test_json_output() {
     let temp_dir = TempDir::new().unwrap();
     fs::write(temp_dir.path().join("test.txt"), "json test line").unwrap();
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--json", "json", temp_dir.path().to_str().unwrap()])
         .output()
         .expect("Failed to run ckq");
@@ -124,7 +111,7 @@ fn test_context_lines() {
     )
     .unwrap();
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["-C", "1", "target", temp_dir.path().to_str().unwrap()])
         .output()
         .expect("Failed to run ckq with context");
@@ -150,7 +137,7 @@ fn test_topk_limit() {
         .unwrap();
     }
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--topk", "5", "match", temp_dir.path().to_str().unwrap()])
         .output()
         .expect("Failed to run ckq with topk");
@@ -170,7 +157,7 @@ fn test_line_numbers() {
     )
     .unwrap();
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["-n", "matched", temp_dir.path().to_str().unwrap()])
         .output()
         .expect("Failed to run ckq with line numbers");
@@ -185,7 +172,7 @@ fn test_no_matches_stderr_message() {
     let temp_dir = TempDir::new().unwrap();
     fs::write(temp_dir.path().join("test.txt"), "hello world").unwrap();
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["nonexistent_pattern", temp_dir.path().to_str().unwrap()])
         .output()
         .expect("Failed to run ckq");
@@ -202,7 +189,7 @@ fn test_no_matches_stderr_message() {
 
 #[test]
 fn test_nonexistent_directory_error() {
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--sem", "test", "/nonexistent/directory"])
         .output()
         .expect("Failed to run ckq");
@@ -219,7 +206,7 @@ fn test_error_handling() {
     let temp_dir = TempDir::new().unwrap();
     fs::write(temp_dir.path().join("test.txt"), "test content").unwrap();
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["[invalid", temp_dir.path().to_str().unwrap()])
         .output()
         .expect("Failed to run ckq");
@@ -236,7 +223,7 @@ fn test_invalid_regex_warning_during_highlighting() {
     )
     .unwrap();
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["[invalid", temp_dir.path().to_str().unwrap()])
         .output()
         .expect("Failed to run ckq");
@@ -261,7 +248,7 @@ fn test_jsonl_basic_output() {
     )
     .unwrap();
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["fn main", "--jsonl", temp_dir.path().to_str().unwrap()])
         .output()
         .expect("Failed to run ckq");
@@ -297,7 +284,7 @@ fn test_jsonl_no_snippet_flag() {
     )
     .unwrap();
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args([
             "fn main",
             "--jsonl",
@@ -332,12 +319,12 @@ fn test_jsonl_vs_regular_output() {
     )
     .unwrap();
 
-    let regular_output = ckq_command()
+    let regular_output = common::ckq()
         .args(["fn main", temp_dir.path().to_str().unwrap()])
         .output()
         .expect("Failed to run ckq");
 
-    let jsonl_output = ckq_command()
+    let jsonl_output = common::ckq()
         .args(["fn main", "--jsonl", temp_dir.path().to_str().unwrap()])
         .output()
         .expect("Failed to run ckq");
@@ -369,7 +356,7 @@ fn test_jsonl_with_different_languages() {
     )
     .unwrap();
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["main", "--jsonl", temp_dir.path().to_str().unwrap()])
         .output()
         .expect("Failed to run ckq");
@@ -415,7 +402,7 @@ fn test_no_ckignore_flag_disables_hierarchical_ignore() {
     fs::write(subdir.join("also_ignored.tmp"), "FINDME_TMP").unwrap();
 
     // With --no-ckqignore the .tmp files are included
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["-r", "--no-ckqignore", "FINDME", "."])
         .current_dir(parent)
         .output()
@@ -433,7 +420,7 @@ fn test_no_ckignore_flag_disables_hierarchical_ignore() {
     );
 
     // Without it (default), .ckqignore applies
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["-r", "FINDME", "."])
         .current_dir(parent)
         .output()
@@ -466,7 +453,7 @@ fn test_sigpipe_terminates_silently() {
     let line = "match: the quick brown fox jumps over the lazy dog\n";
     fs::write(temp_dir.path().join("big.txt"), line.repeat(50_000)).unwrap();
 
-    let mut child = ckq_command()
+    let mut child = common::ckq()
         .args(["match", temp_dir.path().to_str().unwrap()])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -525,7 +512,7 @@ fn setup_hidden_workspace() -> TempDir {
 fn test_hidden_flag_regex_search() {
     let temp_dir = setup_hidden_workspace();
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["needle", "."])
         .current_dir(temp_dir.path())
         .output()
@@ -544,7 +531,7 @@ fn test_hidden_flag_regex_search() {
         "file in hidden dir should NOT match without --hidden; stdout: {stdout}"
     );
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--hidden", "needle", "."])
         .current_dir(temp_dir.path())
         .output()
@@ -576,7 +563,7 @@ fn test_index_command() {
     let temp_dir = TempDir::new().unwrap();
     fs::write(temp_dir.path().join("test.txt"), "indexable content").unwrap();
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--index", "."])
         .current_dir(temp_dir.path())
         .output()
@@ -600,7 +587,7 @@ fn test_clean_command() {
     let temp_dir = TempDir::new().unwrap();
     fs::write(temp_dir.path().join("test.txt"), "test content").unwrap();
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--index", "."])
         .current_dir(temp_dir.path())
         .output()
@@ -615,7 +602,7 @@ fn test_clean_command() {
         "Index directory not created"
     );
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--clean", "."])
         .current_dir(temp_dir.path())
         .output()
@@ -639,7 +626,7 @@ fn test_add_single_file_to_index() {
     let test_file = temp_dir.path().join("test_file.txt");
     fs::write(&test_file, "This is test content for indexing").unwrap();
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--index", "."])
         .current_dir(temp_dir.path())
         .output()
@@ -650,7 +637,7 @@ fn test_add_single_file_to_index() {
     fs::write(&new_file, "New file content to be added").unwrap();
 
     // Add the new file by absolute path, from outside the corpus.
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--add", new_file.to_str().unwrap()])
         .output()
         .expect("Failed to run ckq --add");
@@ -670,7 +657,7 @@ fn test_add_single_file_to_index() {
     );
 
     // Verify the file was actually added by searching for it
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["New file", "."])
         .current_dir(temp_dir.path())
         .output()
@@ -690,7 +677,7 @@ fn test_add_single_file_to_index() {
 fn test_add_file_with_relative_path() {
     let temp_dir = TempDir::new().unwrap();
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--index", "."])
         .current_dir(temp_dir.path())
         .output()
@@ -703,7 +690,7 @@ fn test_add_file_with_relative_path() {
     )
     .unwrap();
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--add", "relative_file.txt"])
         .current_dir(temp_dir.path())
         .output()
@@ -715,7 +702,7 @@ fn test_add_file_with_relative_path() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["Relative path", "."])
         .current_dir(temp_dir.path())
         .output()
@@ -746,7 +733,7 @@ fn test_concurrent_indexing_is_serialized() {
     }
 
     let spawn_indexer = || {
-        ckq_command()
+        common::ckq()
             .arg("--index")
             .arg("-q")
             .arg(".")
@@ -769,7 +756,7 @@ fn test_concurrent_indexing_is_serialized() {
         );
     }
 
-    let out = ckq_command()
+    let out = common::ckq()
         .arg("--status-json")
         .current_dir(temp_dir.path())
         .output()
@@ -796,7 +783,7 @@ fn test_command_flags_honor_explicit_path() {
     let elsewhere = TempDir::new().unwrap();
     fs::write(target.path().join("a.txt"), "indexable content here").unwrap();
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--index", "-q", target.path().to_str().unwrap()])
         .current_dir(elsewhere.path())
         .output()
@@ -815,14 +802,14 @@ fn test_command_flags_honor_explicit_path() {
         "--index must not index the cwd when a path is given"
     );
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--status", target.path().to_str().unwrap()])
         .current_dir(elsewhere.path())
         .output()
         .expect("Failed to run ckq --status <path>");
     assert!(output.status.success());
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--clean", target.path().to_str().unwrap()])
         .current_dir(elsewhere.path())
         .output()
@@ -848,14 +835,14 @@ fn test_lexical_search_reflects_file_changes() {
     )
     .unwrap();
 
-    let status = ckq_command()
+    let status = common::ckq()
         .args(["--index", "-q", "."])
         .current_dir(temp_dir.path())
         .status()
         .expect("ckq --index should run");
     assert!(status.success());
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--lex", "alphaterm", ".", "--jsonl", "-q"])
         .current_dir(temp_dir.path())
         .output()
@@ -874,7 +861,7 @@ fn test_lexical_search_reflects_file_changes() {
     )
     .unwrap();
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--lex", "zebraterm", ".", "--jsonl", "-q"])
         .current_dir(temp_dir.path())
         .output()
@@ -884,13 +871,13 @@ fn test_lexical_search_reflects_file_changes() {
         "search is read-only: a file the index never saw cannot be found yet"
     );
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--index", "-q", "."])
         .current_dir(temp_dir.path())
         .status()
         .expect("ckq --index should run");
     assert!(output.success());
-    let out = ckq_command()
+    let out = common::ckq()
         .args(["--lex", "zebraterm", ".", "--jsonl", "-q"])
         .current_dir(temp_dir.path())
         .output()
@@ -903,13 +890,13 @@ fn test_lexical_search_reflects_file_changes() {
 
     // Modify the original file: removed content must stop matching
     fs::write(temp_dir.path().join("a.txt"), "completely different now").unwrap();
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--index", "-q", "."])
         .current_dir(temp_dir.path())
         .status()
         .expect("ckq --index should run");
     assert!(output.success());
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--lex", "alphaterm", ".", "--jsonl", "-q"])
         .current_dir(temp_dir.path())
         .output()
@@ -929,14 +916,14 @@ fn test_lexical_search_reflects_file_changes() {
 fn test_hidden_flag_lexical_index() {
     let temp_dir = setup_hidden_workspace();
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--index", "-q", "."])
         .current_dir(temp_dir.path())
         .status()
         .expect("ckq --index should run");
     assert!(output.success());
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--lex", "needle", "."])
         .current_dir(temp_dir.path())
         .output()
@@ -951,14 +938,14 @@ fn test_hidden_flag_lexical_index() {
         "hidden content should NOT be in the lexical index without --hidden; stdout: {stdout}"
     );
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--index", "-q", "--hidden", "."])
         .current_dir(temp_dir.path())
         .status()
         .expect("ckq --index --hidden should run");
     assert!(output.success());
 
-    let output = ckq_command()
+    let output = common::ckq()
         .args(["--hidden", "--lex", "needle", "."])
         .current_dir(temp_dir.path())
         .output()
@@ -999,10 +986,12 @@ fn write_two_corpora(a: &Path, b: &Path) {
     .unwrap();
 }
 
-/// Run a search and hand back stdout; the tests that call this have indexed
-/// `dir` first, and the marker queries always match.
+/// Run a search and hand back stdout, or `None` when the process exited
+/// non-zero. That covers a failed run *and* grep's exit 1 on no matches, so
+/// a caller proving absence must treat `None` as "not found", while a caller
+/// proving presence must panic on it: an empty hand proves nothing.
 fn search_stdout(mode: &str, query: &str, dir: &Path) -> Option<String> {
-    let output = ckq_command()
+    let output = common::ckq()
         .args([mode, query, dir.to_str().unwrap()])
         .output()
         .expect("Failed to run ckq search");
@@ -1025,7 +1014,7 @@ fn test_each_directory_gets_its_own_index() {
 
     // Index both by path argument, from a directory that is neither of them.
     for corpus in [a.path(), b.path()] {
-        let output = ckq_command()
+        let output = common::ckq()
             .args(["--index", "-q", corpus.to_str().unwrap()])
             .current_dir(elsewhere.path())
             .output()
@@ -1061,7 +1050,7 @@ fn test_lexical_search_does_not_leak_between_directories() {
     write_two_corpora(a.path(), b.path());
 
     for corpus in [a.path(), b.path()] {
-        let output = ckq_command()
+        let output = common::ckq()
             .args(["--index", "-q", corpus.to_str().unwrap()])
             .output()
             .expect("Failed to run ckq index");
@@ -1095,7 +1084,7 @@ fn test_alternating_semantic_searches_stay_scoped() {
     write_two_corpora(a.path(), b.path());
 
     for corpus in [a.path(), b.path()] {
-        let output = ckq_command()
+        let output = common::ckq()
             .args(["--index", "-q", corpus.to_str().unwrap()])
             .output()
             .expect("Failed to run ckq index");
@@ -1105,17 +1094,130 @@ fn test_alternating_semantic_searches_stay_scoped() {
     // Two rounds, so the second visit to each corpus meets state left by the
     // other. One round would not catch carried-over state.
     for round in 1..=2 {
-        if let Some(hits) = search_stdout("--sem", "boats and the sea", a.path()) {
-            assert!(
-                !hits.contains("baking.md"),
-                "round {round}: corpus A returned a file from corpus B"
-            );
-        }
-        if let Some(hits) = search_stdout("--sem", "bread and yeast", b.path()) {
-            assert!(
-                !hits.contains("sailing.md"),
-                "round {round}: corpus B returned a file from corpus A"
-            );
-        }
+        // Positive controls first: each corpus must answer its own query at
+        // all, or the leak checks below would pass vacuously — a failed or
+        // empty search proves nothing about scoping.
+        let Some(a_hits) = search_stdout("--sem", "boats and the sea", a.path()) else {
+            panic!("round {round}: corpus A must answer its own query");
+        };
+        assert!(
+            a_hits.contains("sailing.md"),
+            "round {round}: corpus A must find its own file"
+        );
+        assert!(
+            !a_hits.contains("baking.md"),
+            "round {round}: corpus A returned a file from corpus B"
+        );
+        let Some(b_hits) = search_stdout("--sem", "bread and yeast", b.path()) else {
+            panic!("round {round}: corpus B must answer its own query");
+        };
+        assert!(
+            b_hits.contains("baking.md"),
+            "round {round}: corpus B must find its own file"
+        );
+        assert!(
+            !b_hits.contains("sailing.md"),
+            "round {round}: corpus B returned a file from corpus A"
+        );
     }
+}
+
+/// `--status` on an index that exists but holds no files must report the
+/// index, not claim there is none (which would tell the user to run the very
+/// command that already made it). `--status-json` already said
+/// `index_exists: true` for the same store.
+#[test]
+fn test_status_on_an_empty_index_reports_the_index() {
+    let temp_dir = TempDir::new().unwrap();
+    let out = common::ckq()
+        .args(["--index", "-q", temp_dir.path().to_str().unwrap()])
+        .output()
+        .expect("Failed to run ckq index");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let out = common::ckq()
+        .args(["--status", temp_dir.path().to_str().unwrap()])
+        .output()
+        .expect("Failed to run ckq status");
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("No index found"), "stderr: {stderr}");
+    assert!(stderr.contains("Files indexed: 0"), "stderr: {stderr}");
+}
+
+/// `--index --no-ckqignore` must leave a corpus without a `.ckqignore`
+/// untouched: the flag exists to keep ckq's hands off that file, and a file
+/// written anyway would be read by every later flag-less run.
+#[test]
+fn test_no_ckqignore_does_not_write_one() {
+    let quiet = TempDir::new().unwrap();
+    let out = common::ckq()
+        .args([
+            "--index",
+            "-q",
+            "--no-ckqignore",
+            quiet.path().to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to run ckq index");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !quiet.path().join(".ckqignore").exists(),
+        "--no-ckqignore wrote a default .ckqignore"
+    );
+
+    // Without the flag the default file is still written, by design.
+    let plain = TempDir::new().unwrap();
+    let out = common::ckq()
+        .args(["--index", "-q", plain.path().to_str().unwrap()])
+        .output()
+        .expect("Failed to run ckq index");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(plain.path().join(".ckqignore").exists());
+}
+
+/// Regex mode on a corpus with an unreadable file: the file is named on
+/// stderr, and grep's error exit (2) is used when nothing matched — the
+/// match the file might have held must not vanish as a silent miss.
+#[cfg(unix)]
+#[test]
+fn test_regex_mode_reports_unreadable_files() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp_dir = TempDir::new().unwrap();
+    fs::write(temp_dir.path().join("locked.md"), "the needle is hidden\n").unwrap();
+    fs::write(temp_dir.path().join("open.md"), "nothing relevant\n").unwrap();
+    let locked = temp_dir.path().join("locked.md");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+    // The only file holding the pattern is unreadable: a silent miss would
+    // be exit 1 pretending the corpus was searched.
+    let out = common::ckq()
+        .args(["needle", temp_dir.path().to_str().unwrap()])
+        .output()
+        .expect("Failed to run ckq");
+    assert_eq!(out.status.code(), Some(2), "the only match was unreadable");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("cannot read"), "stderr: {stderr}");
+    assert!(stderr.contains("locked.md"), "stderr: {stderr}");
+
+    // Something matched elsewhere: exit stays 0, the warning still fires.
+    let out = common::ckq()
+        .args(["relevant", temp_dir.path().to_str().unwrap()])
+        .output()
+        .expect("Failed to run ckq");
+    assert_eq!(out.status.code(), Some(0), "with a match elsewhere");
+
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).unwrap();
 }

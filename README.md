@@ -1,127 +1,235 @@
 # ckq
 
-ckq is a small command-line tool for searching a folder of text in any language.
-It builds one local index of a directory tree and then answers three kinds of
-query over it: plain regex (grep-style, no index needed), lexical ranking
-(BM25 over file text and path), and semantic ranking (embedding similarity) —
-plus a hybrid mode that fuses the two ranked lists. Documents in one language
-can be found with a query in another.
+ckq is a command-line search engine for a folder of text notes. It builds one
+local index of a directory tree and answers three kinds of query over it:
+plain regex (grep-style, no index needed), lexical ranking (BM25 over file
+text and path), and semantic ranking (embedding similarity), plus a hybrid
+mode that fuses the two ranked lists. A document in one language can be found
+with a query in another.
 
 ## Install
 
-```bash
-cargo build --release
-```
+Download an archive from the [releases page](https://github.com/bitboxx/ckq/releases)
+and put the `ckq` binary on your `PATH`:
 
-The binary is `target/release/ckq`. The default embedding model (about 280 MB)
-downloads on first use to `~/.cache/ckq/models`; building or running regex and
-lexical search needs no model at all.
+| Platform | Archive |
+|---|---|
+| Linux x86_64 | `ckq-2.0.0-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux aarch64 | `ckq-2.0.0-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS x86_64 | `ckq-2.0.0-x86_64-apple-darwin.tar.gz` |
+| macOS aarch64 | `ckq-2.0.0-aarch64-apple-darwin.tar.gz` |
+| Windows x86_64 | `ckq-2.0.0-x86_64-pc-windows-msvc.zip` |
 
-## GPU
-
-The embedder runs on the GPU through llama.cpp, and the backend is chosen at
-build time by cargo features:
-
-- **macOS**: Metal, always — no feature to turn on or off.
-- **Linux and Windows**: Vulkan, on by default. The binary then needs a
-  Vulkan loader at runtime: `libvulkan1` on Linux (any GPU driver brings it)
-  or `vulkan-1.dll` on Windows. A machine with a loader but no usable device
-  falls back to the CPU on its own.
-- `--no-default-features` builds a CPU-only binary for machines with no
-  Vulkan loader at all.
-- `--no-default-features --features cuda` builds with CUDA instead, which
-  needs the CUDA toolkit at build time and an NVIDIA driver at runtime.
-  `--features cuda` alone keeps Vulkan as well, and then needs both SDKs.
-
-The default feature reaches `llama-cpp-2` through the tiny `gpu/` path crate
-(package `ckq-gpu`), because cargo cannot make a default feature
-platform-specific and will not accept the same crate twice under two names.
-On macOS the crate is not even in the dependency graph.
-
-## One file
-
-`scripts/build-onefile.sh <alias>` builds a ckq with that model's GGUF inside
-the binary itself, so one file works offline on a fresh machine:
+Check the download against the `.sha256` file beside it (or the combined
+`SHA256SUMS` file):
 
 ```bash
-scripts/build-onefile.sh gemma-q4
+shasum -a 256 -c ckq-2.0.0-aarch64-apple-darwin.tar.gz.sha256
 ```
 
-The model must already be in `~/.cache/ckq/models` (run `ckq --index` once to
-download it). The embedded model becomes that build's default, and the first
-use writes it out once to `~/.cache/ckq/models/embedded/`; `--status` and
-`--version` say which model a binary carries. A binary that embeds `gemma-q4`
-carries Google's Gemma Terms of Use with it and must ship those terms; a
-model under Apache-2.0 or MIT (such as granite, bge-m3 or Qwen3-Embedding)
-does not have that condition. Which model the releases embed is decided
-separately.
+On Windows, `CertUtil -hashfile ckq-2.0.0-x86_64-pc-windows-msvc.zip SHA256`
+prints the same hash.
 
-## Usage
+Runtime needs: the Linux and Windows binaries are built with Vulkan and need a
+Vulkan loader to start, `libvulkan.so.1` on Linux and `vulkan-1.dll` on
+Windows. Any GPU driver installs one. A machine with a loader but no usable
+GPU falls back to the CPU on its own. A machine with no Vulkan loader at all
+cannot run these binaries; build from source with `--no-default-features` for
+a CPU-only binary. macOS needs nothing beyond the system.
+
+With a Rust toolchain:
 
 ```bash
-ckq --index                     # build or update the index of the current directory
-ckq --clean                     # remove the index
-ckq --status                    # what is indexed, and with which model
+cargo install --git https://github.com/bitboxx/ckq
 ```
 
-Search — one mode flag picks the method:
+or build from source. The cargo features:
+
+- `vulkan`: GPU through Vulkan, the default on Linux and Windows. Building it
+  needs the Vulkan headers and loader, `glslc` and SPIRV-Headers
+  (`libvulkan-dev glslc spirv-headers` on Ubuntu; the LunarG SDK with
+  `VULKAN_SDK` set on Windows). macOS always builds on Metal and ignores the
+  feature.
+- `cuda`: GPU through CUDA instead. `--no-default-features --features cuda`
+  builds CUDA alone, which needs the CUDA toolkit at build time and an NVIDIA
+  driver at runtime. `--features cuda` by itself keeps Vulkan as well.
+- `--no-default-features`: CPU only, no Vulkan build dependencies.
+- `embedded-model`: build one GGUF into the binary so a single file works
+  offline on a fresh machine. `scripts/build-onefile.sh <alias>` wraps it; the
+  model must already be in the cache.
 
 ```bash
-ckq pattern                     # regex mode (the default), like grep
-ckq --lex how to store coffee   # BM25 over file text and path
-ckq --sem 咖啡豆怎么保存        # embedding similarity
-ckq --hybrid --term 'coffee beans' how to keep beans fresh   # both, fused
+git clone https://github.com/bitboxx/ckq
+cd ckq
+cargo build --release --locked
 ```
 
-- `--hybrid` fuses the lexical and semantic rankings into one list; `--term`
-  gives the lexical side an exact phrase (repeatable) instead of the query.
-- `--topk N` caps the number of results (default 10 in ranked modes).
-- `--threshold 0.5` sets the minimum semantic score, 0.0–1.0 (default: the
-  model's own).
-- `--model ALIAS` picks the embedding model for `--index` (default: the
-  index's own, else `gemma-q4`).
-- `--jsonl` (or `--json`) prints one JSON object per result instead of text.
+The binary is `target/release/ckq`.
+
+## First use
+
+Run `ckq --index` in the directory you want to search:
+
+```bash
+cd ~/notes
+ckq --index
+```
+
+The first run downloads the default embedding model (gemma-q4, about 280 MB)
+into `~/.cache/ckq/models` and then embeds every text file. Later runs only
+read files whose size or modification time changed. Regex search needs no
+model and no index.
+
+The first `--index` also writes a `.ckqignore` file with default patterns
+(images, video, archives, databases) when the directory has none. It uses
+gitignore syntax, and `.gitignore` and `.ignore` apply too. A leftover `.ck`
+directory from the old ck engine is never read or written; `--clean` removes
+`.ckq` only.
+
+## Search modes
+
+One mode flag picks the method:
+
+```bash
+ckq 'coarse grind'                  # regex mode (the default), like grep
+ckq --lex how to store coffee       # BM25 over file text and path
+ckq --sem 咖啡豆怎么保存            # embedding similarity
+ckq --hybrid --term 'coffee beans' 'how to keep beans fresh'   # both, fused
+```
+
+`--hybrid` fuses the lexical and semantic rankings into one list, one result
+per file. `--term` (repeatable) gives the lexical method of `--lex` and
+`--hybrid` an exact phrase in place of the query; in `--hybrid` the query
+still drives the semantic method.
+
+Flags for the ranked modes:
+
+- `--topk N` (alias `--limit`): number of results, 10 by default.
+- `--threshold F`: minimum semantic score, -1.0 to 1.0. Default: the model's
+  own value, since scores are not comparable across models.
+- `--scores`: show scores in text output.
+- `--jsonl`, `--json`, `--no-snippet`: output format, see below.
 
 Regex mode takes the grep flags:
 
 ```bash
-ckq -n -i -w -F -l -C 2 'literal string'
+ckq -n -i -w -F -l -C 2 'grind size'
 ```
 
-`-n` line numbers, `-i` ignore case, `-w` whole words, `-F` fixed strings,
-`-l` file names only, `-C N` context lines. Exit status is 0 when something
-was found, 1 for no match or an error.
+`-n` line numbers, `-i` ignore case, `-w` whole words, `-F` fixed strings
+instead of a regex, `-l` file names only, `-C N` context lines. `--regex`
+selects this mode explicitly. `--topk` limits matches here too, and `-r` is
+accepted and does nothing (directories are always searched recursively).
+Flags that do nothing in the chosen mode draw one warning on stderr.
 
-## How it works
+Both modes take `--hidden` (include dot-files), `--no-ignore` (do not read
+`.gitignore`), `--no-ckqignore` (do not read `.ckqignore`) and `-q` (no
+progress or banners on stderr). A search takes the paths to search as
+arguments after the query; the default is the current directory, and a
+subdirectory or single file searches within the index of the tree above it.
 
-The index is one SQLite file, `.ckq/index.db` in the indexed tree: a contentless
-FTS5 table gives BM25 over the file text and path, chunks are embedded to f16
-vectors in the same database, and a hash of model, prompts, pooling and chunker
-version guards comparability. Embeddings run through llama.cpp with the GPU
-when one is present. Five model aliases exist — `gemma-q4` (the default),
-`gemma-gguf`, `granite-gguf`, `bge-m3-gguf` and `qwen3-gguf` — all GGUF,
-downloaded from Hugging Face on first use.
+## JSONL output
 
-Searches embed their query through a small resident daemon: the first `--sem`
-or `--hybrid` starts it and every later one connects, so a day of searching
-loads the model once instead of once per call (loading it costs about 0.4 s).
-One daemon per model, keyed to the exact binary, so a rebuild never talks to
-a stale one; it exits after 15 minutes without a query. The daemon does
-nothing but embed queries — indexing always loads the model in the process
-that runs it — and `CKQ_IN_PROCESS=1` embeds in the searching process instead.
-Sockets live in `~/.cache/ckq/sockets` (unix only).
+`--jsonl` prints one JSON object per result:
 
-Hybrid search fuses per file by CombMAX over weighted reciprocal ranks: each
-method contributes `weight / (3 + rank)`, a file keeps the better of its two
-scores, and agreement between the methods breaks near-ties. Summed RRF was
-measured and lost: it let a file both methods ranked second overtake the file
-one method ranked first. Search never writes the index — only `--index`,
-`--add` and `--clean` do.
+```json
+{"path": "./recipes/coffee.md", "span": {"byte_start": 41, "byte_end": 49, "line_start": 3, "line_end": 3}, "language": "markdown", "snippet": "Keep beans in an airtight container...", "score": 0.688, "signals": {"lex_rank": 1, "vec_rank": 2, "rrf_score": 0.41}}
+```
+
+- `path`: the file as you named it on the command line, with `/` separators.
+- `span`: the byte and line range of the best-matching chunk, or of the
+  matching line in regex mode.
+- `language`: `markdown`, `text`, `rust`, and so on.
+- `snippet`: the text of the span. Absent with `--no-snippet`.
+- `score`: the semantic score, or 1.0 in regex mode.
+- `signals`: hybrid results only. `lex_rank` and `vec_rank` say where each
+  method ranked the file (`null` when a method did not find it);
+  `rrf_score` is the fused score.
+
+`--json` prints the same results under the old engine's field names (`file`,
+`lang`, `preview`, `model`), one object per line, for scripts that read the
+old format.
+
+## Keeping the index current
+
+`--index` is the only command that builds the index (`--add` and `--clean`
+also write it; a search never does). A ranked search checks the tree first
+and prints one warning when files were added, changed or deleted since the
+last index:
+
+```text
+ckq: warning: index is stale (3 files added, changed or gone); run `ckq --index`
+```
+
+- `ckq --index [DIR]`: bring the index in line with the files on disk.
+- `ckq --add FILE`: index or re-index one file.
+- `ckq --status [DIR]`: what is indexed and with which model. `--status-verbose`
+  adds sizes, `--status-json` prints JSON to stdout.
+- `ckq --clean [DIR]`: remove the index.
+- `ckq --clean-orphans [DIR]`: accepted for compatibility; the store cannot
+  hold orphans, so this just runs an index update.
+
+Each model's vectors live in their own space, so the index records a
+signature of the model, its prompts, its pooling and the chunker version.
+`ckq --index --model ALIAS` switches models and rebuilds the whole index; a
+search against an index whose signature does not match the binary's current
+settings refuses and names `ckq --index`. The default model is `gemma-q4`,
+or the index's own model when one exists.
+
+## The query daemon
+
+On unix, `--sem` and `--hybrid` embed their query through a small resident
+daemon instead of loading the model in every search process. The first search
+starts it; later searches connect to it, so a day of searching loads the model
+once (a load costs about 0.4 s). One daemon per model, keyed to the exact
+binary, so a rebuild never talks to a stale one. Sockets live in
+`~/.cache/ckq/sockets`. The daemon embeds queries only; indexing always loads
+the model in the process that runs it.
+
+The daemon exits after 15 minutes without a query
+(`CKQ_DAEMON_IDLE_SECS`). `CKQ_IN_PROCESS=1` skips it and embeds in the
+searching process. A client waits 120 s for a reply
+(`CKQ_DAEMON_TIMEOUT_SECS`); on a timeout or any daemon failure it falls back
+to embedding in its own process, with one warning on stderr.
+
+## Models
+
+All models are GGUF, downloaded from Hugging Face on first use and cached in
+`~/.cache/ckq/models`. Where the registry pins a blake3, the download is
+verified against it.
+
+| Alias | Dims | Context | Size | Licence |
+|---|---:|---:|---:|---|
+| `gemma-q4` (default) | 768 | 2048 | 278 MB | Gemma Terms of Use |
+| `gemma-gguf` | 768 | 2048 | 333 MB | Gemma Terms of Use |
+| `granite-gguf` | 768 | 512 | 303 MB | Apache-2.0 |
+| `bge-m3-gguf` | 1024 | 8192 | 634 MB | MIT |
+| `qwen3-gguf` | 1024 | 8192 | 640 MB | Apache-2.0 |
+
+## Environment variables
+
+| Variable | Effect |
+|---|---|
+| `CKQ_IN_PROCESS=1` | Embed queries in the searching process; no daemon. |
+| `CKQ_DAEMON_IDLE_SECS` | Daemon idle exit time in seconds. Default 900. |
+| `CKQ_DAEMON_TIMEOUT_SECS` | Client wait for a daemon reply in seconds. Default 120; past it the client falls back to its own process. |
+| `CKQ_QUERY_DEVICE` | `cpu` or `gpu` for query embedding. Default `gpu`. |
+| `CKQ_GGUF_FILE` | Load the GGUF from this file instead of the registry download, for trying another build of the same model. The file's path, size and mtime enter the index signature. |
+| `CKQ_TIMING=1` | Print one stderr line of index timings (walk, read and chunk, embed). |
+| `CKQ_EMBED_GGUF`, `CKQ_EMBED_ALIAS` | Build-time only, with the `embedded-model` feature: the GGUF to embed in the binary and its alias. |
+
+## Exit codes
+
+- 0: something was found, or the command succeeded.
+- 1: no match (with `No matches found` on stderr), or an error.
+- 2: a usage error, or, in regex mode, files that could not be read and
+  nothing matched.
 
 ## Benchmark
 
-`bench/multilingual`: 40 documents in English, Mandarin, Hindi, Spanish and
-Arabic; 40 queries, each asked in a language other than its answer's.
+`bench/multilingual` holds 40 documents in English, Mandarin, Hindi, Spanish
+and Arabic, and 40 queries each asked in a language other than its answer's.
+Run it with `python3 bench/multilingual/run.py [aliases]`.
 
 | model | params | rank 1 | MRR@5 | score range |
 |---|---:|---:|---:|---:|
@@ -130,7 +238,19 @@ Arabic; 40 queries, each asked in a language other than its answer's.
 | `qwen3-gguf` | 600M | 31/40 | 0.851 | 0.36-0.71 |
 | `granite-gguf` | 278M | 28/40 | 0.781 | 0.61-0.88 |
 
-## Credits
+`tests/e2e_quality.rs` enforces the bar in CI: both `--sem` and `--hybrid`
+must hold 34/40 rank 1 and MRR@5 0.90 with the default model. The one query
+of slack covers float drift between Metal, CPU and other backends.
 
-A fork of [BeaconBay/ck](https://github.com/BeaconBay/ck) by Mike Renwick,
-rewritten as a single crate. MIT OR Apache-2.0.
+## Testing
+
+```bash
+cargo test          # offline tests only
+cargo e2e           # plus the end-to-end suites; downloads the default model once
+cargo known-bugs    # the tests that pin a known, still-open bug (none today)
+```
+
+## Licence and credits
+
+MIT OR Apache-2.0. A fork of [BeaconBay/ck](https://github.com/BeaconBay/ck)
+by Mike Renwick, rewritten as a single crate.

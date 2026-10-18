@@ -188,3 +188,35 @@ fn a_silent_daemon_times_out_and_falls_back() {
     let _ = std::fs::remove_file(&socket);
 }
 
+/// A live daemon whose socket file is unlinked underneath it must reclaim
+/// the path instead of orphaning the model: the file comes back within a
+/// couple of socket-check intervals and the daemon keeps serving.
+#[test]
+#[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+#[cfg(unix)]
+fn an_unlinked_daemon_socket_heals() {
+    let corpus = runtime_corpus();
+    corpus.index();
+    let socket = common::daemon_socket("gemma-q4");
+
+    let hits = corpus.search(&["--sem", "stew"]);
+    assert!(!hits.is_empty(), "the warm-up search found nothing");
+    assert!(socket.exists(), "the search started a daemon");
+
+    // Steal the socket file the way the check-then-unlink races can.
+    std::fs::remove_file(&socket).unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !socket.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        socket.exists(),
+        "the daemon did not reclaim its socket within 10 s"
+    );
+
+    let hits = corpus.search(&["--sem", "stew"]);
+    assert!(!hits.is_empty(), "the healed daemon no longer serves");
+    common::kill_daemon(&socket);
+}

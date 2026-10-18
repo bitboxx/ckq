@@ -345,6 +345,7 @@ pub fn serve(alias: &str) -> Result<()> {
     let Some(listener) = bind(&path)? else {
         return Ok(()); // another daemon won the startup race and is serving
     };
+    let mut listener = listener;
     eprintln!(
         "ckq: query daemon {} pid {} on {}",
         spec.alias,
@@ -368,8 +369,27 @@ pub fn serve(alias: &str) -> Result<()> {
     // interval to every search.
     listener.set_nonblocking(true)?;
     let mut last = Instant::now();
+    // The inode the socket path must keep resolving to: if the file is
+    // unlinked out from under the listener (the check-then-unlink races in
+    // remove_dead_socket and reap_stale can do it; so can anything else),
+    // new clients see ENOENT and start a second daemon. The loop watches
+    // for that and heals it — reclaim the path, or bow out to the daemon
+    // that already owns it — instead of orphaning a resident model.
+    let mut ident = socket_ident(&path);
     loop {
-        let remaining = idle_timeout().saturating_sub(last.elapsed());
+        if socket_ident(&path) != ident {
+            match bind(&path)? {
+                Some(fresh) => {
+                    fresh.set_nonblocking(true)?;
+                    listener = fresh;
+                    ident = socket_ident(&path);
+                }
+                None => return Ok(()), // another daemon owns the key now
+            }
+        }
+        let remaining = idle_timeout()
+            .saturating_sub(last.elapsed())
+            .min(SOCKET_CHECK_INTERVAL);
         if remaining.is_zero() {
             break;
         }
@@ -416,6 +436,19 @@ fn wait_for_client(listener: &UnixListener, timeout: Duration) -> Result<bool> {
         0 => Ok(false),
         _ => Ok(true),
     }
+}
+
+/// How often the daemon rechecks that its socket path still resolves to the
+/// inode it bound: the price of noticing a stolen socket in about a second
+/// is one stat per second.
+const SOCKET_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+
+/// The `(device, inode)` of the socket file at `path`: `None` when the path
+/// is gone. Two binds on the same path never share an inode, so this is
+/// what tells the daemon its file was unlinked and replaced.
+fn socket_ident(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
 }
 
 /// Claim the socket without loading anything. `Ok(None)` means another daemon
@@ -475,7 +508,9 @@ fn reap_stale(own: &Path) {
             continue;
         }
         let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
+        let Some(name) = name.to_str() else {
+            continue;
+        };
         if !name.starts_with("ckq-") {
             continue;
         }
@@ -531,6 +566,31 @@ mod tests {
             .set_modified(std::time::SystemTime::UNIX_EPOCH)
             .unwrap();
         assert_ne!(stamp, exe_stamp_with(Some(b.as_os_str())));
+    }
+
+    /// The daemon's own test for a stolen socket: the ident it captured at
+    /// bind time stops matching when the file is unlinked, and a fresh bind
+    /// on the same path is a different inode — so the loop in `serve`
+    /// notices the theft and heals instead of orphaning its model.
+    #[test]
+    fn socket_ident_distinguishes_the_bound_file_from_a_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let bound = socket_ident(&path);
+        assert_eq!(socket_ident(&path), bound);
+
+        std::mem::drop(listener);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(socket_ident(&path), None, "an unlinked socket is gone");
+
+        let replacement = UnixListener::bind(&path).unwrap();
+        assert_ne!(
+            socket_ident(&path),
+            bound,
+            "a fresh bind on the same path is not the old socket"
+        );
+        drop(replacement);
     }
 
     #[test]

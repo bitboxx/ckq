@@ -145,14 +145,18 @@ jobs:
       - run: cargo check --locked --all-targets
 
   # The end-to-end suites run the real binary against real corpora with the
-  # real default model. Windows is left out: the suites assert unix behaviour
-  # (sockets, permissions) that does not apply there.
+  # real default model, on every platform a release binary ships for. The
+  # suites that assert unix behaviour (sockets, permissions) are #[cfg(unix)]
+  # and compile out on Windows; the rest — ranked modes, the store, indexing,
+  # --jsonl path formatting — is exactly what Windows coverage was missing.
+  # On Windows the runners have a Vulkan loader but no device, so llama.cpp
+  # falls back to the CPU (same setup steps as the offline test job).
   e2e:
     name: e2e (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -164,6 +168,39 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libvulkan-dev glslc spirv-headers
+      # Same Windows toolchain as the offline test job: the sys crate expects
+      # VULKAN_SDK, and the Ninja generator works where the VS one breaks.
+      - name: Install Vulkan SDK (Windows)
+        if: runner.os == 'Windows'
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          cache: true
+          stripdown: true
+      - name: Locate vulkan-1.dll (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "$env:VULKAN_SDK\runtime\x64\vulkan-1.dll",
+            "$env:VULKAN_SDK\Bin\vulkan-1.dll",
+            "C:\Windows\System32\vulkan-1.dll"
+          )
+          $found = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $found) { throw "vulkan-1.dll not found in any of: $($candidates -join ', ')" }
+          Write-Host "vulkan-1.dll: $found"
+          if ($found -notlike 'C:\Windows\*') {
+            Add-Content $env:GITHUB_PATH (Split-Path $found)
+            Write-Host "Added $(Split-Path $found) to PATH"
+          }
+      - name: Set up MSVC environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Build llama.cpp with the Ninja generator (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          choco install -y ninja
+          echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
 
       # A cache miss is fine: the first run downloads the model and the
       # cache is saved for the next one.
@@ -210,3 +247,4 @@ jobs:
       # `cargo e2e --locked` would put --locked after the alias's `--`, where
       # the test harness reads it, so the alias is expanded here.
       - run: cargo test --release --locked -- --include-ignored --skip known_bug_
+

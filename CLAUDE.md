@@ -32,7 +32,7 @@ cargo known-bugs            # the tests that pin a still-open bug
 cargo fmt && cargo clippy --release --all-targets -- -D warnings
 ```
 
-The default model (about 280 MB) downloads once into `~/.cache/ckq/models` on first use. Run `cargo e2e` before any change to the model registry, the prompts, the chunker, the store, the fusion or the ranking: it holds the ranking gate on `bench/multilingual` (gemma-q4: 35/40 rank 1, MRR@5 0.927).
+The default model (about 280 MB) downloads once into `~/.cache/ckq/models` on first use. Run `cargo e2e` before any change to the model registry, the prompts, the chunker, the store, the fusion or the ranking: it holds the ranking gate on `bench/multilingual`. The enforced bar (in `tests/e2e_quality.rs`) is 34/40 rank 1 and MRR@5 0.90 — one query of slack for float drift between Metal, CPU and other backends; gemma-q4 currently scores 35/40 rank 1, MRR@5 0.927.
 
 ## GPU backends
 
@@ -47,10 +47,6 @@ SPIRV-Headers (`libvulkan-dev glslc spirv-headers` on Ubuntu; the LunarG SDK,
 with `VULKAN_SDK` set, on Windows). The resulting binary needs a Vulkan
 loader at runtime (`libvulkan1` / `vulkan-1.dll`) and falls back to the CPU
 when there is a loader but no device.
-
-## Release
-
-A release is a tag `X.Y.Z` (no `v` prefix) that matches the `version` in `Cargo.toml`. `release.yml` verifies the match, builds the binary for x86_64 Linux and aarch64 Linux (native `ubuntu-24.04-arm` runner, both with Vulkan), x86_64 and aarch64 macOS, and x86_64 Windows (Vulkan), and attaches the archives to a GitHub release. Nothing is published to crates.io or npm: `Cargo.toml` has `publish = false`.
 
 ## Test conventions
 

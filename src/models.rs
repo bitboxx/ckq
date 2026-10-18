@@ -209,16 +209,32 @@ fn embedded_gguf_path() -> Result<PathBuf> {
 /// left behind by a crashed process) is replaced by writing a per-process
 /// temp file in the same directory, fsync, and an atomic rename — two
 /// processes racing both end up with one complete file.
-#[cfg(feature = "embedded-model")]
+///
+/// A process that dies between create and rename leaves the temp behind:
+/// nothing else reaps it, so every crash parked another full-size file in
+/// the cache. Entry removes temps older than a day (a live writer's temp is
+/// minutes old at most; the age, not the embedded pid, is the safety — a
+/// pid can be recycled or belong to anyone), and this process's own temp
+/// is dropped even on a panic.
+#[cfg(any(test, feature = "embedded-model"))]
 fn install_gguf(dir: &std::path::Path, name: &str, bytes: &[u8]) -> Result<PathBuf> {
     let path = dir.join(name);
     if let Ok(meta) = std::fs::metadata(&path)
         && meta.len() == bytes.len() as u64
     {
+        reap_old_temps(dir);
         return Ok(path);
     }
     std::fs::create_dir_all(dir)?;
+    reap_old_temps(dir);
     let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    struct TmpOnPanic(std::path::PathBuf);
+    impl Drop for TmpOnPanic {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0); // gone already when the rename worked
+        }
+    }
+    let _guard = TmpOnPanic(tmp.clone());
     {
         use std::io::Write as _;
         let mut file = std::fs::File::create(&tmp)?;
@@ -227,6 +243,37 @@ fn install_gguf(dir: &std::path::Path, name: &str, bytes: &[u8]) -> Result<PathB
     }
     std::fs::rename(&tmp, &path)?;
     Ok(path)
+}
+
+/// Remove `.<something>.tmp` files older than [`TMP_KEEP`]: leftovers of
+/// extractions whose process died, safe to delete because no live write
+/// takes a day.
+#[cfg(any(test, feature = "embedded-model"))]
+const TMP_KEEP: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+#[cfg(any(test, feature = "embedded-model"))]
+fn reap_old_temps(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with('.') || !name.ends_with(".tmp") {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > TMP_KEEP);
+        if old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// What has to match for two vectors to be comparable: the model, the
@@ -349,6 +396,51 @@ mod tests {
             .map(|e| e.file_name())
             .collect();
         assert_eq!(entries, ["hash.gguf"]);
+    }
+}
+
+#[cfg(test)]
+mod install_tests {
+    use super::install_gguf;
+    use tempfile::TempDir;
+
+    fn aged(path: &std::path::Path) {
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 24 * 60 * 60);
+        std::fs::File::open(path).unwrap().set_modified(old).unwrap();
+    }
+
+    /// A temp older than a day is a crashed extraction's leftover — nothing
+    /// else ever removed it, so every crash parked another full-size file
+    /// in the cache. Install reaps it; a fresh temp may belong to a live
+    /// writer and stays.
+    #[test]
+    fn an_old_leftover_temp_is_reaped_and_a_fresh_one_kept() {
+        let dir = TempDir::new().unwrap();
+        let stale = dir.path().join(".hash.gguf.424242.tmp");
+        std::fs::write(&stale, "half a model").unwrap();
+        aged(&stale);
+        let fresh = dir.path().join(".hash.gguf.434343.tmp");
+        std::fs::write(&fresh, "in flight").unwrap();
+
+        install_gguf(dir.path(), "hash.gguf", b"gguf bytes").unwrap();
+
+        assert!(!stale.exists(), "an aged temp must be reaped");
+        assert!(fresh.exists(), "a fresh temp may be a live writer's");
+    }
+
+    /// The same reap runs when the target is already trusted and nothing is
+    /// written: that is the path a healthy cache takes.
+    #[test]
+    fn a_trusted_target_still_reaps_aged_temps() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("hash.gguf"), "gguf bytes").unwrap();
+        let stale = dir.path().join(".other.gguf.99.tmp");
+        std::fs::write(&stale, "x").unwrap();
+        aged(&stale);
+
+        let path = install_gguf(dir.path(), "hash.gguf", b"gguf bytes").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"gguf bytes");
+        assert!(!stale.exists());
     }
 }
 

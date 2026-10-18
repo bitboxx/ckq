@@ -4,7 +4,7 @@
 //! and file, dimensions, pooling, prompts and default thresholds.
 //! `gemma-q4` is the default.
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,15 +151,49 @@ pub fn gguf_path(spec: &ModelSpec) -> Result<PathBuf> {
     if Some(spec.alias) == embedded_alias() {
         return embedded_gguf_path();
     }
+    gguf_from_cache(models_cache_dir(), spec)
+}
+
+/// The registry's file out of the Hugging Face cache at `dir`, downloaded on
+/// first use — and verified where the registry pins its blake3. hf-hub
+/// serves a cached snapshot without touching the network, so this one pass
+/// gates both a fresh download and whatever the cache already holds.
+fn gguf_from_cache(dir: PathBuf, spec: &ModelSpec) -> Result<PathBuf> {
     let cache = hf_hub::api::sync::ApiBuilder::new()
-        .with_cache_dir(models_cache_dir())
+        .with_cache_dir(dir)
         .build()
         .map_err(|e| anyhow::anyhow!("hf-hub: {e}"))?;
     let repo = cache.model(spec.repo.to_string());
     let path = repo
         .get(spec.file)
         .map_err(|e| anyhow::anyhow!("downloading {} ({e})", spec.repo))?;
+    verify_blake3(&path, spec)?;
     Ok(path)
+}
+
+/// Where the registry knows a file's blake3, one streaming pass over the
+/// bytes before they are loaded. A mismatch — a corrupted or rewritten
+/// download — is an error naming the file: a silently different model would
+/// embed every query in a space its index knows nothing about.
+fn verify_blake3(path: &std::path::Path, spec: &ModelSpec) -> Result<()> {
+    let Some(expect) = spec.blake3 else {
+        return Ok(());
+    };
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("verifying {}", path.display()))?;
+    let mut hasher = blake3::Hasher::new();
+    std::io::copy(&mut file, &mut hasher)
+        .with_context(|| format!("verifying {}", path.display()))?;
+    let got = &hasher.finalize().to_hex()[..16];
+    if got != expect {
+        bail!(
+            "{} is not the {} the registry pins (blake3 {got}, expected {expect}); \
+             remove the file and let ckq download it again",
+            path.display(),
+            spec.file
+        );
+    }
+    Ok(())
 }
 
 fn models_cache_dir() -> PathBuf {
@@ -441,6 +475,68 @@ mod install_tests {
         let path = install_gguf(dir.path(), "hash.gguf", b"gguf bytes").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"gguf bytes");
         assert!(!stale.exists());
+    }
+}
+
+#[cfg(test)]
+mod gguf_cache_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// The bytes a fake cache holds, and the pin a registry would carry for
+    /// them. A static, because `ModelSpec::blake3` is `'static` and leaking
+    /// test memory to fake that is worse than the indirection.
+    const BYTES: &[u8] = b"these would be 278 MB of gguf";
+    static PINNED: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| blake3::hash(BYTES).to_hex()[..16].to_string());
+
+    fn spec_for(blake3: Option<&'static str>) -> ModelSpec {
+        ModelSpec {
+            alias: "test-gguf",
+            repo: "org/test-model",
+            file: "model.gguf",
+            dims: 8,
+            context: 128,
+            pooling: Pooling::Mean,
+            query_prefix: "",
+            document_prefix: "",
+            threshold: 0.0,
+            blake3,
+        }
+    }
+
+
+    /// The Hugging Face cache layout hf-hub serves offline: `refs/main`
+    /// names the commit, `snapshots/<commit>/<file>` holds the bytes.
+    fn fake_cache(dir: &std::path::Path, bytes: &[u8]) {
+        let repo = dir.join("models--org--test-model");
+        std::fs::create_dir_all(repo.join("refs")).unwrap();
+        std::fs::create_dir_all(repo.join("snapshots").join("deadbeef")).unwrap();
+        std::fs::write(repo.join("refs").join("main"), "deadbeef").unwrap();
+        std::fs::write(repo.join("snapshots").join("deadbeef").join("model.gguf"), bytes)
+            .unwrap();
+    }
+    #[test]
+    fn a_cached_gguf_is_verified_against_the_registry() {
+        let spec = spec_for(Some(PINNED.as_str()));
+
+        let good = TempDir::new().unwrap();
+        fake_cache(good.path(), BYTES);
+        let path = gguf_from_cache(good.path().to_path_buf(), &spec).unwrap();
+        assert!(path.ends_with("model.gguf"));
+
+        let bad = TempDir::new().unwrap();
+        fake_cache(bad.path(), b"corrupted or rewritten bytes");
+        let err = gguf_from_cache(bad.path().to_path_buf(), &spec)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("model.gguf"), "{err}");
+        assert!(err.contains("blake3"), "{err}");
+
+        // No pin, no gate: models the registry does not vouch for still load.
+        let unpinned = spec_for(None);
+        let path = gguf_from_cache(bad.path().to_path_buf(), &unpinned).unwrap();
+        assert!(path.ends_with("model.gguf"));
     }
 }
 

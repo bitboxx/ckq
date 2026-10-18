@@ -247,4 +247,16 @@ jobs:
       # `cargo e2e --locked` would put --locked after the alias's `--`, where
       # the test harness reads it, so the alias is expanded here.
       - run: cargo test --release --locked -- --include-ignored --skip known_bug_
+      # The embedded-model feature (the one-file build) has no other
+      # coverage: its unit tests are cfg-gated on the feature and build.rs
+      # needs CKQ_EMBED_GGUF/CKQ_EMBED_ALIAS, so a break ships invisible.
+      # The model is already in the cache here; one platform is enough.
+      # (--bin: the crate is a lone binary, there is no lib target.)
+      - name: Build and test the embedded-model feature (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          scripts/build-onefile.sh gemma-q4
+          gguf=$(scripts/resolve-gguf.sh gemma-q4)
+          CKQ_EMBED_GGUF=$gguf CKQ_EMBED_ALIAS=gemma-q4 \
+            cargo test --release --locked --features embedded-model --bin ckq
 

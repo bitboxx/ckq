@@ -23,7 +23,7 @@ gguf=$("$here/resolve-gguf.sh" "$alias")
 
 echo "embedding $alias: $gguf"
 CKQ_EMBED_GGUF=$gguf CKQ_EMBED_ALIAS=$alias \
-    cargo build --release --manifest-path "$root/Cargo.toml" --features embedded-model
+    cargo build --release --locked --manifest-path "$root/Cargo.toml" --features embedded-model
 
 bin=${CARGO_TARGET_DIR:-$root/target}/release/ckq
 bytes=$(wc -c < "$bin" | tr -d ' ')

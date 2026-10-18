@@ -11,6 +11,12 @@ use crate::corpus::RelPath;
 pub const TARGET_TOKENS: usize = 1024;
 pub const OVERLAP_TOKENS: usize = 200;
 
+/// Bumped whenever the chunker's output for the same text changes shape (a
+/// new split rule, a different token estimate). Folded into the index
+/// signature, so an index built before the change is refused instead of
+/// mixing incomparable vectors.
+pub const CHUNKER_VERSION: u16 = 2;
+
 /// A span of a document. Bytes are a half-open range into the file's UTF-8
 /// text, on char boundaries; lines are 1-based and inclusive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,16 +89,90 @@ fn split_lines(text: &str) -> Vec<Unit<'_>> {
         if trimmed.trim().is_empty() {
             continue;
         }
-        out.push(Unit {
-            text: trimmed,
-            byte_start: start,
-            byte_end: end,
-            line_start: i + 1,
-            line_end: i + 1,
-            tokens: estimate_tokens(trimmed),
-        });
+        let tokens = estimate_tokens(trimmed);
+        if tokens > TARGET_TOKENS {
+            // A line past the target leaves `pack` no choice but one chunk
+            // over the model's whole context, and embed truncates that,
+            // losing the line's tail from every semantic result. Cut it into
+            // pieces that fit before it reaches the packer.
+            out.extend(split_oversized(text, start, end, i + 1));
+        } else {
+            out.push(Unit {
+                text: trimmed,
+                byte_start: start,
+                byte_end: end,
+                line_start: i + 1,
+                line_end: i + 1,
+                tokens,
+            });
+        }
     }
     out
+}
+
+/// Pieces of one line longer than the target, each within it: cuts prefer
+/// whitespace and never land inside a character. Every piece keeps the line's
+/// own number, so spans still point into the line they came from.
+fn split_oversized(doc: &str, start: usize, end: usize, line: usize) -> Vec<Unit<'_>> {
+    let mut out = Vec::new();
+    let mut from = start;
+    while from < end {
+        let cut = next_cut(doc, from, end);
+        let piece = &doc[from..cut];
+        out.push(Unit {
+            text: piece,
+            byte_start: from,
+            byte_end: cut,
+            line_start: line,
+            line_end: line,
+            tokens: estimate_tokens(piece),
+        });
+        from = cut;
+    }
+    out
+}
+
+/// Where to cut the next piece of `doc[from..end]`: the longest prefix that
+/// still fits the target, moved back to just after the last whitespace in a
+/// short window so words stay whole when there is one. The estimate grows
+/// monotonically with a prefix of a single line, so a binary search finds the
+/// bound; one character always fits, so the cut always makes progress.
+fn next_cut(doc: &str, from: usize, end: usize) -> usize {
+    let first = doc[from..end].chars().next().expect("non-empty").len_utf8();
+    let mut lo = from + first;
+    let mut hi = end;
+    while lo < hi {
+        let mut mid = (lo + hi + 1) / 2;
+        while !doc.is_char_boundary(mid) {
+            mid += 1;
+        }
+        if estimate_tokens(&doc[from..mid]) <= TARGET_TOKENS {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+            while !doc.is_char_boundary(hi) {
+                hi -= 1;
+            }
+        }
+    }
+    debug_assert!(
+        estimate_tokens(&doc[from..lo]) <= TARGET_TOKENS,
+        "the estimate is not monotonic over a single line"
+    );
+    // Whitespace within the last quarter of the piece: cutting there leaves
+    // whole words on both sides. Without one in the window (minified text)
+    // the longest fitting prefix stands.
+    let mut window = from + (lo - from) * 3 / 4;
+    while !doc.is_char_boundary(window) {
+        window += 1;
+    }
+    let mut cut = lo;
+    for (i, c) in doc[window..lo].char_indices() {
+        if c.is_whitespace() {
+            cut = window + i + c.len_utf8();
+        }
+    }
+    cut
 }
 
 /// Markdown sections: a section is a heading line plus everything up to the
@@ -327,6 +407,54 @@ mod tests {
             assert!(c.byte_end <= text.len());
         }
         assert!(covered.iter().all(|c| *c), "some line uncovered");
+    }
+
+    #[test]
+    fn a_line_past_the_context_is_split_within_the_target() {
+        // One ~21,000-char line: a single chunk would estimate past the
+        // model's whole 2,048-token context, and embed would truncate it.
+        let line: String = "unbroken paragraph of running text and more words ".repeat(400);
+        let text = format!("{line}\n");
+        let chunks = chunk(&rel("long.txt"), &text);
+        assert!(chunks.len() > 1, "one oversized chunk: {}", chunks.len());
+        let mut covered = vec![false; line.len()];
+        for c in &chunks {
+            assert_eq!(c.line_start, 1, "pieces must keep the line's number");
+            assert_eq!(c.line_end, 1);
+            let body = &text[c.byte_start..c.byte_end];
+            assert!(
+                estimate_tokens(body) <= TARGET_TOKENS,
+                "chunk estimates {} tokens",
+                estimate_tokens(body)
+            );
+            for seen in covered.iter_mut().take(c.byte_end).skip(c.byte_start) {
+                *seen = true;
+            }
+        }
+        assert!(
+            covered.iter().all(|b| *b),
+            "part of the line is in no chunk"
+        );
+    }
+
+    #[test]
+    fn oversized_line_pieces_never_split_a_character() {
+        // Multibyte, no whitespace: cuts must fall between characters even
+        // when there is no word boundary to prefer.
+        let line: String = "é".repeat(12_000);
+        let text = format!("{line}\n");
+        let chunks = chunk(&rel("accents.txt"), &text);
+        assert!(chunks.len() > 1);
+        for c in &chunks {
+            assert!(
+                text.is_char_boundary(c.byte_start) && text.is_char_boundary(c.byte_end),
+                "cut inside a character"
+            );
+            let body = &text[c.byte_start..c.byte_end];
+            assert!(estimate_tokens(body) <= TARGET_TOKENS);
+        }
+        let total: usize = chunks.iter().map(|c| c.byte_end - c.byte_start).sum();
+        assert!(total >= line.len(), "the line must stay covered");
     }
 
     #[test]

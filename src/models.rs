@@ -330,6 +330,7 @@ pub fn signature(spec: &ModelSpec) -> String {
     hasher.update(b"\0");
     hasher.update(&crate::chunk::TARGET_TOKENS.to_le_bytes());
     hasher.update(&crate::chunk::OVERLAP_TOKENS.to_le_bytes());
+    hasher.update(&crate::chunk::CHUNKER_VERSION.to_le_bytes());
     if let Some(marker) = weights_marker(spec) {
         hasher.update(b"\0");
         hasher.update(marker.as_bytes());
@@ -576,10 +577,11 @@ mod signature_tests {
 
     #[test]
     fn the_plain_gemma_signature_is_unchanged() {
-        // The value existing v2 indexes carry. A change here forces every
-        // index to be rebuilt, so it has to be deliberate.
+        // The value a fresh chunker-v2 index carries. A change here forces
+        // every index to be rebuilt, so it has to be deliberate: it last
+        // moved when the chunker learned to split over-long lines.
         if std::env::var_os("CKQ_GGUF_FILE").is_none() && embedded_alias() != Some("gemma-q4") {
-            assert_eq!(signature(resolve("gemma-q4").unwrap()), "c23fdf7835ede659");
+            assert_eq!(signature(resolve("gemma-q4").unwrap()), "0fc9533b8317c2f0");
         }
     }
 }

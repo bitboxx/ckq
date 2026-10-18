@@ -205,7 +205,7 @@ jobs:
       # A cache miss is fine: the first run downloads the model and the
       # cache is saved for the next one.
       - name: Restore embedding models
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ckq/models
           # Keyed on the registry itself: any change to a repo, file or

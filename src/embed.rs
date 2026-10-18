@@ -344,14 +344,14 @@ fn run(
     max_length: usize,
     dim: usize,
 ) -> Result<Vec<Vec<f32>>> {
-    use llama_cpp_2::model::AddBos;
-
+    let vocab = model.vocab();
     let mut encoded: Vec<Vec<_>> = Vec::with_capacity(texts.len());
     let mut truncated = 0usize;
     for text in texts {
-        let mut tokens = model
-            .str_to_token(text, AddBos::Always)
-            .map_err(|e| anyhow!("tokenize: {e}"))?;
+        // BOS added and special tokens parsed, as `str_to_token(_, AddBos::Always)`
+        // did before llama-cpp-2 0.1.159 replaced it: the same tokens, so
+        // vectors in existing indexes stay comparable.
+        let mut tokens = vocab.tokenize(text.as_bytes(), true, true);
         // Truncate rather than fail: ck chunks upstream, so an over-long chunk
         // is a chunker bug and not a reason to lose the whole file.
         if tokens.len() > max_length {

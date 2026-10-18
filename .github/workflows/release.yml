@@ -289,6 +289,10 @@ jobs:
   # uploads SHA256SUMS as an artifact.
   finalize:
     name: Checksums and publish
+    # Explicit rather than the default success() gate: the default skips
+    # this job when anything earlier in the needs chain was skipped, and on
+    # a dry run create-release always is.
+    if: always() && needs.build.result == 'success'
     needs: build
     runs-on: ubuntu-latest
     steps:

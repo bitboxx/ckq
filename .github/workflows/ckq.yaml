@@ -171,7 +171,41 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/ckq/models
-          key: ckq-models-gemma-q4
+          # Keyed on the registry itself: any change to a repo, file or
+          # blake3 rotates the key, so the gate can never keep scoring
+          # weights the registry no longer names (the blake3 of every
+          # download is verified in models.rs). restore-keys let a
+          # rotation reuse every model that did not change.
+          key: ckq-models-${{ hashFiles('src/models.rs') }}
+          restore-keys: ckq-models-
+
+      - name: Build the binary
+        run: cargo build --release --locked
+
+      # The suites touch two models: gemma-q4 everywhere, and gemma-gguf in
+      # the model-switch rebuild test. Warm both before the tests, retrying
+      # a flaky download, so no test depends on the network at test time and
+      # a download failure fails a clearly-named step instead of a suite.
+      # (The cache still only saves on a green run.)
+      - name: Warm the model cache
+        shell: bash
+        run: |
+          d=$(mktemp -d)
+          echo "a line to embed" > "$d/warm.md"
+          warm() {
+            for attempt in 1 2 3; do
+              if target/release/ckq --index -q --model "$1" "$d" >/dev/null 2>&1; then
+                echo "$1: in the cache"
+                return 0
+              fi
+              echo "$1: download attempt $attempt failed; retrying in 10s"
+              sleep 10
+            done
+            echo "$1: still failing after 3 attempts, last error:"
+            target/release/ckq --index -q --model "$1" "$d"
+          }
+          warm gemma-q4
+          warm gemma-gguf
 
       # `cargo e2e --locked` would put --locked after the alias's `--`, where
       # the test harness reads it, so the alias is expanded here.

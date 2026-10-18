@@ -35,7 +35,9 @@ Vulkan loader to start, `libvulkan.so.1` on Linux and `vulkan-1.dll` on
 Windows. Any GPU driver installs one. A machine with a loader but no usable
 GPU falls back to the CPU on its own. A machine with no Vulkan loader at all
 cannot run these binaries; build from source with `--no-default-features` for
-a CPU-only binary. macOS needs nothing beyond the system.
+a CPU-only binary. macOS needs nothing beyond the system, but a binary
+downloaded with a browser is quarantined: run `xattr -d com.apple.quarantine ckq`
+once before the first start.
 
 With a Rust toolchain:
 

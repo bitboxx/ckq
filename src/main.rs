@@ -427,8 +427,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
 /// One stderr line per flag that does nothing in the chosen mode, so a user
 /// narrowing a semantic search with `--term` hears that nothing happened.
 /// Not an error — grep-style muscle memory keeps working — and `-n` and `-l`
-/// are absent because ranked output honours them. The wrapper `vq` passes
-/// none of these flags, so it never sees a warning.
+/// are absent because ranked output honours them. A wrapper script that
+/// passes only the flags its mode uses never sees a warning.
 fn warn_inert_flags(cli: &Cli) {
     if cli.quiet {
         return;

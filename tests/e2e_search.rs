@@ -461,7 +461,11 @@ rise overnight before baking the loaf.\n",
         "--topk",
         "3",
     ]);
-    assert!(top3.len() <= 3, "--topk 3 returned {} lines", top3.len());
+    assert_eq!(
+        top3.len(),
+        low.len().min(3),
+        "--topk 3 must return every hit it is allowed to, not just some"
+    );
     let top3_stems = all_stems(&uniq_hits(&top3));
     assert!(
         top3_stems.len() <= low_stems.len(),
@@ -481,10 +485,10 @@ rise overnight before baking the loaf.\n",
         "--limit",
         "2",
     ]);
-    assert!(
-        limit2.len() <= 2,
-        "--limit 2 returned {} lines",
-        limit2.len()
+    assert_eq!(
+        limit2.len(),
+        low.len().min(2),
+        "--limit must return every hit it is allowed to, not just some"
     );
     let limit2_stems = all_stems(&uniq_hits(&limit2));
     assert_eq!(

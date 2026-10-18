@@ -80,9 +80,12 @@ pub struct LlamaEmbedder {
 /// Loading a model twice would double the memory, so workers are shared per
 /// model within a process; only successful loads are cached. The handle joins
 /// the thread at shutdown, which is what lets its drops run in order.
-/// One live model: its alias, the channel to its thread, its dimensionality
-/// and the thread's handle (for the ordered teardown at shutdown).
-type Worker = (&'static str, Sender<Job>, usize, thread::JoinHandle<()>);
+/// One live model: what identifies it in the cache — its alias and its
+/// device, because a CPU worker and a GPU worker are two loaded models, and
+/// handing back the wrong one silently discarded the caller's `device` —
+/// the channel to its thread, its dimensionality and the thread's handle
+/// (for the ordered teardown at shutdown).
+type Worker = ((&'static str, Device), Sender<Job>, usize, thread::JoinHandle<()>);
 static WORKERS: LazyLock<Mutex<Vec<Worker>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
 /// The llama.cpp backend, initialised once per process: a second
@@ -111,11 +114,12 @@ const QUERY_CTX: u32 = 512;
 
 impl LlamaEmbedder {
     pub fn load(spec: &'static ModelSpec, device: Device) -> Result<Self> {
+        let want = (spec.alias, device);
         let cached = WORKERS
             .lock()
             .expect("worker registry")
             .iter()
-            .find(|(key, ..)| *key == spec.alias)
+            .find(|(key, ..)| *key == want)
             .map(|(_, tx, dim, _)| (tx.clone(), *dim));
         if let Some((tx, dim)) = cached {
             return Ok(Self { spec, dim, tx });
@@ -123,12 +127,12 @@ impl LlamaEmbedder {
         // Load without holding the registry lock, and cache only successes.
         let (tx, dim, handle) = start_worker(spec, device)?;
         let mut workers = WORKERS.lock().expect("worker registry");
-        let (tx, dim) = match workers.iter().find(|(key, ..)| *key == spec.alias) {
+        let (tx, dim) = match workers.iter().find(|(key, ..)| *key == want) {
             // A concurrent load of the same model won the race; ours sees its
             // sender dropped below and its thread exits.
             Some(hit) => (hit.1.clone(), hit.2),
             None => {
-                workers.push((spec.alias, tx, dim, handle));
+                workers.push((want, tx, dim, handle));
                 let last = workers.last().expect("just pushed");
                 (last.1.clone(), last.2)
             }
@@ -415,5 +419,38 @@ fn normalize(v: &[f32]) -> Vec<f32> {
         v.iter().map(|x| x / norm).collect()
     } else {
         v.to_vec()
+    }
+}
+
+#[cfg(test)]
+mod device_tests {
+    use super::*;
+
+    /// The cache is keyed by alias and device: a second load with another
+    /// device loads a second worker (the parameter used to be silently
+    /// discarded), and a repeat load of the same pair reuses the first one.
+    /// In-module, because the worker registry is private and no CLI path
+    /// loads two devices in one process.
+    #[test]
+    #[ignore = "e2e: loads the default model twice; run with --include-ignored"]
+    fn the_worker_cache_is_keyed_by_alias_and_device() {
+        let spec = crate::models::resolve(crate::models::DEFAULT_ALIAS).unwrap();
+        let before = WORKERS.lock().expect("worker registry").len();
+        let mut cpu = LlamaEmbedder::load(spec, Device::Cpu).unwrap();
+        assert_eq!(WORKERS.lock().expect("worker registry").len(), before + 1);
+        let mut gpu = LlamaEmbedder::load(spec, Device::Gpu).unwrap();
+        assert_eq!(WORKERS.lock().expect("worker registry").len(), before + 2);
+        let mut again = LlamaEmbedder::load(spec, Device::Cpu).unwrap();
+        assert_eq!(
+            WORKERS.lock().expect("worker registry").len(),
+            before + 2,
+            "a repeat (alias, device) must reuse its worker"
+        );
+        // All three handles embed: the two workers answer, and the reused
+        // one is wired to a live channel.
+        for embedder in [&mut again, &mut cpu, &mut gpu] {
+            let v = embedder.embed_query("a query").unwrap();
+            assert_eq!(v.len(), spec.dims);
+        }
     }
 }

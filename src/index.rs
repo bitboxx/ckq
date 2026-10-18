@@ -79,12 +79,11 @@ pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
     if !opts.walk.no_ckqignore {
         crate::walk::ensure_ckqignore(corpus)?;
     }
-    let walked = crate::walk::walk(corpus, &opts.walk)?;
-    let t_walk = t0.elapsed();
-
     let (spec, meta) = resolve_model(corpus, opts)?;
     // A different model than the index holds means a full rebuild: its
-    // vectors live in a different space and must not be mixed.
+    // vectors live in a different space and must not be mixed. A rebuild
+    // discards the old stats too, so every file is probed afresh.
+    let mut known = std::collections::HashMap::new();
     if let Some(store) = Store::open_read(corpus)? {
         let existing = store.meta()?;
         if existing.signature != meta.signature {
@@ -95,8 +94,20 @@ pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
                 );
             }
             clean(corpus)?;
+        } else {
+            known = store
+                .files()
+                .context("files")?
+                .into_iter()
+                .map(|(rel, rec)| (rel, (rec.size, rec.mtime_ns)))
+                .collect();
         }
     }
+
+    // Files whose stat the index vouches for are not opened (see
+    // `walk_known`); only new or changed files pay the 8 KiB probe.
+    let walked = crate::walk::walk_known(corpus, &opts.walk, &known)?;
+    let t_walk = t0.elapsed();
 
     let mut store = Store::open_write(corpus, &meta).context("open_write")?;
     let indexed = store.files().context("files")?;
@@ -284,15 +295,20 @@ fn mtime_ns(meta: &std::fs::Metadata) -> i64 {
 }
 
 /// Files whose size or mtime differ from the index, plus files on disk the
-/// index lacks and files it holds that are gone. Cheap: no reading, no
-/// hashing. A search prints a one-line stderr warning when this is non-zero;
-/// it never updates the index itself.
+/// index lacks and files it holds that are gone. Cheap by construction: it
+/// stats every file but opens only the new and changed ones — a file whose
+/// stat matches the index is never read. A search prints a one-line stderr
+/// warning when this is non-zero; it never updates the index itself.
 pub fn stale_count(corpus: &Corpus, opts: &WalkOptions) -> Result<usize> {
     let Some(store) = Store::open_read(corpus)? else {
         return Ok(0);
     };
     let indexed = store.files().context("files")?;
-    let walked = crate::walk::walk(corpus, opts)?;
+    let known: std::collections::HashMap<RelPath, (u64, i64)> = indexed
+        .iter()
+        .map(|(rel, rec)| (rel.clone(), (rec.size, rec.mtime_ns)))
+        .collect();
+    let walked = crate::walk::walk_known(corpus, opts, &known)?;
     let mut stale = 0usize;
     for file in &walked {
         match indexed.get(&file.rel) {
@@ -371,6 +387,58 @@ mod tests {
                 .files()
                 .unwrap()
                 .contains_key(&RelPath::new(std::path::Path::new("gone.md")).unwrap())
+        );
+    }
+
+    /// A file whose size and mtime match the index is never opened: its
+    /// content here is binary, which a probe would see and drop, yet the
+    /// stat is what the index vouches for — so staleness stays 0 and
+    /// `--index` counts the file unchanged without reading it.
+    #[test]
+    fn stale_count_and_update_never_open_a_stat_matching_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let corpus = Corpus::for_index(dir.path()).unwrap();
+        let mut bytes = vec![b'x'; 100];
+        bytes[50] = 0; // a NUL: any 8 KiB probe would call this binary
+        let path = dir.path().join("fake.md");
+        std::fs::write(&path, &bytes).unwrap();
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::open(&path)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+        let mtime_ns = when
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as i64;
+        let rec = FileRecord {
+            rel: RelPath::new(std::path::Path::new("fake.md")).unwrap(),
+            hash: "h".to_string(),
+            size: bytes.len() as u64,
+            mtime_ns,
+        };
+        let mut store = Store::open_write(&corpus, &IndexMeta::for_model(spec())).unwrap();
+        store.put_file(&rec, "indexed text", &[], &[]).unwrap();
+        drop(store);
+
+        assert_eq!(
+            stale_count(&corpus, &WalkOptions::default()).unwrap(),
+            0,
+            "a matching stat must not be probed"
+        );
+        let report = update(&corpus, &IndexOptions::default()).unwrap();
+        assert_eq!(report.unchanged, 1, "{report:?}");
+        assert_eq!(report.removed, 0, "{report:?}");
+
+        // Touch the file and the mismatch shows up again.
+        std::fs::File::open(&path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now())
+            .unwrap();
+        assert_eq!(
+            stale_count(&corpus, &WalkOptions::default()).unwrap(),
+            1,
+            "a changed stat must be seen"
         );
     }
 }

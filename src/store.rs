@@ -516,7 +516,6 @@ fn escape_like(s: &str) -> String {
         .replace('_', "\\_")
 }
 
-
 /// Refuse an index written by another schema version: its rows mean
 /// something this build cannot know. An empty `meta` table is a first index
 /// still in flight, not a foreign one. The message names the rebuild,
@@ -794,8 +793,11 @@ mod tests {
         drop(Store::open_write(&c, &meta()).unwrap());
         // What an index written by a later ckq looks like to this one.
         let conn = Connection::open(c.index_dir().join(DB_FILE)).unwrap();
-        conn.execute("UPDATE meta SET value = '99' WHERE key = 'schema_version'", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE meta SET value = '99' WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
         drop(conn);
         let err = Store::open_read(&c).unwrap_err().to_string();
         assert!(err.contains("schema version 99"), "{err}");

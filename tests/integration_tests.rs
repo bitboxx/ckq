@@ -1131,7 +1131,11 @@ fn test_status_on_an_empty_index_reports_the_index() {
         .args(["--index", "-q", temp_dir.path().to_str().unwrap()])
         .output()
         .expect("Failed to run ckq index");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let out = ckq_command()
         .args(["--status", temp_dir.path().to_str().unwrap()])
@@ -1150,10 +1154,19 @@ fn test_status_on_an_empty_index_reports_the_index() {
 fn test_no_ckqignore_does_not_write_one() {
     let quiet = TempDir::new().unwrap();
     let out = ckq_command()
-        .args(["--index", "-q", "--no-ckqignore", quiet.path().to_str().unwrap()])
+        .args([
+            "--index",
+            "-q",
+            "--no-ckqignore",
+            quiet.path().to_str().unwrap(),
+        ])
         .output()
         .expect("Failed to run ckq index");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(
         !quiet.path().join(".ckqignore").exists(),
         "--no-ckqignore wrote a default .ckqignore"
@@ -1165,7 +1178,11 @@ fn test_no_ckqignore_does_not_write_one() {
         .args(["--index", "-q", plain.path().to_str().unwrap()])
         .output()
         .expect("Failed to run ckq index");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(plain.path().join(".ckqignore").exists());
 }
 

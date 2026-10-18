@@ -4,7 +4,7 @@ This file contains project-specific instructions for Claude and other AI agents 
 
 ## What this is
 
-One crate at the repository root: `ckq`, a CLI for multilingual search over a folder of text. The module docs in `src/main.rs` are the design document — read them first. The invariants the design exists for:
+One crate at the repository root: `ckq`, a CLI for multilingual search over a folder of text. The module docs in `src/main.rs` are the design document; read them first. The invariants the design exists for:
 
 1. A document is its root-relative path (`corpus::RelPath`), everywhere: both ranked methods return it, fusion compares it, output prints it. The working directory never matters.
 2. The model's prompts are applied in `embed` and nowhere else.
@@ -32,7 +32,7 @@ cargo known-bugs            # the tests that pin a still-open bug
 cargo fmt && cargo clippy --release --all-targets -- -D warnings
 ```
 
-The default model (about 280 MB) downloads once into `~/.cache/ckq/models` on first use. Run `cargo e2e` before any change to the model registry, the prompts, the chunker, the store, the fusion or the ranking: it holds the ranking gate on `bench/multilingual`. The enforced bar (in `tests/e2e_quality.rs`) is 34/40 rank 1 and MRR@5 0.90 — one query of slack for float drift between Metal, CPU and other backends; gemma-q4 currently scores 35/40 rank 1, MRR@5 0.927.
+The default model (about 280 MB) downloads once into `~/.cache/ckq/models` on first use. Run `cargo e2e` before any change to the model registry, the prompts, the chunker, the store, the fusion or the ranking: it holds the ranking gate on `bench/multilingual`. The enforced bar (in `tests/e2e_quality.rs`) is 34/40 rank 1 and MRR@5 0.90, one query of slack for float drift between Metal, CPU and other backends; gemma-q4 currently scores 35/40 rank 1, MRR@5 0.927.
 
 ## GPU backends
 
@@ -57,6 +57,14 @@ when there is a loader but no device.
 
 ## Release
 
-A release is a tag `X.Y.Z` (no `v` prefix) that matches the `version` in `Cargo.toml`. `release.yml` verifies the match, builds the binary for x86_64 and aarch64 Linux, x86_64 and aarch64 macOS, and x86_64 Windows, and attaches the archives to a GitHub release. Nothing is published to crates.io or npm: `Cargo.toml` has `publish = false`.
+A release is a tag `X.Y.Z` (no `v` prefix) that matches the `version` in
+`Cargo.toml`. `release.yml` verifies the match, builds the binary for x86_64
+and aarch64 Linux, x86_64 and aarch64 macOS, and x86_64 Windows, smoke-tests
+each binary in its own job, and attaches the archives, their `.sha256` files
+and one combined `SHA256SUMS` to a GitHub release whose notes are the
+`CHANGELOG.md` section for that version. A `workflow_dispatch` run builds the
+same matrix as a dry run: artifacts only, no release created. Nothing is
+published to crates.io or npm: `Cargo.toml` has `publish = false`.
 
-Before tagging: `cargo clippy --release --all-targets -- -D warnings`, `cargo fmt`, `cargo test`, `cargo e2e` — all green, and update `CHANGELOG.md`.
+Before tagging: `cargo clippy --release --all-targets -- -D warnings`,
+`cargo fmt`, `cargo test`, `cargo e2e`, all green, and update `CHANGELOG.md`.

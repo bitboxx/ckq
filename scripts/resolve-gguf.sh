@@ -8,7 +8,7 @@
 #
 # The cache root is ~/.cache/ckq/models, or $CKQ_MODELS_CACHE when set (the
 # tests use that to point at a fake cache). build-onefile.sh calls this, and
-# so does nothing surprising when the cache holds more than one revision --
+# so does nothing surprising when the cache holds more than one revision,
 # which it does after a re-download following an upstream push: picking the
 # lexically-first snapshot there embedded the wrong weights.
 

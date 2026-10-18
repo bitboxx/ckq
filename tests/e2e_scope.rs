@@ -256,7 +256,7 @@ fn ranked_modes_name_the_grep_flags_they_ignore() {
 fn the_flags_vq_passes_never_warn() {
     let corpus = needled();
     corpus.index();
-    // The vault wrapper's flag sets: -q --jsonl --no-snippet with --lex
+    // A wrapper script's flag sets: -q --jsonl --no-snippet with --lex
     // --term, --hybrid --term --limit, --sem, and -n for regex mode. None
     // of these may produce a warning (shown here without -q, which also
     // silences warnings, to prove the flags themselves are clean).

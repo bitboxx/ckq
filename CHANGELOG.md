@@ -2,74 +2,163 @@
 
 All notable changes to this project will be documented in this file.
 
-## [2.0.0] - unreleased
+## 2.0.0 - 2026-10-18
+
+The rewrite, as one crate: a single `ckq` crate at the repository root replaces
+the eight-crate ck workspace. Ten modules, one binary, the same CLI surface
+(`--sem`, `--lex`, `--hybrid`, regex mode, `--json`/`--jsonl`).
 
 ### Added
-- **`ckq`, one crate.** The v2 rewrite: a single crate at the root replaces the eight-crate workspace. Ten modules, one binary, the same CLI surface (`--sem`, `--lex`, `--hybrid`, regex mode, `--json`/`--jsonl`).
-- **One store: `.ckq/index.db`.** SQLite with WAL, a contentless FTS5 table for BM25 over file text and path, and f16 vectors in the same database. It replaces the old manifest plus per-file sidecars plus `vectors.cache` plus the tantivy index — one file to copy, back up or delete.
-- **Hybrid fusion by CombMAX over weighted reciprocal ranks.** A file takes the better of its two `weight / (3 + rank)` scores and the other method adds 0.01 of itself to break near-ties; the lexical weight is 1.05 with `--term` and 0.15 without. Summed RRF was measured against it on a 48-question evaluation and lost at every k (3 to 60) and every lexical weight (0.4 to 2.0): 34 to 36 answers first against 37.
-- **Concurrent first `--index` runs succeed.** The journal-mode change in the schema batch is retried (it ignores `busy_timeout`), writes use IMMEDIATE transactions (a DEFERRED write deadlocks on lock upgrade and reports `SQLITE_BUSY` without calling the busy handler), and a reader requires a populated `meta` before it trusts the schema. 15/15 concurrent pairs succeed.
-- **The query device defaults to GPU by measurement**: median of 10 cold `--sem` runs on `bench/multilingual` (Apple M1 Ultra) — 0.41 s on GPU against 0.59 s on CPU.
-- **A query daemon.** `--sem` and `--hybrid` embed their query through a resident daemon (unix) instead of loading the model in every search process: the first search starts it (the same executable, hidden `--query-daemon` flag), it binds its socket before it loads the model — so two clients starting at once load it once — and it exits after `CKQ_DAEMON_IDLE_SECS` without a request (default 900) removing its socket. The socket is `~/.cache/ckq/sockets/ckq-<alias>-<16 hex of blake3 over the binary's path, size, mtime>.sock`, so a rebuilt binary never talks to a daemon running the code it replaced. The client sends the bare query text and the daemon calls `embed_query`, so the query prompt is still applied in exactly one place; indexing never uses the daemon; `CKQ_IN_PROCESS=1` skips it, and an unreachable daemon falls back to in-process embedding with one warning. A `--hybrid` search on `bench/multilingual` went from 452 ms to 223 ms, median of 10 (loading the model costs about 0.4 s per process otherwise).
-- **A one-file build: `embedded-model`.** The optional cargo feature builds one GGUF into the binary (`build.rs` reads `CKQ_EMBED_GGUF` and `CKQ_EMBED_ALIAS`, validates the alias against the registry and hashes the bytes; `scripts/build-onefile.sh <alias>` wraps it). The embedded alias becomes that build's default model, `--status` and `--version` name it, and the first use extracts it once to `~/.cache/ckq/models/embedded/<blake3-16>.gguf` — temp file, fsync, atomic rename, a right-size file trusted — so the single binary works offline on a fresh machine. A build without the feature is unchanged.
-
-- **Vulkan by default on Linux and Windows** (macOS stays on Metal). The GPU backend is a cargo default away from macOS, forwarded to `llama-cpp-2` through the tiny `gpu/` path crate because cargo cannot make a default feature platform-specific. The binary then needs a Vulkan loader at runtime (`libvulkan1` on Linux — a GPU driver brings it; `vulkan-1.dll` on Windows) and falls back to the CPU when a loader exists but no device does; `--no-default-features` builds CPU-only, `--no-default-features --features cuda` builds CUDA without Vulkan and needs the CUDA toolkit.
+- **One store: `.ckq/index.db`.** SQLite with WAL, a contentless FTS5 table
+  for BM25 over file text and path, and f16 vectors in the same database. It
+  replaces the old manifest plus per-file sidecars plus `vectors.cache` plus
+  the tantivy index, one file to copy, back up or delete.
+- **A query daemon.** `--sem` and `--hybrid` embed their query through a
+  resident daemon (unix) instead of loading the model in every search process.
+  The first search starts it (the same executable, hidden `--query-daemon`
+  flag), it binds its socket before it loads the model, so two clients
+  starting at once load it once, and it exits after `CKQ_DAEMON_IDLE_SECS`
+  without a request (default 900) removing its socket. The socket is
+  `~/.cache/ckq/sockets/ckq-<alias>-<16 hex of blake3 over the binary's path,
+  size, mtime>.sock`, so a rebuilt binary never talks to a daemon running the
+  code it replaced. The client sends the bare query text and the daemon calls
+  `embed_query`, so the query prompt is still applied in exactly one place;
+  the daemon's stderr goes to a log beside its socket. Indexing never uses
+  the daemon, `CKQ_IN_PROCESS=1` skips it, and an unreachable or failing
+  daemon falls back to in-process embedding with one warning. A warm
+  `--hybrid` search over a 1,200-file corpus takes about 55 ms, against about
+  0.2 s before (loading the model costs about 0.4 s per process otherwise).
+- **Hybrid search, fused per file by CombMAX over weighted reciprocal ranks.**
+  The lexical half is the same BM25 that `--lex` runs (the path scored at
+  half weight), the two rankings are fused into one result per file, and a
+  file keeps the better of its two `weight / (3 + rank)` scores while the
+  other method adds 0.01 of itself to break near-ties. The constant is 3: at
+  60 the top of each list was so flat that a file both methods ranked fifth
+  outscores one a method ranks first. The lexical weight is 1.05 with
+  `--term` and 0.15 without: a question is not the words its answer contains,
+  and at full weight gemma-q4 dropped from 35 to 15 of 40 answers first on
+  `bench/multilingual`. Summed RRF was measured against CombMAX on a
+  48-question evaluation and lost at every k (3 to 60) and every lexical
+  weight (0.4 to 2.0): 34 to 36 answers first against 37.
+- **`--term`**, repeatable, gives the lexical method of `--lex` and `--hybrid`
+  its own keywords in place of the query, each matched as a phrase. In
+  `--hybrid` the query still drives the semantic method, so a question and
+  the words a matching file would contain can be given separately.
+- **`--json` and `--jsonl` report where each method ranked a hybrid result**,
+  as `signals.lex_rank` and `signals.vec_rank`. A file both methods found is
+  corroborated; when none is, the search may have missed.
+- **Concurrent first `--index` runs succeed.** The journal-mode change in the
+  schema batch is retried (it ignores `busy_timeout`), writes use IMMEDIATE
+  transactions, and a reader requires a populated `meta` before it trusts the
+  schema. 15/15 concurrent pairs succeed.
+- **The query device defaults to GPU by measurement**: median of 10 cold
+  `--sem` runs on `bench/multilingual` (Apple M1 Ultra), 0.41 s on GPU
+  against 0.59 s on CPU. `CKQ_QUERY_DEVICE` overrides it.
+- **Vulkan by default on Linux and Windows** (macOS stays on Metal). The GPU
+  backend is a cargo default away from macOS, forwarded to `llama-cpp-2`
+  through the tiny `gpu/` path crate because cargo cannot make a default
+  feature platform-specific. The binary then needs a Vulkan loader at runtime
+  (`libvulkan1` on Linux, which a GPU driver brings; `vulkan-1.dll` on
+  Windows) and falls back to the CPU when a loader exists but no device does.
+  `--no-default-features` builds CPU-only,
+  `--no-default-features --features cuda` builds CUDA alone.
+- **A one-file build: `embedded-model`.** The optional cargo feature builds
+  one GGUF into the binary (`build.rs` reads `CKQ_EMBED_GGUF` and
+  `CKQ_EMBED_ALIAS`, validates the alias against the registry and hashes the
+  bytes; `scripts/build-onefile.sh <alias>` wraps it). The embedded alias
+  becomes that build's default model, `--status` and `--version` name it, and
+  the first use extracts it once to `~/.cache/ckq/models/embedded/`, so the
+  single binary works offline on a fresh machine.
+- **`--hidden`** includes dot-files and dot-directories in search and
+  indexing; `--no-ignore` and `--no-ckqignore` turn each ignore file off.
+- **`CKQ_TIMING=1`** prints one stderr line of where an index run spent its
+  time: walking, reading and chunking, embedding.
 
 ### Changed
-- **A document is its root-relative path (`RelPath`), everywhere.** Both ranked methods return it, fusion compares it, output prints it; the working directory never matters. The old engine's four disagreeing path forms are what broke hybrid fusion and cwd-independence; both hold by design now, and the old `known_bug_` tests for them pass without special cases.
-- **The on-disk names are ckq's own.** The index directory is `.ckq` (was `.ck`), the ignore file `.ckqignore` (was `.ckignore`, flag `--no-ckqignore`), and the cache root `~/.cache/ckq` for models and daemon sockets (socket prefix `ckq-`, was `ckq2-`). No migration: the walker skips a legacy `.ck` so it is never indexed, a search that finds only a legacy `.ck/index.db` says the index moved to `.ckq` and names `ckq --index`, and `--clean` removes `.ckq` only, reporting a legacy `.ck` left in place.
-- **Search never writes the index.** Only `--index`, `--add` and `--clean` do. After `--clean` a ranked search refuses and names `--index` instead of silently rebuilding.
-- **The embedder owns the model on one dedicated thread** (`LlamaContext` borrows the model and is `!Send`), applies the model's prompts in one place, and tears down in the order ggml requires (context before model, plus an `atexit` hook) — without which ggml aborts at exit.
-- **`--index` skips a file whose size and mtime match the index** without reading or hashing it, so the hook that keeps a corpus current stays cheap after nearly every write.
+- **A document is its root-relative path (`RelPath`), everywhere.** Both
+  ranked methods return it, fusion compares it, output prints it; the working
+  directory never matters. The old engine's four disagreeing path forms are
+  what broke hybrid fusion and cwd-independence; both hold by design now.
+- **The on-disk names are ckq's own.** The index directory is `.ckq` (was
+  `.ck`), the ignore file `.ckqignore` (was `.ckignore`, flag
+  `--no-ckqignore`), and the cache root `~/.cache/ckq` for models and daemon
+  sockets. No migration: the walker skips a legacy `.ck` so it is never
+  indexed, a search that finds only a legacy `.ck/index.db` says the index
+  moved to `.ckq` and names `ckq --index`, and `--clean` removes `.ckq` only,
+  reporting a legacy `.ck` left in place.
+- **Search never writes the index.** Only `--index`, `--add` and `--clean`
+  do. A ranked search warns when files changed since the last index; after
+  `--clean` it refuses and names `--index` instead of silently rebuilding.
+- **The default model is `gemma-q4`** (EmbeddingGemma 300M, QAT Q4_0),
+  queried with the task prompt its model card specifies. Granite was tried
+  as the default on the way and stays in the registry under `granite-gguf`.
+- **`--index` with no `--model` uses the index's own model**, not the
+  registry default, so a plain re-index after editing a few files works. An
+  explicit `--model` wins, and a different model than the index holds means a
+  full rebuild, in the same run.
+- **`--index` loads the model in the process that runs it** (the daemon is
+  for queries) and skips a file whose size and mtime match the index without
+  reading or hashing it, so keeping a corpus current stays cheap.
+- **The embedder owns the model on one dedicated thread**
+  (`LlamaContext` borrows the model and is `!Send`), applies the model's
+  prompts in one place, and tears down in the order ggml requires (context
+  before model, plus an `atexit` hook), without which ggml aborts at exit.
 
 ### Removed
-- The eight crates (`ck-core`, `ck-models`, `ck-embed`, `ck-chunk`, `ck-index`, `ck-engine`, `ck-tui`, `ck-cli`) and everything only they needed: the embedding daemon (each process loads its own model), the ONNX/fastembed and mixedbread backends (GGUF through llama.cpp only), tree-sitter chunker queries, the TUI, the MCP server, `ck-vscode`, the docs site and npm distribution, the SWE-bench harness and the upstream example corpora.
-- crates.io and npm publishing: `Cargo.toml` is `publish = false` and a release is a tag that builds GitHub release binaries.
+- The eight crates (`ck-core`, `ck-models`, `ck-embed`, `ck-chunk`,
+  `ck-index`, `ck-engine`, `ck-tui`, `ck-cli`) and everything only they
+  needed: the old embedding daemon, the ONNX, fastembed and mixedbread
+  backends (GGUF through llama.cpp only), the reranker (`--rerank-model`),
+  tree-sitter chunker queries, the TUI, the MCP server, the VS Code
+  extension, the docs site, npm packaging, PDF extraction, `--reindex`,
+  `--switch-model` and `CK_INDEX_DIR`. Switching models is
+  `ckq --index --model ALIAS`.
+- crates.io and npm publishing: `Cargo.toml` is `publish = false` and a
+  release is a tag that builds GitHub release binaries.
 
 ### Fixed
-- **`ckq --index /dir` indexed the current directory.** A command flag takes no query, so a lone positional argument is its path — clap filed it under `pattern`, which made the command index `.`. (The old engine's test pinned this bug; the rewrite fixes it.)
-- **An empty index no longer fails the second writer.** `open_read` treats an `index.db` with no schema yet — what another process's first, still-running `--index` looks like — as no index, instead of dying with `no such table`.
-- **Tests pinned against bugs v2 fixed by design**: the symlink-loop and cwd `known_bug_` tests dropped their prefixes; the hybrid one-entry-per-file bug is gone because fusion is keyed on `RelPath`.
+- **`ckq --index /dir` indexed the current directory.** A command flag takes
+  no query, so a lone positional argument is its path; clap filed it under
+  `pattern`, which made the command index `.`.
+- **Audit, scope and paths: a search scoped to the index root canonicalized
+  every indexed path**, twice, about 12 ms on a 1,100-file index; both passes
+  now see that the root covers everything. Output paths print with forward
+  slashes on every platform: on Windows text output said `.\a.md` and
+  `--jsonl` carried backslash-escaped paths.
+- **Audit, daemon timeout and weights checks.** The client times out a
+  request (120 s, `CKQ_DAEMON_TIMEOUT_SECS`) and falls back to in-process
+  embedding on any failure, so a daemon that accepted and went silent never
+  hangs a search. The socket key and the index signature both track
+  `CKQ_GGUF_FILE` (path, size, mtime), so a daemon holding one set of
+  weights cannot answer queries for a file that replaced them, and a search
+  refuses instead of mixing two models' vector spaces.
+- **Audit, model hash checks.** Where the registry pins a blake3, the
+  download is verified against it in one streaming pass, and a corrupted or
+  rewritten file is an error naming the file. A passed pass leaves a marker
+  beside the file holding size, mtime and hash, so hashing 278 MB (0.2 s) is
+  not paid on every daemon start and index run; writing the file moves its
+  mtime, so a rewrite is hashed again.
+- **Audit, chunking of over-long lines.** A line longer than the model's
+  context used to become one chunk over the limit and lose everything past it
+  at embed time (minified JavaScript, an unwrapped pasted paragraph). Such a
+  line is now split into fitting pieces, estimated at no more optimistic than
+  2.5 characters per token, the rate minified code actually hits; the token
+  estimate no longer undercounts emoji or the Arabic, Hebrew and Indic
+  scripts; a markdown fence closes only with its own marker and length; and a
+  lone CR counts as a line ending, so chunk spans, printed line numbers and
+  grep agree. `CHUNKER_VERSION` enters the index signature at 2.
+- **A model-switch rebuild failed on Windows** with a sharing violation: the
+  read connection was still open when `clean` removed `.ckq`. The connection
+  closes first; unix is unchanged.
+- **An empty index no longer fails the second writer.** `open_read` treats an
+  `index.db` with no schema yet, what another process's first still-running
+  `--index` looks like, as no index, instead of dying with `no such table`.
+- **Tests pinned against bugs v2 fixed by design**: the symlink-loop and cwd
+  `known_bug_` tests dropped their prefixes; the hybrid one-entry-per-file
+  bug is gone because fusion is keyed on `RelPath`.
 
-## [Unreleased]
-
-### Changed
-- **A semantic search reads one file for its vectors, not every sidecar.** `--index` and the first search after an index change pack all vectors, with each chunk's path and span, into `.ck/vectors.cache`; later searches read that. On a 1,100-file index the load went from about 57 ms to 14 ms. The cache is checked against the manifest's identity (inode, mtime, size), which every index write changes, and is only written if the manifest did not move while the sidecars were being read, so a racing update leaves no cache rather than a stale one. Results are identical.
-- **`--hybrid` is lexical plus semantic search, fused per file.** It used to fuse a regex pass with the semantic chunks: a literal match of the query, or failing that an OR of its words with an English stop-word list and a weight of 0.3, keyed by line inside chunks. Now the lexical half is the same BM25 that `--lex` runs, the two rankings are fused by reciprocal rank with one result per file, and a file's span comes from its best semantic chunk, or from the lexical hit when only that method found it. Defaults match `--sem`: top 10, and `--threshold` filters the semantic method with the model's own value, since a threshold on a fused rank score means nothing.
-- **The fusion constant is 3, not 60.** At 60 the top of each list is so flat that a file two methods both rank fifth or sixth outscores one that a method ranks first; 1 to 5 performed alike.
-- **Without `--term`, the lexical half of `--hybrid` counts for 0.15 of the semantic half.** A question is not the words its answer contains, and across languages it matches documents on the same subject in the question's own language. On `bench/multilingual`, gemma-q4 ranks 35 of 40 answers first through `--sem`; through `--hybrid` at full lexical weight, 15; at 0.15, 35 again (`python3 run.py --hybrid gemma-q4`).
-- **`--lex` scores the path as well as the content** (BM25 per field, the path's score at half weight), so a file named or filed under a term ranks above one that only mentions it.
-- **The MCP `hybrid_search` tool** takes `terms`, drops the regex options it no longer uses (`case_insensitive`, `whole_word`, `fixed_string`), and pagination cursors include the terms.
-- **The default model is now `granite-gguf`** (IBM granite-embedding-278m-multilingual, Apache-2.0), not `gemma-q4`. The nine-note fixture ties four models at 4/4 and decides nothing; a 1012-note trilingual corpus does. Granite is better on two of six queries with a known answer and worse on none, and its scores run 0.71 to 0.85 where EmbeddingGemma's run 0.47 to 0.57. ck's default is `--threshold 0.6`, so EmbeddingGemma was dropping its own correct answers below the cut and an imperfect search read as an empty corpus. EmbeddingGemma wants task prefixes and ck applies none, which is the likely cause; granite needs none. Granite's 512-token context also means about 1.8x the chunks and 1.8x the index for the same corpus, at the same indexing time, because that tracks tokens rather than chunks. `gemma-q4` is still available.
-- **`--index` and `--switch-model` load the model in the process that runs them** rather than going through the shared daemon. An index run is one long-lived process that uses the model from start to finish, which is the case the daemon was never for. Measured 20.7 s against 15.3 s on the same corpus, three runs each, with the in-process figure including the model load. Everything else still shares the daemon.
-
-### Added
-- **`--term`**, repeatable, gives the lexical method of `--lex` and `--hybrid` its own keywords in place of the query, each matched as a phrase. In `--hybrid` the query still drives the semantic method, so a question and the words a matching file would contain can be given separately, and the lexical half then counts in full.
-- **`--json` and `--jsonl` report where each method ranked a hybrid result**, as `signals.lex_rank` and `signals.vec_rank`. A file both methods found is corroborated; when none is, the search may have missed.
-- **`CKQ_TIMING=1` also covers search**: the index check, the sidecar load, the query embed and the lexical stages.
-- **`CKQ_TIMING=1`** prints where an index run spent its time: reading, chunking, embedding and writing sidecars. Wall time alone cannot say whether a slow index is the model, the chunker or the disk. On 600 KB of prose the answer is embedding 19.1 s, sidecars 0.66 s, chunking 0.26 s, reading 0.002 s.
-
-### Fixed
-- **The socket directory grew by a socket and a log on every build.** The socket key carries the binary's stamp and `bind` only cleared a dead socket at its own key. A daemon now clears, when it starts, every `ckq-embed-*` socket nothing answers on and its log, and orphan logs older than a day; it removes its own log on an idle exit.
-- **A search scoped to the index root canonicalized every indexed path**, twice: once in the scope check and once in the include check that the CLI adds for the path argument. Both now see that the root covers everything and skip it, about 12 ms on a 1,100-file index.
-- **A query took 140-200 ms to embed** because the daemon ran it through the 8192-token context it sizes for indexing batches. A single short text now gets its own 512-token context: about 30 ms, identical vectors.
-- **The MCP `semantic_search` tool still used upstream's flat 0.6 threshold**, which the CLI dropped because it discards most of what a lower-scoring model gets right. Both MCP search tools now use the model's own default.
-- **Windows could not compile once it got past the Vulkan failure.** `run_embed_daemon` and its dispatch were gated on the `llamacpp` feature alone, not on `unix`, so they referenced `ck_embed::embed_daemon`, which does not exist off unix. Both are `cfg(all(feature = "llamacpp", unix))` now.
-- **`-D warnings` failed off macOS on a `mut` that only macOS needs.** The ONNX session builder is reassigned by the CoreML block, which is macOS-only, so `unused_mut` fired everywhere else.
-- **Linux and Windows could not build without the Vulkan SDK.** `llama-cpp-2` was pulled in with `features = ["vulkan"]` on every non-macOS target, and llama.cpp's build script panics with "Please install Vulkan SDK" when the feature is on and the SDK is absent, so `cargo build` failed on any machine without it, CI included. Vulkan is now the opt-in `vulkan` feature; the default build there is CPU-only. macOS is unaffected, Metal needs nothing installed and stays on. CI excludes the feature from `cargo hack --each-feature` and no longer runs clippy with `--all-features`, for the same reason.
-- **Every decode logged a warning.** Batch entries were added with the output flag off, so llama.cpp warned "embeddings required but some input tokens were not marked as outputs -> overriding" and set it itself, once per decode. Thousands of lines per index run, invisible in the daemon's log until indexing moved in-process. The flag is set now; the embeddings are byte-identical, since llama.cpp was already overriding it.
-- **llama.cpp's load and teardown chatter went straight to the user's terminal.** It was invisible while only the daemon loaded a model, and landed on stderr for every command the moment `--index` started loading one itself. It goes through `tracing` now, behind `RUST_LOG`, where ck's own logging already lives.
-- **The context was sized at a fixed 2048 tokens per slot regardless of the model**, so a 512-token model asked for four times the KV cache it can use and llama.cpp warned about a training context overflow on every load. It is derived from the model's own limit now. Chunks were already capped at that limit, so nothing was ever truncated by this.
-- **`--index` with no `--model` took the registry default instead of the index's own model.** That is right for a fresh index and wrong for every other case: against an index built on another model it refused to run and told the reader to clean and rebuild, so a plain reindex after editing a few files failed until someone remembered the alias. An explicit `--model` still wins; otherwise the manifest's model is used, and the default applies only when there is no index.
-- **Indexing ran 4x slower whenever a progress bar was on.** `index_single_file_with_progress` had two paths: one that batched a file's chunks into a single `embed()` call, and one that called `embed()` per chunk so the bar could move per chunk. The llama.cpp provider packs up to `MAX_SEQ` sequences into one decode, so the per-chunk path filled a quarter of every batch and paid a round trip for each. The CLI takes that path unless `--quiet`, so every interactive index was the slow one. Now one path, batching `EMBED_BATCH` chunks and reporting progress per batch. 100 notes: 82.7 s to 23.8 s. A full 1011-file corpus: about 100 minutes to about 4. Embeddings are unchanged; a query returns the same ranking with scores agreeing to ~1e-5.
-- **`LlamaBackend::init()` was called once per worker**, so a process that loaded a second model, or a test binary that ran a second search, failed with `BackendAlreadyInitialized`. The backend is zero-sized and now lives in a `OnceLock` behind a mutex, shared by every worker.
-- **An in-process run aborted after it finished.** The worker leaked its context and model to avoid a teardown race, which left Metal resource sets alive, and ggml's static destructor asserts that count is zero. `CKQ_IN_PROCESS=1 ck --sem ...` printed correct results and exited 134. The worker now drops the context and then the model on its own thread, on a `Quit` message; `main` sends one, and an `atexit` hook registered after the model loads covers test binaries and library hosts.
-- **The daemon spawner re-executed `current_exe()`** unconditionally, which only works when that executable is ck itself. In a test binary, or in any program linking `ck-embed`, the re-exec failed and took every embedding call with it. The client now probes once at construction and falls back to loading in-process, with a warning.
-- **A spawned daemon inherited the caller's stderr** and held that pipe for its whole life, so anything capturing ck's output waited for the daemon instead of the command. Its stderr goes to a log beside the socket, and a failed start is read back out of the log rather than lost, which is what inheriting was for.
-
-### Added
-- **Multilingual embedding models** (#49): three models already present in fastembed's catalogue but unreachable from ck — `bge-m3` (1024 dims, 8k context), `paraphrase-multilingual` (384 dims) and `paraphrase-multilingual-base` (768 dims). Every previously exposed model is English-only, so a mixed-language corpus retrieved poorly. `multilingual-e5-*` was deliberately left out: it is trained with `query: `/`passage: ` prefixes always present and fastembed prepends nothing, so it would retrieve degraded. Registry entries plus lookup-table entries only; no trait changes. Also adds a test that walks the registry asserting every model chunks below its own token limit — a model must be registered in `ck-models`, `ck-embed`'s tokenizer table and `ck-chunk` alike, and missing either of the last two leaves the 8192/1024 defaults in place, silently truncating every chunk at embed time.
-- **`--hidden` flag** (re-implements #97, original by @peterkc): Include hidden (dot-prefixed) files and directories in both search and indexing. Off by default to preserve current behavior; when set, the file walker no longer skips dot-prefixed entries. Composes with `--no-ignore`/`--no-ckignore` (independent toggles). Threads through `SearchOptions.hidden` and `FileCollectionOptions.show_hidden` to the `ignore` crate's `WalkBuilder.hidden(!show_hidden)` in `ck-index::collect_files`.
+An index built by an earlier version must be rebuilt: run `ckq --clean`, then
+`ckq --index`.
 
 ## [0.7.11] - 2026-05-24
 

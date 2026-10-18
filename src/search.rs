@@ -1,8 +1,8 @@
 //! The three ranked methods: lexical (BM25), semantic (embeddings) and hybrid
 //! (both, fused). All read-only, all keyed on `RelPath`.
 //!
-//! Behaviour carried over from the old engine, because the benchmarks and the
-//! vault evaluation were measured on it:
+//! Behaviour carried over from the old engine, because the benchmarks and a
+//! private evaluation on a personal note collection were measured on it:
 //! - Lexical ranks files. Without `--term` it searches the query's words; with
 //!   `--term` it searches the terms instead, each as a phrase, any of them.
 //!   Scores are normalised so the best file is 1.0. The span shown is the
@@ -12,7 +12,7 @@
 //! - Hybrid fuses per file by CombMAX over weighted reciprocal ranks: a rank r
 //!   scores weight / (k + r) with k = 3, a file takes the better of its two
 //!   scores, and the other adds 0.01 of itself to break near-ties. Summed RRF
-//!   lost on the vault evaluation (17 Oct 2026, 48 questions): at every k from
+//!   lost on that private evaluation (17 Oct 2026, 48 questions): at every k from
 //!   3 to 60 and every lexical weight from 0.4 to 2.0 a note both methods
 //!   ranked second or third overtook the note one method ranked first, and
 //!   34 to 36 answers came first against 37 for CombMAX. The lexical weight is

@@ -26,8 +26,9 @@
 //! of this.
 //!
 //! Exit codes: 0 when something was found or a command succeeded, 1 for no
-//! match ("No matches found" on stderr) and for errors (message on stderr).
-
+//! match ("No matches found" on stderr) and for errors (message on stderr),
+//! 2 for a usage error and, in regex mode, for files that could not be read
+//! when nothing matched.
 mod chunk;
 mod corpus;
 #[cfg(unix)]
@@ -87,16 +88,22 @@ struct Cli {
     scores: bool,
 
     // Regex mode
+    /// Print line numbers with regex matches.
     #[arg(short = 'n', long = "line-number")]
     line_number: bool,
+    /// Ignore case in regex mode.
     #[arg(short = 'i', long = "ignore-case")]
     ignore_case: bool,
+    /// Match whole words only in regex mode.
     #[arg(short = 'w', long = "word-regexp")]
     word_regexp: bool,
+    /// Treat the pattern as a literal string, not a regex.
     #[arg(short = 'F', long = "fixed-strings")]
     fixed_strings: bool,
+    /// Print only the names of files with matches.
     #[arg(short = 'l', long = "files-with-matches")]
     files_with_matches: bool,
+    /// Number of context lines around each regex match.
     #[arg(short = 'C', long = "context", value_name = "N")]
     context: Option<usize>,
     /// Accepted for grep compatibility; directories are always searched recursively.
@@ -104,8 +111,10 @@ struct Cli {
     recursive: bool,
 
     // Output
+    /// One JSON object per result, the old engine's field names.
     #[arg(long, group = "format")]
     json: bool,
+    /// One JSON object per result.
     #[arg(long, group = "format")]
     jsonl: bool,
     /// Leave the snippet out of JSON and JSONL results.
@@ -139,10 +148,13 @@ struct Cli {
     /// Accepted for compatibility; the index cannot hold orphans.
     #[arg(long = "clean-orphans", group = "command")]
     clean_orphans: bool,
+    /// What is indexed, and with which model (stderr).
     #[arg(long, group = "command")]
     status: bool,
+    /// `--status` plus source and index sizes.
     #[arg(long = "status-verbose", group = "command")]
     status_verbose: bool,
+    /// `--status` as JSON on stdout.
     #[arg(long = "status-json", group = "command")]
     status_json: bool,
     /// Embedding model alias for --index (default: the index's own, else gemma-q4).
@@ -415,8 +427,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
 /// One stderr line per flag that does nothing in the chosen mode, so a user
 /// narrowing a semantic search with `--term` hears that nothing happened.
 /// Not an error — grep-style muscle memory keeps working — and `-n` and `-l`
-/// are absent because ranked output honours them. The wrapper `vq` passes
-/// none of these flags, so it never sees a warning.
+/// are absent because ranked output honours them. A wrapper script that
+/// passes only the flags its mode uses never sees a warning.
 fn warn_inert_flags(cli: &Cli) {
     if cli.quiet {
         return;

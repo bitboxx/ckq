@@ -175,10 +175,27 @@ fn gguf_from_cache(dir: PathBuf, spec: &ModelSpec) -> Result<PathBuf> {
 /// bytes before they are loaded. A mismatch — a corrupted or rewritten
 /// download — is an error naming the file: a silently different model would
 /// embed every query in a space its index knows nothing about.
+///
+/// A pass that succeeds leaves a marker beside the file holding its size,
+/// mtime and the hash it matched, and a later load whose file still has that
+/// size and mtime skips the pass: hashing 278 MB costs 0.2 s, paid on every
+/// daemon start, index run and in-process search otherwise. Writing the
+/// file changes its mtime, so a rewrite is hashed again.
 fn verify_blake3(path: &std::path::Path, spec: &ModelSpec) -> Result<()> {
     let Some(expect) = spec.blake3 else {
         return Ok(());
     };
+    let meta = std::fs::metadata(path).with_context(|| format!("verifying {}", path.display()))?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos());
+    let stamp = format!("{} {mtime} {expect}", meta.len());
+    let marker = verified_marker(path);
+    if std::fs::read_to_string(&marker).is_ok_and(|s| s == stamp) {
+        return Ok(());
+    }
     let mut file =
         std::fs::File::open(path).with_context(|| format!("verifying {}", path.display()))?;
     let mut hasher = blake3::Hasher::new();
@@ -193,7 +210,16 @@ fn verify_blake3(path: &std::path::Path, spec: &ModelSpec) -> Result<()> {
             spec.file
         );
     }
+    // Best effort: a cache directory we cannot write only costs the pass again.
+    let _ = std::fs::write(&marker, stamp);
     Ok(())
+}
+
+/// `<file>.ckq-verified` beside the snapshot entry; hf-hub owns `blobs/`.
+fn verified_marker(path: &std::path::Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".ckq-verified");
+    path.with_file_name(name)
 }
 
 fn models_cache_dir() -> PathBuf {
@@ -541,6 +567,17 @@ mod gguf_cache_tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("model.gguf"), "{err}");
+        assert!(err.contains("blake3"), "{err}");
+
+        // A passed check is remembered, and a rewrite of the file is not
+        // excused by it: the new mtime sends it through the hash again.
+        assert!(verified_marker(&path).is_file());
+        gguf_from_cache(good.path().to_path_buf(), &spec).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&path, b"same length, other bytes!!!!!").unwrap();
+        let err = gguf_from_cache(good.path().to_path_buf(), &spec)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("blake3"), "{err}");
 
         // No pin, no gate: models the registry does not vouch for still load.

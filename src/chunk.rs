@@ -145,7 +145,7 @@ fn next_cut(doc: &str, from: usize, end: usize) -> usize {
     let mut lo = from + first;
     let mut hi = end;
     while lo < hi {
-        let mut mid = (lo + hi + 1) / 2;
+        let mut mid = (lo + hi).div_ceil(2);
         while !doc.is_char_boundary(mid) {
             mid += 1;
         }
@@ -183,13 +183,21 @@ fn next_cut(doc: &str, from: usize, end: usize) -> usize {
 /// section too big for one chunk is hard-split back into lines.
 fn split_sections<'a>(lines: &[Unit<'a>]) -> Vec<Unit<'a>> {
     let mut sections: Vec<Vec<Unit<'_>>> = Vec::new();
-    let mut fence = false;
+    // The opening fence's marker and its length, as CommonMark has it: only
+    // a run of the same character at least as long closes it. One shared
+    // flag let a ``` block be closed by a ~~~ line inside it, and a heading
+    // after that line started a section mid-fence.
+    let mut fence: Option<(u8, usize)> = None;
     for line in lines {
         let t = line.text.trim_start();
-        if t.starts_with("```") || t.starts_with("~~~") {
-            fence = !fence;
+        match (fence, fence_run(t)) {
+            (None, Some(run)) => fence = Some(run),
+            (Some((open, open_len)), Some((marker, len))) if marker == open && len >= open_len => {
+                fence = None;
+            }
+            _ => {}
         }
-        let is_heading = !fence && t.starts_with('#') && t[1..].starts_with([' ', '#']);
+        let is_heading = fence.is_none() && t.starts_with('#') && t[1..].starts_with([' ', '#']);
         if is_heading || sections.is_empty() {
             sections.push(vec![*line]);
         } else {
@@ -206,6 +214,17 @@ fn split_sections<'a>(lines: &[Unit<'a>]) -> Vec<Unit<'a>> {
         }
     }
     units
+}
+
+/// A fence marker opening `t`: which character and how many of it, CommonMark
+/// requiring three or more. `None` when the line is no fence.
+fn fence_run(t: &str) -> Option<(u8, usize)> {
+    let first = t.as_bytes().first()?;
+    if *first != b'`' && *first != b'~' {
+        return None;
+    }
+    let len = t.as_bytes().iter().take_while(|&&b| b == *first).count();
+    (len >= 3).then_some((*first, len))
 }
 
 /// Accumulate units into chunks of at most `TARGET_TOKENS`, starting each new
@@ -566,6 +585,39 @@ mod tests {
         // before; only the newly classified scripts may estimate higher.
         assert_eq!(estimate_tokens("hello world of text"), 4);
         assert!(estimate_tokens("山中的寺庙藏于云雾之间") >= 9);
+    }
+
+    #[test]
+    fn a_fence_is_closed_only_by_its_own_marker() {
+        // A ~~~ line inside a ``` block is literal text; the heading after
+        // it must not start a section. The reverse pairing behaves the same.
+        // Each small section arrives as one merged unit, so a section's
+        // leader line is the unit's line_start (1 and 6, never 4).
+        for open in ["```", "~~~"] {
+            let close = if open == "```" { "~~~" } else { "```" };
+            let text = format!(
+                "# Head\n{open}text\n{close} not a closing fence\n# not a heading\n{open}\n# Tail\n"
+            );
+            let sections = split_sections(&split_lines(&text));
+            let leaders: Vec<usize> = sections.iter().map(|u| u.line_start).collect();
+            assert_eq!(
+                leaders,
+                vec![1, 6],
+                "{open} fence closed by {close}: sections start at {leaders:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_shorter_run_of_the_same_marker_does_not_close_a_fence() {
+        let text = "# Head\n````text\n```\n# not a heading\n````\n# Tail\n";
+        let sections = split_sections(&split_lines(text));
+        let leaders: Vec<usize> = sections.iter().map(|u| u.line_start).collect();
+        assert_eq!(
+            leaders,
+            vec![1, 6],
+            "a three-backtick line closed a four-backtick fence: sections start at {leaders:?}"
+        );
     }
 
     #[test]

@@ -85,6 +85,10 @@ jobs:
 
   build:
     name: build ${{ matrix.target }}
+    # On a dry run create-release is skipped, and a skipped need would skip
+    # this job too: run whenever verify passed and create-release did not
+    # fail (it either created the draft or was skipped on purpose).
+    if: always() && needs.verify.result == 'success' && needs.create-release.result != 'failure'
     needs: [create-release, verify]
     runs-on: ${{ matrix.os }}
     strategy:

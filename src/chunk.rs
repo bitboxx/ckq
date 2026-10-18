@@ -128,11 +128,23 @@ fn split_oversized(doc: &str, start: usize, end: usize, line: usize) -> Vec<Unit
             byte_end: cut,
             line_start: line,
             line_end: line,
-            tokens: estimate_tokens(piece),
+            tokens: dense_estimate(piece),
         });
         from = cut;
     }
     out
+}
+
+/// Token estimate for a piece of an over-long line. A line too long for the
+/// target is dense by nature — minified code measures near two characters
+/// per token on the real tokenizer — so the prose rates (4.8, or 4.2 for
+/// code-indicator-bearing lines) undercount it by more than the 2x the
+/// context gives; never more optimistic than 2.5 characters per token.
+/// Wide-script and emoji pieces keep their higher rates, which this takes
+/// the max with.
+fn dense_estimate(piece: &str) -> usize {
+    let chars = piece.chars().count();
+    estimate_tokens(piece).max(((chars as f32) / 2.5).ceil() as usize)
 }
 
 /// Where to cut the next piece of `doc[from..end]`: the longest prefix that
@@ -149,7 +161,7 @@ fn next_cut(doc: &str, from: usize, end: usize) -> usize {
         while !doc.is_char_boundary(mid) {
             mid += 1;
         }
-        if estimate_tokens(&doc[from..mid]) <= TARGET_TOKENS {
+        if dense_estimate(&doc[from..mid]) <= TARGET_TOKENS {
             lo = mid;
         } else {
             hi = mid - 1;
@@ -159,7 +171,7 @@ fn next_cut(doc: &str, from: usize, end: usize) -> usize {
         }
     }
     debug_assert!(
-        estimate_tokens(&doc[from..lo]) <= TARGET_TOKENS,
+        dense_estimate(&doc[from..lo]) <= TARGET_TOKENS,
         "the estimate is not monotonic over a single line"
     );
     // Whitespace within the last quarter of the piece: cutting there leaves
@@ -629,6 +641,25 @@ mod tests {
         assert!(chunks.len() > 1, "one chunk for 3,000 emoji");
         for c in &chunks {
             assert!(estimate_tokens(&text[c.byte_start..c.byte_end]) <= TARGET_TOKENS);
+        }
+    }
+
+    #[test]
+    fn minified_line_pieces_estimate_at_a_dense_rate() {
+        // Dense single-line code measures near two characters per token on
+        // the real tokenizer, so the prose rates would let a piece pack
+        // ~4,300 characters and tokenize past the context again. Pieces of
+        // an over-long line are capped at 2.5 characters per token.
+        let unit = r#"function f(){return "payload"+1;};var x={a:1,b:"tag"};"#;
+        let text = format!("{}\n", unit.repeat(200));
+        let chunks = chunk(&rel("bundle.js"), &text);
+        assert!(chunks.len() > 1);
+        for c in &chunks {
+            let chars = text[c.byte_start..c.byte_end].chars().count();
+            assert!(
+                chars <= TARGET_TOKENS * 5 / 2,
+                "{chars} chars in one chunk can tokenize past the context"
+            );
         }
     }
 }

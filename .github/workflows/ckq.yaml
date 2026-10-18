@@ -51,7 +51,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libvulkan-dev glslc spirv-headers
-      - run: cargo clippy --release --all-targets -- -D warnings
+      - run: cargo clippy --release --locked --all-targets -- -D warnings
 
   test:
     name: test (${{ matrix.os }})
@@ -111,7 +111,7 @@ jobs:
           choco install -y ninja
           echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
       - name: Test (offline)
-        run: cargo test --release
+        run: cargo test --release --locked
       # Prove the default feature reached the backend: the resolved feature
       # graph, the loader the binary links, and the compiled SPIR-V shaders
       # (vulkan-shaders-gen only runs with GGML_VULKAN on).
@@ -173,4 +173,6 @@ jobs:
           path: ~/.cache/ckq/models
           key: ckq-models-gemma-q4
 
-      - run: cargo e2e
+      # `cargo e2e --locked` would put --locked after the alias's `--`, where
+      # the test harness reads it, so the alias is expanded here.
+      - run: cargo test --release --locked -- --include-ignored --skip known_bug_

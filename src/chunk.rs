@@ -77,11 +77,13 @@ pub fn chunk(rel: &RelPath, text: &str) -> Vec<Chunk> {
 
 /// One unit per non-blank line: byte end excludes the line break. Blank lines
 /// are dropped: chunks need not cover them, and dropping them keeps an
-/// all-blank document chunk-free.
+/// all-blank document chunk-free. `\r` alone ends a line too (classic-Mac
+/// endings), the way `\r\n` and `\n` do, so such a file is not one giant
+/// unit numbered line 1.
 fn split_lines(text: &str) -> Vec<Unit<'_>> {
     let mut out = Vec::new();
     let mut offset = 0usize;
-    for (i, raw) in text.split_inclusive('\n').enumerate() {
+    for (i, raw) in text.split_inclusive(['\n', '\r']).enumerate() {
         let trimmed = raw.trim_end_matches(['\n', '\r']);
         let start = offset;
         let end = start + trimmed.len();
@@ -407,6 +409,25 @@ mod tests {
             assert!(c.byte_end <= text.len());
         }
         assert!(covered.iter().all(|c| *c), "some line uncovered");
+    }
+
+    #[test]
+    fn lone_cr_endings_break_lines_like_lf() {
+        // Classic-Mac endings: without `\r` as a break the whole file is one
+        // unit numbered line 1, one chunk over the context, truncated at
+        // embed time and every line number wrong.
+        let text: String = (1..=400)
+            .map(|i| format!("Line {i} of a classic Mac note\r"))
+            .collect();
+        let chunks = chunk(&rel("cr.md"), &text);
+        assert_eq!(chunks.last().unwrap().line_end, 400, "line numbers");
+        let mut covered = vec![false; 400];
+        for c in &chunks {
+            for seen in covered.iter_mut().take(c.line_end).skip(c.line_start - 1) {
+                *seen = true;
+            }
+        }
+        assert!(covered.iter().all(|b| *b), "some line in no chunk");
     }
 
     #[test]

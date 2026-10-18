@@ -84,8 +84,10 @@ pub fn grep(corpus: &Corpus, opts: &GrepOptions, scope: &Scope) -> Result<GrepOu
         };
         // (line number, byte offset of the line, display text) per line; the
         // display text is the line without its break, a prefix of the raw.
+        // `\r` alone breaks a line as well, matching the chunker's line
+        // numbers (classic-Mac endings).
         let lines: Vec<(usize, usize, &str)> = text
-            .split_inclusive('\n')
+            .split_inclusive(['\n', '\r'])
             .scan((1usize, 0usize), |(no, off), raw| {
                 let trimmed = raw.trim_end_matches(['\n', '\r']);
                 let entry = (*no, *off, trimmed);
@@ -153,4 +155,31 @@ fn build_regex(opts: &GrepOptions) -> Result<Regex> {
         body
     };
     Regex::new(&body).map_err(|e| anyhow!("Regex error: invalid pattern: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lone_cr_endings_count_lines_like_the_chunker() {
+        let dir = std::env::temp_dir().join(format!("ckq-grep-cr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("cr.txt"),
+            "alpha needle one\rneedle two\rno match\r",
+        )
+        .unwrap();
+        let (corpus, scope) = Corpus::plain(&dir).unwrap();
+        let opts = GrepOptions {
+            pattern: "needle".to_string(),
+            ..Default::default()
+        };
+        let out = grep(&corpus, &opts, &scope).unwrap();
+        let texts: Vec<&str> = out.matches.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, vec!["alpha needle one", "needle two"]);
+        let lines: Vec<usize> = out.matches.iter().map(|m| m.line).collect();
+        assert_eq!(lines, vec![1, 2], "CR must end a line, as in the chunker");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

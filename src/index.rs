@@ -5,12 +5,13 @@
 //! run. The model comes from `--model`, else from the existing index, else
 //! the default; a different model than the index holds means a full rebuild.
 
-use crate::corpus::{Corpus, RelPath};
+use crate::corpus::{Corpus, LEGACY_INDEX_DIR, RENAMED_INDEX_DIR, RelPath};
 use crate::embed::{Device, Embedder, LlamaEmbedder};
 use crate::models::{self, ModelSpec};
 use crate::store::{FileRecord, IndexMeta, Store};
 use crate::walk::WalkOptions;
 use anyhow::{Context, Result, anyhow, bail};
+use std::path::PathBuf;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Default)]
@@ -67,17 +68,17 @@ fn resolve_model(corpus: &Corpus, opts: &IndexOptions) -> Result<(&'static Model
 
 /// Bring the index in line with the files on disk.
 ///
-/// With `CKQ_TIMING=1`, print one line to stderr with the time spent walking,
+/// With `ROGO_TIMING=1`, print one line to stderr with the time spent walking,
 /// reading, chunking, embedding and writing.
 pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
-    let timing = std::env::var_os("CKQ_TIMING").is_some();
+    let timing = std::env::var_os("ROGO_TIMING").is_some();
     let t0 = Instant::now();
-    // --no-ckqignore means the run ignores .ckqignore files; writing a
+    // --no-rogoignore means the run ignores .rogoignore files; writing a
     // default one into a corpus that has none would mutate the very tree
     // the flag asked to leave alone, and later runs would read a file the
     // user never authored.
-    if !opts.walk.no_ckqignore {
-        crate::walk::ensure_ckqignore(corpus)?;
+    if !opts.walk.no_rogoignore {
+        crate::walk::ensure_rogoignore(corpus)?;
     }
     let (spec, meta) = resolve_model(corpus, opts)?;
     // A different model than the index holds means a full rebuild: its
@@ -142,7 +143,7 @@ pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
         if file.unreadable {
             report.skipped += 1;
             eprintln!(
-                "ckq: warning: cannot read {}; keeping its indexed rows",
+                "rogo: warning: cannot read {}; keeping its indexed rows",
                 corpus.abs(&file.rel).display()
             );
             continue;
@@ -185,7 +186,7 @@ pub fn update(corpus: &Corpus, opts: &IndexOptions) -> Result<IndexReport> {
             Err(e) => {
                 report.skipped += 1;
                 eprintln!(
-                    "ckq: warning: cannot read {}: {e}; keeping its indexed rows",
+                    "rogo: warning: cannot read {}: {e}; keeping its indexed rows",
                     corpus.abs(&file.rel).display()
                 );
             }
@@ -244,7 +245,7 @@ pub fn add_file(corpus: &Corpus, rel: &RelPath, opts: &IndexOptions) -> Result<I
     if !walked.iter().any(|f| f.rel == *rel) {
         bail!(
             "{} is excluded from the index (ignored, hidden or binary); pass the \
-             walk flags (--hidden, --no-ignore, --no-ckqignore) to index it",
+             walk flags (--hidden, --no-ignore, --no-rogoignore) to index it",
             corpus.abs(rel).display()
         );
     }
@@ -254,7 +255,7 @@ pub fn add_file(corpus: &Corpus, rel: &RelPath, opts: &IndexOptions) -> Result<I
         if existing.signature != meta.signature {
             return Err(anyhow!(
                 "the index at {} was built with a different embedding signature; \
-                 run `ckq --clean` first",
+                 run `rogo --clean` first",
                 corpus.index_dir().display()
             ));
         }
@@ -335,15 +336,20 @@ pub fn stale_count(corpus: &Corpus, opts: &WalkOptions) -> Result<usize> {
     Ok(stale)
 }
 
-/// Remove the index (`--clean`): the whole `.ckq` directory. A legacy `.ck`
-/// left by the old engine is deliberately not touched — there is no
-/// migration — so the caller can say it stayed.
-pub fn clean(corpus: &Corpus) -> Result<bool> {
+/// Remove the index (`--clean`): the whole `.rogo` directory, nothing else.
+/// A `.ckq` left by ckq 2.0 and a legacy `.ck` are deliberately not touched
+/// — moving them is the user's `mv`, not ours — so the caller can say they
+/// stayed. Returns the leftover legacy directories, in tree order.
+pub fn clean(corpus: &Corpus) -> Result<Vec<PathBuf>> {
     let dir = corpus.index_dir();
     if dir.exists() {
         std::fs::remove_dir_all(&dir)?;
     }
-    Ok(corpus.root.join(crate::corpus::LEGACY_INDEX_DIR).exists())
+    Ok([RENAMED_INDEX_DIR, LEGACY_INDEX_DIR]
+        .iter()
+        .map(|name| corpus.root.join(name))
+        .filter(|dir| dir.exists())
+        .collect())
 }
 
 #[cfg(test)]

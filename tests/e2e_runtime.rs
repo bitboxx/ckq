@@ -23,7 +23,7 @@ fn runtime_corpus() -> Corpus {
 fn cached_gguf() -> PathBuf {
     let home = PathBuf::from(std::env::var("HOME").expect("HOME is set"));
     let snapshots = home
-        .join(".cache/ckq/models")
+        .join(".cache/rogo/models")
         .join("models--ggml-org--embeddinggemma-300M-qat-q4_0-GGUF")
         .join("snapshots");
     std::fs::read_dir(&snapshots)
@@ -34,7 +34,7 @@ fn cached_gguf() -> PathBuf {
         .expect("the gemma-q4 GGUF in the cache")
 }
 
-/// A replaced `CKQ_GGUF_FILE` must not keep the old daemon's socket key, and
+/// A replaced `ROGO_GGUF_FILE` must not keep the old daemon's socket key, and
 /// a search whose weights no longer match the index must refuse rather than
 /// embed the query in one space while the documents live in another. The
 /// trial file is a symlink so its path stays constant while the file behind
@@ -50,21 +50,21 @@ fn replaced_weights_get_a_new_daemon_and_a_refused_search() {
     let trial = trial_dir.path().join("trial.gguf");
     std::os::unix::fs::symlink(&real, &trial).unwrap();
 
-    let mut cmd = corpus.ckq();
-    cmd.env("CKQ_GGUF_FILE", &trial)
+    let mut cmd = corpus.rogo();
+    cmd.env("ROGO_GGUF_FILE", &trial)
         .args(["--index", "-q", "."]);
     run_ok(&mut cmd);
 
-    let mut cmd = corpus.ckq();
-    cmd.env("CKQ_GGUF_FILE", &trial)
+    let mut cmd = corpus.rogo();
+    cmd.env("ROGO_GGUF_FILE", &trial)
         .args(["--sem", "stew", "--jsonl", "--no-snippet", "-q", "."]);
     let out = run_ok(&mut cmd);
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("stew.md"),
         "the override search must work while the weights match"
     );
-    let mut cmd = corpus.ckq();
-    cmd.env("CKQ_GGUF_FILE", &trial)
+    let mut cmd = corpus.rogo();
+    cmd.env("ROGO_GGUF_FILE", &trial)
         .args(["--daemon-socket", "gemma-q4"]);
     let out = run_ok(&mut cmd);
     let with_override = PathBuf::from(String::from_utf8(out.stdout).unwrap().trim());
@@ -79,8 +79,8 @@ fn replaced_weights_get_a_new_daemon_and_a_refused_search() {
 
     // The socket key follows the weights, so a changed file means a new
     // daemon, not the resident one holding the old bytes.
-    let mut cmd = corpus.ckq();
-    cmd.env("CKQ_GGUF_FILE", &trial)
+    let mut cmd = corpus.rogo();
+    cmd.env("ROGO_GGUF_FILE", &trial)
         .args(["--daemon-socket", "gemma-q4"]);
     let out = run_ok(&mut cmd);
     let repointed = PathBuf::from(String::from_utf8(out.stdout).unwrap().trim());
@@ -90,8 +90,8 @@ fn replaced_weights_get_a_new_daemon_and_a_refused_search() {
     );
 
     // And the search refuses, naming the rebuild, instead of mixing.
-    let mut cmd = corpus.ckq();
-    cmd.env("CKQ_GGUF_FILE", &trial)
+    let mut cmd = corpus.rogo();
+    cmd.env("ROGO_GGUF_FILE", &trial)
         .args(["--sem", "stew", "--jsonl", "--no-snippet", "-q", "."]);
     let stderr = run_err(&mut cmd);
     assert!(
@@ -128,7 +128,7 @@ fn a_closing_daemon_is_fallen_back_from() {
 
     let out = run_ok(
         corpus
-            .ckq()
+            .rogo()
             .args(["--sem", "stew", "--jsonl", "--no-snippet", "-q", "."]),
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -169,7 +169,7 @@ fn a_silent_daemon_times_out_and_falls_back() {
     });
 
     let start = Instant::now();
-    let out = run_ok(corpus.ckq().env("CKQ_DAEMON_TIMEOUT_SECS", "2").args([
+    let out = run_ok(corpus.rogo().env("ROGO_DAEMON_TIMEOUT_SECS", "2").args([
         "--sem",
         "stew",
         "--jsonl",

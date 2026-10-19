@@ -37,13 +37,13 @@ pub enum Device {
     Cpu,
 }
 
-/// For a search: `CKQ_QUERY_DEVICE=cpu|gpu` when set, else whichever measured
+/// For a search: `ROGO_QUERY_DEVICE=cpu|gpu` when set, else whichever measured
 /// faster for a cold single query on this platform. Measured 17 Oct 2026 on
 /// an M1 Ultra, gemma-q4, median of 10 cold `--sem` runs over bench/multilingual:
 /// gpu 0.41 s, cpu 0.59 s — the GPU wins even cold (Metal shader compilation
 /// included), so it is the default.
 pub fn query_device() -> Device {
-    match std::env::var("CKQ_QUERY_DEVICE").as_deref() {
+    match std::env::var("ROGO_QUERY_DEVICE").as_deref() {
         Ok("cpu") => Device::Cpu,
         Ok("gpu") => Device::Gpu,
         _ => Device::Gpu,
@@ -221,7 +221,7 @@ fn start_worker(
     };
 
     let handle = thread::Builder::new()
-        .name("ckq-llamacpp".into())
+        .name("rogo-llamacpp".into())
         .spawn(loader)
         .map_err(|e| anyhow!("spawning llama.cpp thread: {e}"))?;
 
@@ -249,7 +249,7 @@ pub fn shutdown() {
 }
 
 /// Run [`shutdown`] when the process exits, however it exits: a caller that
-/// forgets (a test binary, any program that links ckq) still gets the
+/// forgets (a test binary, any program that links rogo) still gets the
 /// ordered teardown. Registered after the model is loaded so it runs before
 /// ggml's own destructor.
 #[cfg(unix)]
@@ -362,7 +362,7 @@ fn run(
     }
     if truncated > 0 {
         eprintln!(
-            "ckq: warning: truncated {truncated} of {} inputs to {max_length} tokens before \
+            "rogo: warning: truncated {truncated} of {} inputs to {max_length} tokens before \
              embedding (if this model pools its last token, the embedding is wrong, not just \
              lossy; further truncations are not logged)",
             texts.len()

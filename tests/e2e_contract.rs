@@ -1,4 +1,4 @@
-//! The output contract of the `ckq` binary: what each search mode promises in
+//! The output contract of the `rogo` binary: what each search mode promises in
 //! `--json` and `--jsonl`, what the grep flags (-l, -n, -C, -i, -w, -F, --topk)
 //! do, and which exit code and message each failure takes.
 //!
@@ -161,7 +161,7 @@ fn regex_json_schema_fields() {
         "fn find_needle() -> usize {\n    1\n}\n",
     );
 
-    let out = common::run_ok(corpus.ckq().args(["-q", "needle", "--json", "."]));
+    let out = common::run_ok(corpus.rogo().args(["-q", "needle", "--json", "."]));
     let lines = stdout_lines(&out);
     assert_eq!(lines.len(), 3, "one JSON object per match");
 
@@ -414,7 +414,7 @@ fn sem_lex_hybrid_json_schema_fields() {
     corpus.index();
 
     let json_lines = |args: &[&str]| -> Vec<Value> {
-        let out = common::run_ok(corpus.ckq().args(args));
+        let out = common::run_ok(corpus.rogo().args(args));
         stdout_lines(&out)
             .iter()
             .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("bad JSON ({e}): {l}")))
@@ -558,7 +558,7 @@ fn files_with_matches_lists_each_file_once() {
     corpus.write("b.txt", "just one needle\n");
     corpus.write("c.txt", "no match in here\n");
 
-    let out = common::run_ok(corpus.ckq().args(["-l", "needle", "."]));
+    let out = common::run_ok(corpus.rogo().args(["-l", "needle", "."]));
     let mut names: Vec<String> = stdout_lines(&out)
         .iter()
         .map(|l| {
@@ -586,7 +586,7 @@ fn line_numbers_are_the_true_line_numbers() {
         "first line\nthe needle hides on line two\nthird line\nfourth line\nline five has another needle\nsixth line\n",
     );
 
-    let out = common::run_ok(corpus.ckq().args(["-n", "needle", "numbered.txt"]));
+    let out = common::run_ok(corpus.rogo().args(["-n", "needle", "numbered.txt"]));
     let lines = stdout_lines(&out);
     assert_eq!(
         lines,
@@ -609,7 +609,7 @@ fn context_flag_gives_exactly_n_lines_around() {
     );
     corpus.write("g.txt", "TARGET at the start\nsecond line\nthird line\n");
 
-    let out = common::run_ok(corpus.ckq().args(["-n", "-C", "1", "TARGET", "f.txt"]));
+    let out = common::run_ok(corpus.rogo().args(["-n", "-C", "1", "TARGET", "f.txt"]));
     let lines = stdout_lines(&out);
     assert_eq!(
         lines,
@@ -617,7 +617,7 @@ fn context_flag_gives_exactly_n_lines_around() {
         "-C 1 window"
     );
 
-    let out = common::run_ok(corpus.ckq().args(["-n", "-C", "2", "TARGET", "f.txt"]));
+    let out = common::run_ok(corpus.rogo().args(["-n", "-C", "2", "TARGET", "f.txt"]));
     let lines = stdout_lines(&out);
     assert_eq!(
         lines,
@@ -625,7 +625,7 @@ fn context_flag_gives_exactly_n_lines_around() {
         "-C 2 window"
     );
 
-    let out = common::run_ok(corpus.ckq().args(["-n", "-C", "1", "TARGET", "g.txt"]));
+    let out = common::run_ok(corpus.rogo().args(["-n", "-C", "1", "TARGET", "g.txt"]));
     let lines = stdout_lines(&out);
     assert_eq!(
         lines,
@@ -640,7 +640,7 @@ fn ignore_case_flag_matches_other_cases() {
     let corpus = Corpus::new();
     corpus.write("c.txt", "cat cot cut\nCat story\nconcatenate the parts\n");
 
-    let out = common::run_ok(corpus.ckq().args(["-n", "cat", "c.txt"]));
+    let out = common::run_ok(corpus.rogo().args(["-n", "cat", "c.txt"]));
     let lines = stdout_lines(&out);
     assert_eq!(
         lines,
@@ -648,7 +648,7 @@ fn ignore_case_flag_matches_other_cases() {
         "case-sensitive: 'Cat' does not match, 'concatenate' does"
     );
 
-    let out = common::run_ok(corpus.ckq().args(["-n", "-i", "cat", "c.txt"]));
+    let out = common::run_ok(corpus.rogo().args(["-n", "-i", "cat", "c.txt"]));
     let lines = stdout_lines(&out);
     assert_eq!(
         lines,
@@ -663,7 +663,7 @@ fn word_regexp_flag_matches_whole_words_only() {
     let corpus = Corpus::new();
     corpus.write("c.txt", "cat cot cut\nCat story\nconcatenate the parts\n");
 
-    let out = common::run_ok(corpus.ckq().args(["-n", "-w", "cat", "c.txt"]));
+    let out = common::run_ok(corpus.rogo().args(["-n", "-w", "cat", "c.txt"]));
     let lines = stdout_lines(&out);
     assert_eq!(
         lines,
@@ -679,11 +679,11 @@ fn fixed_strings_flag_escapes_metacharacters() {
     let corpus = Corpus::new();
     corpus.write("d.txt", "a+b (test) [x]\nplain ab\n");
 
-    let out = common::run_ok(corpus.ckq().args(["-n", "-F", "a+b (test) [x]", "d.txt"]));
+    let out = common::run_ok(corpus.rogo().args(["-n", "-F", "a+b (test) [x]", "d.txt"]));
     let lines = stdout_lines(&out);
     assert_eq!(lines, vec!["1:a+b (test) [x]"], "the literal text is found");
 
-    let stderr = common::run_err(corpus.ckq().args(["-n", "a+b (test) [x]", "d.txt"]));
+    let stderr = common::run_err(corpus.rogo().args(["-n", "a+b (test) [x]", "d.txt"]));
     assert!(
         stderr.contains("No matches found"),
         "as a regex the pattern matches nothing here: {stderr}"
@@ -704,7 +704,7 @@ fn topk_limits_the_result_count() {
     let all = corpus.search(&["quokka"]);
     assert_eq!(all.len(), 5, "regex search returns every match by default");
 
-    let out = common::run_ok(corpus.ckq().args(["-l", "--topk", "3", "quokka", "."]));
+    let out = common::run_ok(corpus.rogo().args(["-l", "--topk", "3", "quokka", "."]));
     let count = String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter(|l| !l.trim().is_empty())
@@ -721,7 +721,7 @@ fn topk_limits_the_result_count() {
 fn exit_zero_on_match() {
     let corpus = Corpus::new();
     corpus.write("hit.txt", "the zephyr kite rises\n");
-    let out = common::run_ok(corpus.ckq().args(["-q", "zephyr", "."]));
+    let out = common::run_ok(corpus.rogo().args(["-q", "zephyr", "."]));
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("the zephyr kite rises"),
         "the matching line is on stdout"
@@ -734,7 +734,7 @@ fn exit_zero_on_match() {
 fn no_match_exits_one_with_stderr_message() {
     let corpus = Corpus::new();
     corpus.write("plain.txt", "nothing to see\n");
-    let (code, stdout, stderr) = common::run_exit(corpus.ckq().args(["-q", "zzz-absent", "."]));
+    let (code, stdout, stderr) = common::run_exit(corpus.rogo().args(["-q", "zzz-absent", "."]));
     assert_eq!(code, Some(1), "grep-style no-match exit code");
     assert!(stdout.trim().is_empty(), "stdout stays empty: {stdout}");
     assert!(
@@ -752,7 +752,7 @@ fn nonexistent_path_exits_one_with_message() {
     let (code, _stdout, stderr) =
         common::run_exit(
             corpus
-                .ckq()
+                .rogo()
                 .args(["-q", "anything", missing.to_str().unwrap()]),
         );
     assert_eq!(code, Some(1));
@@ -772,7 +772,7 @@ fn invalid_regex_exits_one_with_regex_error() {
     let corpus = Corpus::new();
     corpus.write("plain.txt", "nothing to see\n");
     let (code, _stdout, stderr) =
-        common::run_exit(corpus.ckq().args(["-q", "[unclosed-class", "."]));
+        common::run_exit(corpus.rogo().args(["-q", "[unclosed-class", "."]));
     assert_eq!(code, Some(1));
     assert!(
         stderr.contains("Regex error"),

@@ -1,12 +1,12 @@
 [package]
-name = "ckq"
-version = "2.0.0"
+name = "rogo"
+version = "2.1.0"
 edition = "2024"
-authors = ["Mike Renwick", "ckq contributors"]
+authors = ["Mike Renwick", "rogo contributors"]
 license = "MIT OR Apache-2.0"
 description = "Multilingual search over a folder of text: BM25 and embeddings, fused"
-repository = "https://github.com/bitboxx/ckq"
-homepage = "https://github.com/bitboxx/ckq"
+repository = "https://github.com/bitboxx/rogo"
+homepage = "https://github.com/bitboxx/rogo"
 readme = "README.md"
 keywords = ["search", "bm25", "embeddings", "sqlite", "llm"]
 categories = ["command-line-utilities", "search", "text-processing"]
@@ -14,25 +14,25 @@ rust-version = "1.88.0"
 publish = false
 
 [features]
-# Build one GGUF into the binary itself: build.rs then requires CKQ_EMBED_GGUF
-# (the file) and CKQ_EMBED_ALIAS (its registry alias), and that model becomes
+# Build one GGUF into the binary itself: build.rs then requires ROGO_EMBED_GGUF
+# (the file) and ROGO_EMBED_ALIAS (its registry alias), and that model becomes
 # the build's default, so the one file works offline on a fresh machine. Off
 # by default: a normal build downloads models on first use, as before.
 embedded-model = []
 
 # The GPU backend: Vulkan by default everywhere but macOS, where these
-# features resolve to nothing — ckq-gpu is a dependency only under
+# features resolve to nothing — rogo-gpu is a dependency only under
 # cfg(not(target_os = "macos")), so the Mac keeps its Metal build untouched.
 # The shim exists because cargo cannot make a default feature
 # platform-specific (and refuses one crate twice under two names);
 # --no-default-features builds CPU-only; --no-default-features --features
 # cuda builds CUDA alone (--features cuda by itself adds CUDA to Vulkan).
 default = ["vulkan"]
-vulkan = ["dep:ckq-gpu", "ckq-gpu?/vulkan"]
-cuda = ["dep:ckq-gpu", "ckq-gpu?/cuda"]
+vulkan = ["dep:rogo-gpu", "rogo-gpu?/vulkan"]
+cuda = ["dep:rogo-gpu", "rogo-gpu?/cuda"]
 
 [[bin]]
-name = "ckq"
+name = "rogo"
 path = "src/main.rs"
 
 [dependencies]
@@ -53,7 +53,7 @@ llama-cpp-2 = { version = "0.1.159", features = ["metal"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 llama-cpp-2 = { version = "0.1.159" }
-ckq-gpu = { path = "gpu", optional = true }
+rogo-gpu = { path = "gpu", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Resolve the GGUF of <alias> in the Hugging Face cache the way hf-hub (and
-# so a normal ckq download) resolves it: the commit named by refs/main, when
+# so a normal rogo download) resolves it: the commit named by refs/main, when
 # that ref exists; the plain glob only as a fallback, and only when it is
 # unambiguous. Prints the path, or fails saying why.
 #
 #   scripts/resolve-gguf.sh gemma-q4
 #
-# The cache root is ~/.cache/ckq/models, or $CKQ_MODELS_CACHE when set (the
+# The cache root is ~/.cache/rogo/models, or $ROGO_MODELS_CACHE when set (the
 # tests use that to point at a fake cache). build-onefile.sh calls this, and
 # so does nothing surprising when the cache holds more than one revision,
 # which it does after a re-download following an upstream push: picking the
@@ -22,7 +22,7 @@ alias=$1
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 models_rs=$root/src/models.rs
-cache=${CKQ_MODELS_CACHE:-$HOME/.cache/ckq/models}
+cache=${ROGO_MODELS_CACHE:-$HOME/.cache/rogo/models}
 
 # The alias -> (repo, file) row of the registry in src/models.rs.
 spec=$(awk -v want="$alias" '
@@ -50,7 +50,7 @@ if [[ -f $ref ]]; then
     gguf=$snapshot_dir/$rev/$file
     if [[ ! -f $gguf ]]; then
         echo "error: refs/main of $repo points at $rev, but its snapshot holds no $file." >&2
-        echo "delete $repo_dir and let ckq download the repo again" >&2
+        echo "delete $repo_dir and let rogo download the repo again" >&2
         exit 1
     fi
 else
@@ -59,7 +59,7 @@ else
     shopt -u nullglob
     if [[ ${#candidates[@]} -eq 0 ]]; then
         echo "error: $file of $repo is not in $snapshot_dir yet." >&2
-        echo "run ckq --index once on any folder to download it" >&2
+        echo "run rogo --index once on any folder to download it" >&2
         exit 1
     fi
     if [[ ${#candidates[@]} -gt 1 ]]; then

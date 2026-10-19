@@ -1,5 +1,5 @@
 //! `scripts/resolve-gguf.sh`: the snapshot a one-file build embeds must be
-//! the one hf-hub (and so a normal ckq download) would serve — the commit
+//! the one hf-hub (and so a normal rogo download) would serve — the commit
 //! `refs/main` names — never whichever snapshot happens to sort first. These
 //! run against a fake cache and need no model, no network and no build.
 
@@ -37,7 +37,7 @@ mod resolve {
         let out = Command::new("bash")
             .arg(script())
             .arg(alias)
-            .env("CKQ_MODELS_CACHE", cache)
+            .env("ROGO_MODELS_CACHE", cache)
             .output()
             .expect("run the resolver");
         (
@@ -88,7 +88,7 @@ mod resolve {
         let (ok, _, stderr) = run(dir.path(), "gemma-q4");
         assert!(!ok);
         assert!(stderr.contains("not in"), "stderr: {stderr}");
-        assert!(stderr.contains("ckq --index"), "stderr: {stderr}");
+        assert!(stderr.contains("rogo --index"), "stderr: {stderr}");
     }
 
     /// A ref whose snapshot lost the file is a broken cache, not a fallback

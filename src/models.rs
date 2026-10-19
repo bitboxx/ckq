@@ -1,11 +1,11 @@
-//! The embedding models ckq knows, and where their weights live.
+//! The embedding models rogo knows, and where their weights live.
 //!
 //! GGUF only, run by llama.cpp: the five aliases, their Hugging Face repo
 //! and file, dimensions, pooling, prompts and default thresholds.
 //! `gemma-q4` is the default.
 
 use anyhow::{Context, Result, anyhow, bail};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pooling {
@@ -41,7 +41,7 @@ pub struct ModelSpec {
 #[cfg(not(feature = "embedded-model"))]
 pub const DEFAULT_ALIAS: &str = "gemma-q4";
 #[cfg(feature = "embedded-model")]
-pub const DEFAULT_ALIAS: &str = env!("CKQ_EMBED_ALIAS");
+pub const DEFAULT_ALIAS: &str = env!("ROGO_EMBED_ALIAS");
 
 const GEMMA_Q4: ModelSpec = ModelSpec {
     alias: "gemma-q4",
@@ -132,18 +132,21 @@ pub fn resolve(name: &str) -> Result<&'static ModelSpec> {
         })
 }
 
-/// The GGUF on disk: `CKQ_GGUF_FILE` when set (for trying another build of the
-/// same model), else the Hugging Face cache under `~/.cache/ckq/models`,
+/// The GGUF on disk: `ROGO_GGUF_FILE` when set (for trying another build of the
+/// same model), else the Hugging Face cache under `~/.cache/rogo/models`,
 /// downloading on first use.
 ///
 /// In a build that carries the GGUF of this alias inside the binary, the
-/// embedded bytes come out to `~/.cache/ckq/models/embedded/<blake3>.gguf`
+/// embedded bytes come out to `~/.cache/rogo/models/embedded/<blake3>.gguf`
 /// instead: written once, offline, never downloaded.
 pub fn gguf_path(spec: &ModelSpec) -> Result<PathBuf> {
-    if let Some(override_path) = std::env::var_os("CKQ_GGUF_FILE") {
+    if let Some(override_path) = std::env::var_os("ROGO_GGUF_FILE") {
         let path = PathBuf::from(override_path);
         if !path.is_file() {
-            bail!("CKQ_GGUF_FILE does not point at a file: {}", path.display());
+            bail!(
+                "ROGO_GGUF_FILE does not point at a file: {}",
+                path.display()
+            );
         }
         return Ok(path);
     }
@@ -158,8 +161,16 @@ pub fn gguf_path(spec: &ModelSpec) -> Result<PathBuf> {
 /// first use — and verified where the registry pins its blake3. hf-hub
 /// serves a cached snapshot without touching the network, so this one pass
 /// gates both a fresh download and whatever the cache already holds.
+///
+/// When the download is about to be real and ckq's cache is still in place,
+/// one stderr line says which `mv` skips it. `from_env` over `new` only adds
+/// `HF_ENDPOINT` (the cache dir is overridden right after), which is what
+/// lets a test point this at a dead endpoint.
 fn gguf_from_cache(dir: PathBuf, spec: &ModelSpec) -> Result<PathBuf> {
-    let cache = hf_hub::api::sync::ApiBuilder::new()
+    if let Some(home) = dirs::home_dir() {
+        legacy_cache_hint(&home.join(".cache").join("ckq").join("models"), &dir, spec);
+    }
+    let cache = hf_hub::api::sync::ApiBuilder::from_env()
         .with_cache_dir(dir)
         .build()
         .map_err(|e| anyhow::anyhow!("hf-hub: {e}"))?;
@@ -169,6 +180,33 @@ fn gguf_from_cache(dir: PathBuf, spec: &ModelSpec) -> Result<PathBuf> {
         .map_err(|e| anyhow::anyhow!("downloading {} ({e})", spec.repo))?;
     verify_blake3(&path, spec)?;
     Ok(path)
+}
+
+/// Whether a download of `spec` into `new_cache` is about to start with
+/// ckq's cache still in place: the old cache exists and the new one does not
+/// hold this repo yet. Then a moved cache would skip the download, and the
+/// user should hear so before the bytes start moving.
+fn legacy_cache_hint_needed(old_cache: &Path, new_cache: &Path, spec: &ModelSpec) -> bool {
+    old_cache.is_dir()
+        && !new_cache
+            .join(format!("models--{}", spec.repo.replace('/', "--")))
+            .is_dir()
+}
+
+/// The one stderr line, at most once per process however many models are
+/// resolved. Never fatal, never on stdout.
+fn legacy_cache_hint(old_cache: &Path, new_cache: &Path, spec: &ModelSpec) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !legacy_cache_hint_needed(old_cache, new_cache, spec) {
+        return;
+    }
+    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!(
+            "rogo: note: a ckq model cache exists at {}; moving it to ~/.cache/rogo \
+             (mv ~/.cache/ckq ~/.cache/rogo) skips this download",
+            old_cache.display()
+        );
+    }
 }
 
 /// Where the registry knows a file's blake3, one streaming pass over the
@@ -205,7 +243,7 @@ fn verify_blake3(path: &std::path::Path, spec: &ModelSpec) -> Result<()> {
     if got != expect {
         bail!(
             "{} is not the {} the registry pins (blake3 {got}, expected {expect}); \
-             remove the file and let ckq download it again",
+             remove the file and let rogo download it again",
             path.display(),
             spec.file
         );
@@ -215,20 +253,20 @@ fn verify_blake3(path: &std::path::Path, spec: &ModelSpec) -> Result<()> {
     Ok(())
 }
 
-/// `<file>.ckq-verified` beside the snapshot entry; hf-hub owns `blobs/`.
+/// `<file>.rogo-verified` beside the snapshot entry; hf-hub owns `blobs/`.
 fn verified_marker(path: &std::path::Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(".ckq-verified");
+    name.push(".rogo-verified");
     path.with_file_name(name)
 }
 
 fn models_cache_dir() -> PathBuf {
     if let Some(home) = dirs::home_dir() {
-        return home.join(".cache").join("ckq").join("models");
+        return home.join(".cache").join("rogo").join("models");
     }
     std::env::current_dir()
         .unwrap_or_default()
-        .join(".ckq_models")
+        .join(".rogo_models")
 }
 
 /// The alias whose GGUF this build carries inside the binary
@@ -248,9 +286,9 @@ pub fn embedded_alias() -> Option<&'static str> {
 /// their blake3, computed by build.rs so a run never re-hashes 278 MB.
 #[cfg(feature = "embedded-model")]
 mod embedded {
-    pub const GGUF: &[u8] = include_bytes!(env!("CKQ_EMBED_GGUF"));
-    pub const ALIAS: &str = env!("CKQ_EMBED_ALIAS");
-    pub const HASH: &str = env!("CKQ_EMBED_BLAKE3");
+    pub const GGUF: &[u8] = include_bytes!(env!("ROGO_EMBED_GGUF"));
+    pub const ALIAS: &str = env!("ROGO_EMBED_ALIAS");
+    pub const HASH: &str = env!("ROGO_EMBED_BLAKE3");
 }
 
 /// The embedded bytes as a path llama.cpp can load: llama.cpp reads only
@@ -365,12 +403,12 @@ pub fn signature(spec: &ModelSpec) -> String {
 }
 
 /// What sets the weights apart when they are not the registry's own file:
-/// a `CKQ_GGUF_FILE` override (its path, size and mtime, which are cheap), or
+/// a `ROGO_GGUF_FILE` override (its path, size and mtime, which are cheap), or
 /// embedded bytes whose hash differs from the registry's known one, such as a
 /// copy with a requantised token table. `None` for the registry's file, so a
 /// plain build and a build embedding that same file share an index.
 fn weights_marker(spec: &ModelSpec) -> Option<String> {
-    weights_marker_with(spec, std::env::var_os("CKQ_GGUF_FILE").as_deref())
+    weights_marker_with(spec, std::env::var_os("ROGO_GGUF_FILE").as_deref())
 }
 
 fn weights_marker_with(
@@ -606,6 +644,27 @@ mod signature_tests {
     }
 
     #[test]
+    fn the_legacy_cache_hint_fires_only_for_a_real_download() {
+        let spec = resolve("gemma-q4").unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let old = tmp.path().join("old");
+        let new = tmp.path().join("new");
+        std::fs::create_dir_all(&old).unwrap();
+        // New cache empty: the download is real, the old cache would skip it.
+        assert!(legacy_cache_hint_needed(&old, &new, spec));
+        // The repo already moved over: nothing is about to download.
+        std::fs::create_dir_all(new.join("models--ggml-org--embeddinggemma-300M-qat-q4_0-GGUF"))
+            .unwrap();
+        assert!(!legacy_cache_hint_needed(&old, &new, spec));
+        // No old cache: nothing to say.
+        assert!(!legacy_cache_hint_needed(
+            &tmp.path().join("absent"),
+            &new,
+            spec
+        ));
+    }
+
+    #[test]
     fn an_override_file_marks_the_signature() {
         let spec = resolve("gemma-q4").unwrap();
         let marker = weights_marker_with(spec, Some(std::ffi::OsStr::new("/nonexistent/x.gguf")));
@@ -617,7 +676,7 @@ mod signature_tests {
         // The value a fresh chunker-v2 index carries. A change here forces
         // every index to be rebuilt, so it has to be deliberate: it last
         // moved when the chunker learned to split over-long lines.
-        if std::env::var_os("CKQ_GGUF_FILE").is_none() && embedded_alias() != Some("gemma-q4") {
+        if std::env::var_os("ROGO_GGUF_FILE").is_none() && embedded_alias() != Some("gemma-q4") {
             assert_eq!(signature(resolve("gemma-q4").unwrap()), "0fc9533b8317c2f0");
         }
     }

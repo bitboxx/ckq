@@ -1,21 +1,46 @@
 //! Which files are in the corpus.
 //!
-//! The `ignore` walker, so `.gitignore`, `.ignore` and `.ckqignore` all apply.
-//! Symlinked directories are never followed (a loop must not hang anything)
-//! and the root is never glob-expanded. `.ckq` and `.git` are always skipped,
-//! and so is a legacy `.ck` left by the old engine, and any file that looks
-//! binary.
+//! The `ignore` walker, so `.gitignore`, `.ignore` and `.rogoignore` all
+//! apply. Symlinked directories are never followed (a loop must not hang
+//! anything) and the root is never glob-expanded. `.rogo` and `.git` are
+//! always skipped, and so is a `.ckq` left by ckq 2.0 and a legacy `.ck`
+//! left by the old engine (both unread: renaming the index directory is the
+//! user's move, not the walker's), and any file that looks binary.
 
 use crate::corpus::{Corpus, RelPath};
 use anyhow::Result;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Patterns a fresh `.ckqignore` starts with, written by `--index` when the
+/// The walker's own ignore file.
+pub const IGNORE_FILE: &str = ".rogoignore";
+
+/// What ckq called [`IGNORE_FILE`]. Read as a fallback while it is all a
+/// corpus has, so results do not change silently across the rename.
+pub const LEGACY_IGNORE_FILE: &str = ".ckqignore";
+
+/// Whether the rename warning for a legacy ignore file has been printed.
+/// One line per process, however many walks it makes.
+static LEGACY_IGNORE_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// One stderr line naming the file to rename, at most once per process.
+fn warn_legacy_ignore(path: &Path) {
+    if !LEGACY_IGNORE_WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "rogo: warning: reading the legacy {} (as {}); rename it to {}",
+            path.display(),
+            LEGACY_IGNORE_FILE,
+            IGNORE_FILE
+        );
+    }
+}
+
+/// Patterns a fresh `.rogoignore` starts with, written by `--index` when the
 /// corpus has none. Ported from upstream's default so existing corpora behave
 /// the same.
-pub const DEFAULT_CKQIGNORE: &str = r"# .ckqignore - Default patterns for ckq semantic search
+pub const DEFAULT_ROGOIGNORE: &str = r"# .rogoignore - Default patterns for rogo semantic search
 # Created automatically during first index
 # Syntax: same as .gitignore (glob patterns, ! for negation)
 
@@ -86,8 +111,8 @@ pub const DEFAULT_CKQIGNORE: &str = r"# .ckqignore - Default patterns for ckq se
 pub struct WalkOptions {
     /// Include dot-files and dot-directories.
     pub hidden: bool,
-    /// Ignore `.ckqignore` files (`--no-ckqignore`).
-    pub no_ckqignore: bool,
+    /// Ignore `.rogoignore` files (`--no-rogoignore`).
+    pub no_rogoignore: bool,
     /// Do not read `.gitignore` files (`--no-ignore`).
     pub no_ignore: bool,
 }
@@ -131,8 +156,17 @@ pub fn walk_known(
         .git_exclude(!opts.no_ignore)
         .ignore(!opts.no_ignore)
         .parents(true);
-    if !opts.no_ckqignore {
-        builder.add_custom_ignore_filename(".ckqignore");
+    if !opts.no_rogoignore {
+        builder.add_custom_ignore_filename(IGNORE_FILE);
+        // A corpus indexed by ckq still has its patterns in `.ckqignore`:
+        // keep reading them (dropping them would change results silently)
+        // and say once that the file has a new name.
+        if !corpus.root.join(IGNORE_FILE).exists() {
+            builder.add_custom_ignore_filename(LEGACY_IGNORE_FILE);
+            if corpus.root.join(LEGACY_IGNORE_FILE).exists() {
+                warn_legacy_ignore(&corpus.root.join(LEGACY_IGNORE_FILE));
+            }
+        }
     }
     builder.filter_entry(|entry| {
         if entry.depth() == 0 {
@@ -140,6 +174,7 @@ pub fn walk_known(
         }
         let name = entry.file_name().to_string_lossy();
         name != crate::corpus::INDEX_DIR
+            && name != crate::corpus::RENAMED_INDEX_DIR
             && name != crate::corpus::LEGACY_INDEX_DIR
             && name != ".git"
     });
@@ -233,11 +268,13 @@ pub fn looks_binary(head: &[u8]) -> bool {
     }
 }
 
-/// Write `DEFAULT_CKQIGNORE` to the root when it has no `.ckqignore` yet.
-pub fn ensure_ckqignore(corpus: &Corpus) -> Result<()> {
-    let path = corpus.root.join(".ckqignore");
-    if !path.exists() {
-        std::fs::write(&path, DEFAULT_CKQIGNORE)?;
+/// Write `DEFAULT_ROGOIGNORE` to the root when it has neither a `.rogoignore`
+/// nor a legacy `.ckqignore`: a corpus ckq indexed keeps its patterns where
+/// they are instead of growing a second ignore file.
+pub fn ensure_rogoignore(corpus: &Corpus) -> Result<()> {
+    let path = corpus.root.join(IGNORE_FILE);
+    if !path.exists() && !corpus.root.join(LEGACY_IGNORE_FILE).exists() {
+        std::fs::write(&path, DEFAULT_ROGOIGNORE)?;
     }
     Ok(())
 }

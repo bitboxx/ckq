@@ -29,10 +29,10 @@ fn test_basic_grep_functionality() {
     )
     .unwrap();
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["rust", temp_dir.path().to_str().unwrap()])
         .output()
-        .expect("Failed to run ckq");
+        .expect("Failed to run rogo");
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -49,10 +49,10 @@ fn test_case_insensitive_search() {
     )
     .unwrap();
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["-i", "HELLO", temp_dir.path().to_str().unwrap()])
         .output()
-        .expect("Failed to run ckq");
+        .expect("Failed to run rogo");
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -71,10 +71,10 @@ fn test_recursive_search() {
     )
     .unwrap();
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["-r", "target", temp_dir.path().to_str().unwrap()])
         .output()
-        .expect("Failed to run ckq");
+        .expect("Failed to run rogo");
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -87,10 +87,10 @@ fn test_json_output() {
     let temp_dir = TempDir::new().unwrap();
     fs::write(temp_dir.path().join("test.txt"), "json test line").unwrap();
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--json", "json", temp_dir.path().to_str().unwrap()])
         .output()
-        .expect("Failed to run ckq");
+        .expect("Failed to run rogo");
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -111,10 +111,10 @@ fn test_context_lines() {
     )
     .unwrap();
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["-C", "1", "target", temp_dir.path().to_str().unwrap()])
         .output()
-        .expect("Failed to run ckq with context");
+        .expect("Failed to run rogo with context");
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -137,10 +137,10 @@ fn test_topk_limit() {
         .unwrap();
     }
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--topk", "5", "match", temp_dir.path().to_str().unwrap()])
         .output()
-        .expect("Failed to run ckq with topk");
+        .expect("Failed to run rogo with topk");
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -157,10 +157,10 @@ fn test_line_numbers() {
     )
     .unwrap();
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["-n", "matched", temp_dir.path().to_str().unwrap()])
         .output()
-        .expect("Failed to run ckq with line numbers");
+        .expect("Failed to run rogo with line numbers");
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -172,10 +172,10 @@ fn test_no_matches_stderr_message() {
     let temp_dir = TempDir::new().unwrap();
     fs::write(temp_dir.path().join("test.txt"), "hello world").unwrap();
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["nonexistent_pattern", temp_dir.path().to_str().unwrap()])
         .output()
-        .expect("Failed to run ckq");
+        .expect("Failed to run rogo");
 
     assert!(!output.status.success());
     assert_eq!(output.status.code(), Some(1));
@@ -189,10 +189,10 @@ fn test_no_matches_stderr_message() {
 
 #[test]
 fn test_nonexistent_directory_error() {
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--sem", "test", "/nonexistent/directory"])
         .output()
-        .expect("Failed to run ckq");
+        .expect("Failed to run rogo");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -206,10 +206,10 @@ fn test_error_handling() {
     let temp_dir = TempDir::new().unwrap();
     fs::write(temp_dir.path().join("test.txt"), "test content").unwrap();
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["[invalid", temp_dir.path().to_str().unwrap()])
         .output()
-        .expect("Failed to run ckq");
+        .expect("Failed to run rogo");
 
     assert!(!output.status.success());
 }
@@ -223,10 +223,10 @@ fn test_invalid_regex_warning_during_highlighting() {
     )
     .unwrap();
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["[invalid", temp_dir.path().to_str().unwrap()])
         .output()
-        .expect("Failed to run ckq");
+        .expect("Failed to run rogo");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -248,10 +248,10 @@ fn test_jsonl_basic_output() {
     )
     .unwrap();
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["fn main", "--jsonl", temp_dir.path().to_str().unwrap()])
         .output()
-        .expect("Failed to run ckq");
+        .expect("Failed to run rogo");
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -284,7 +284,7 @@ fn test_jsonl_no_snippet_flag() {
     )
     .unwrap();
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args([
             "fn main",
             "--jsonl",
@@ -292,7 +292,7 @@ fn test_jsonl_no_snippet_flag() {
             temp_dir.path().to_str().unwrap(),
         ])
         .output()
-        .expect("Failed to run ckq");
+        .expect("Failed to run rogo");
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -319,15 +319,15 @@ fn test_jsonl_vs_regular_output() {
     )
     .unwrap();
 
-    let regular_output = common::ckq()
+    let regular_output = common::rogo()
         .args(["fn main", temp_dir.path().to_str().unwrap()])
         .output()
-        .expect("Failed to run ckq");
+        .expect("Failed to run rogo");
 
-    let jsonl_output = common::ckq()
+    let jsonl_output = common::rogo()
         .args(["fn main", "--jsonl", temp_dir.path().to_str().unwrap()])
         .output()
-        .expect("Failed to run ckq");
+        .expect("Failed to run rogo");
 
     assert!(regular_output.status.success());
     assert!(jsonl_output.status.success());
@@ -356,10 +356,10 @@ fn test_jsonl_with_different_languages() {
     )
     .unwrap();
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["main", "--jsonl", temp_dir.path().to_str().unwrap()])
         .output()
-        .expect("Failed to run ckq");
+        .expect("Failed to run rogo");
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -393,48 +393,48 @@ fn test_no_ckignore_flag_disables_hierarchical_ignore() {
     let subdir = parent.join("subdir");
     fs::create_dir(&subdir).unwrap();
 
-    // .ckqignore at parent level excluding *.tmp files
-    fs::write(parent.join(".ckqignore"), "*.tmp\n").unwrap();
+    // .rogoignore at parent level excluding *.tmp files
+    fs::write(parent.join(".rogoignore"), "*.tmp\n").unwrap();
 
     fs::write(parent.join("test.txt"), "FINDME_TEXT").unwrap();
     fs::write(parent.join("ignored.tmp"), "FINDME_TMP").unwrap();
     fs::write(subdir.join("nested.txt"), "FINDME_TEXT").unwrap();
     fs::write(subdir.join("also_ignored.tmp"), "FINDME_TMP").unwrap();
 
-    // With --no-ckqignore the .tmp files are included
-    let output = common::ckq()
-        .args(["-r", "--no-ckqignore", "FINDME", "."])
+    // With --no-rogoignore the .tmp files are included
+    let output = common::rogo()
+        .args(["-r", "--no-rogoignore", "FINDME", "."])
         .current_dir(parent)
         .output()
-        .expect("Failed to run ckq search --no-ckqignore");
+        .expect("Failed to run rogo search --no-rogoignore");
 
     assert!(
         output.status.success(),
-        "Search with --no-ckqignore failed: {}",
+        "Search with --no-rogoignore failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
         stdout.contains("ignored.tmp") || stdout.contains("also_ignored.tmp"),
-        "Should find .tmp files when --no-ckqignore is used. Output: {stdout}"
+        "Should find .tmp files when --no-rogoignore is used. Output: {stdout}"
     );
 
-    // Without it (default), .ckqignore applies
-    let output = common::ckq()
+    // Without it (default), .rogoignore applies
+    let output = common::rogo()
         .args(["-r", "FINDME", "."])
         .current_dir(parent)
         .output()
-        .expect("Failed to run ckq search");
+        .expect("Failed to run rogo search");
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
         !stdout.contains("ignored.tmp") && !stdout.contains("also_ignored.tmp"),
-        "Should NOT find .tmp files when .ckqignore is active (default). Output: {stdout}"
+        "Should NOT find .tmp files when .rogoignore is active (default). Output: {stdout}"
     );
     assert!(
         stdout.contains("test.txt") || stdout.contains("nested.txt"),
-        "Should find .txt files even with .ckqignore active"
+        "Should find .txt files even with .rogoignore active"
     );
 }
 
@@ -453,19 +453,19 @@ fn test_sigpipe_terminates_silently() {
     let line = "match: the quick brown fox jumps over the lazy dog\n";
     fs::write(temp_dir.path().join("big.txt"), line.repeat(50_000)).unwrap();
 
-    let mut child = common::ckq()
+    let mut child = common::rogo()
         .args(["match", temp_dir.path().to_str().unwrap()])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("Failed to spawn ckq");
+        .expect("Failed to spawn rogo");
 
     let mut stdout = child.stdout.take().unwrap();
     let mut buf = [0u8; 4096];
     let _ = stdout.read(&mut buf).unwrap();
     drop(stdout);
 
-    let status = child.wait().expect("Failed to wait on ckq");
+    let status = child.wait().expect("Failed to wait on rogo");
     let mut stderr_out = String::new();
     child
         .stderr
@@ -512,11 +512,11 @@ fn setup_hidden_workspace() -> TempDir {
 fn test_hidden_flag_regex_search() {
     let temp_dir = setup_hidden_workspace();
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["needle", "."])
         .current_dir(temp_dir.path())
         .output()
-        .expect("Failed to run ckq search");
+        .expect("Failed to run rogo search");
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
         stdout.contains("visible.txt"),
@@ -531,11 +531,11 @@ fn test_hidden_flag_regex_search() {
         "file in hidden dir should NOT match without --hidden; stdout: {stdout}"
     );
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--hidden", "needle", "."])
         .current_dir(temp_dir.path())
         .output()
-        .expect("Failed to run ckq --hidden search");
+        .expect("Failed to run rogo --hidden search");
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
         stdout.contains("visible.txt"),
@@ -563,11 +563,11 @@ fn test_index_command() {
     let temp_dir = TempDir::new().unwrap();
     fs::write(temp_dir.path().join("test.txt"), "indexable content").unwrap();
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--index", "."])
         .current_dir(temp_dir.path())
         .output()
-        .expect("Failed to run ckq index");
+        .expect("Failed to run rogo index");
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -577,7 +577,7 @@ fn test_index_command() {
         "the run should say what it did; stdout: {stdout} stderr: {stderr}"
     );
 
-    assert!(temp_dir.path().join(".ckq").exists());
+    assert!(temp_dir.path().join(".rogo").exists());
 }
 
 #[test]
@@ -587,26 +587,26 @@ fn test_clean_command() {
     let temp_dir = TempDir::new().unwrap();
     fs::write(temp_dir.path().join("test.txt"), "test content").unwrap();
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--index", "."])
         .current_dir(temp_dir.path())
         .output()
-        .expect("Failed to run ckq index");
+        .expect("Failed to run rogo index");
     assert!(
         output.status.success(),
         "Index creation failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        temp_dir.path().join(".ckq").exists(),
+        temp_dir.path().join(".rogo").exists(),
         "Index directory not created"
     );
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--clean", "."])
         .current_dir(temp_dir.path())
         .output()
-        .expect("Failed to run ckq clean");
+        .expect("Failed to run rogo clean");
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -626,7 +626,7 @@ fn test_add_single_file_to_index() {
     let test_file = temp_dir.path().join("test_file.txt");
     fs::write(&test_file, "This is test content for indexing").unwrap();
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--index", "."])
         .current_dir(temp_dir.path())
         .output()
@@ -637,10 +637,10 @@ fn test_add_single_file_to_index() {
     fs::write(&new_file, "New file content to be added").unwrap();
 
     // Add the new file by absolute path, from outside the corpus.
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--add", new_file.to_str().unwrap()])
         .output()
-        .expect("Failed to run ckq --add");
+        .expect("Failed to run rogo --add");
 
     assert!(
         output.status.success(),
@@ -657,7 +657,7 @@ fn test_add_single_file_to_index() {
     );
 
     // Verify the file was actually added by searching for it
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["New file", "."])
         .current_dir(temp_dir.path())
         .output()
@@ -677,7 +677,7 @@ fn test_add_single_file_to_index() {
 fn test_add_file_with_relative_path() {
     let temp_dir = TempDir::new().unwrap();
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--index", "."])
         .current_dir(temp_dir.path())
         .output()
@@ -690,11 +690,11 @@ fn test_add_file_with_relative_path() {
     )
     .unwrap();
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--add", "relative_file.txt"])
         .current_dir(temp_dir.path())
         .output()
-        .expect("Failed to run ckq --add with relative path");
+        .expect("Failed to run rogo --add with relative path");
 
     assert!(
         output.status.success(),
@@ -702,7 +702,7 @@ fn test_add_file_with_relative_path() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["Relative path", "."])
         .current_dir(temp_dir.path())
         .output()
@@ -733,7 +733,7 @@ fn test_concurrent_indexing_is_serialized() {
     }
 
     let spawn_indexer = || {
-        common::ckq()
+        common::rogo()
             .arg("--index")
             .arg("-q")
             .arg(".")
@@ -741,14 +741,14 @@ fn test_concurrent_indexing_is_serialized() {
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("Failed to spawn ckq --index")
+            .expect("Failed to spawn rogo --index")
     };
 
     let first = spawn_indexer();
     let second = spawn_indexer();
 
     for child in [first, second] {
-        let output = child.wait_with_output().expect("Failed to wait on ckq");
+        let output = child.wait_with_output().expect("Failed to wait on rogo");
         assert!(
             output.status.success(),
             "concurrent ck --index failed: {}",
@@ -756,11 +756,11 @@ fn test_concurrent_indexing_is_serialized() {
         );
     }
 
-    let out = common::ckq()
+    let out = common::rogo()
         .arg("--status-json")
         .current_dir(temp_dir.path())
         .output()
-        .expect("ckq --status-json should run");
+        .expect("rogo --status-json should run");
     assert!(
         out.status.success(),
         "status after concurrent indexing failed"
@@ -773,7 +773,7 @@ fn test_concurrent_indexing_is_serialized() {
     );
 }
 
-/// Command-mode flags must honor an explicit path argument: `ckq --index /dir`
+/// Command-mode flags must honor an explicit path argument: `rogo --index /dir`
 /// must index /dir, not the cwd, from any working directory.
 #[test]
 #[serial]
@@ -783,40 +783,40 @@ fn test_command_flags_honor_explicit_path() {
     let elsewhere = TempDir::new().unwrap();
     fs::write(target.path().join("a.txt"), "indexable content here").unwrap();
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--index", "-q", target.path().to_str().unwrap()])
         .current_dir(elsewhere.path())
         .output()
-        .expect("Failed to run ckq --index <path>");
+        .expect("Failed to run rogo --index <path>");
     assert!(
         output.status.success(),
         "ck --index <path> failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        target.path().join(".ckq").exists(),
+        target.path().join(".rogo").exists(),
         "--index must create the index at the given path"
     );
     assert!(
-        !elsewhere.path().join(".ckq").exists(),
+        !elsewhere.path().join(".rogo").exists(),
         "--index must not index the cwd when a path is given"
     );
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--status", target.path().to_str().unwrap()])
         .current_dir(elsewhere.path())
         .output()
-        .expect("Failed to run ckq --status <path>");
+        .expect("Failed to run rogo --status <path>");
     assert!(output.status.success());
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--clean", target.path().to_str().unwrap()])
         .current_dir(elsewhere.path())
         .output()
-        .expect("Failed to run ckq --clean <path>");
+        .expect("Failed to run rogo --clean <path>");
     assert!(output.status.success());
     assert!(
-        !target.path().join(".ckq").exists(),
+        !target.path().join(".rogo").exists(),
         "--clean must remove the index at the given path"
     );
 }
@@ -835,18 +835,18 @@ fn test_lexical_search_reflects_file_changes() {
     )
     .unwrap();
 
-    let status = common::ckq()
+    let status = common::rogo()
         .args(["--index", "-q", "."])
         .current_dir(temp_dir.path())
         .status()
-        .expect("ckq --index should run");
+        .expect("rogo --index should run");
     assert!(status.success());
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--lex", "alphaterm", ".", "--jsonl", "-q"])
         .current_dir(temp_dir.path())
         .output()
-        .expect("ckq --lex should run");
+        .expect("rogo --lex should run");
     assert!(
         output.status.success(),
         "initial lexical search failed.\nstderr: {}",
@@ -861,27 +861,27 @@ fn test_lexical_search_reflects_file_changes() {
     )
     .unwrap();
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--lex", "zebraterm", ".", "--jsonl", "-q"])
         .current_dir(temp_dir.path())
         .output()
-        .expect("ckq --lex should run");
+        .expect("rogo --lex should run");
     assert!(
         !output.status.success(),
         "search is read-only: a file the index never saw cannot be found yet"
     );
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--index", "-q", "."])
         .current_dir(temp_dir.path())
         .status()
-        .expect("ckq --index should run");
+        .expect("rogo --index should run");
     assert!(output.success());
-    let out = common::ckq()
+    let out = common::rogo()
         .args(["--lex", "zebraterm", ".", "--jsonl", "-q"])
         .current_dir(temp_dir.path())
         .output()
-        .expect("ckq --lex should run");
+        .expect("rogo --lex should run");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success() && stdout.contains("b.txt"),
@@ -890,17 +890,17 @@ fn test_lexical_search_reflects_file_changes() {
 
     // Modify the original file: removed content must stop matching
     fs::write(temp_dir.path().join("a.txt"), "completely different now").unwrap();
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--index", "-q", "."])
         .current_dir(temp_dir.path())
         .status()
-        .expect("ckq --index should run");
+        .expect("rogo --index should run");
     assert!(output.success());
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--lex", "alphaterm", ".", "--jsonl", "-q"])
         .current_dir(temp_dir.path())
         .output()
-        .expect("ckq --lex should run");
+        .expect("rogo --lex should run");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         !stdout.contains("a.txt"),
@@ -916,18 +916,18 @@ fn test_lexical_search_reflects_file_changes() {
 fn test_hidden_flag_lexical_index() {
     let temp_dir = setup_hidden_workspace();
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--index", "-q", "."])
         .current_dir(temp_dir.path())
         .status()
-        .expect("ckq --index should run");
+        .expect("rogo --index should run");
     assert!(output.success());
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--lex", "needle", "."])
         .current_dir(temp_dir.path())
         .output()
-        .expect("Failed to run ckq --lex");
+        .expect("Failed to run rogo --lex");
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
         stdout.contains("visible.txt"),
@@ -938,18 +938,18 @@ fn test_hidden_flag_lexical_index() {
         "hidden content should NOT be in the lexical index without --hidden; stdout: {stdout}"
     );
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--index", "-q", "--hidden", "."])
         .current_dir(temp_dir.path())
         .status()
-        .expect("ckq --index --hidden should run");
+        .expect("rogo --index --hidden should run");
     assert!(output.success());
 
-    let output = common::ckq()
+    let output = common::rogo()
         .args(["--hidden", "--lex", "needle", "."])
         .current_dir(temp_dir.path())
         .output()
-        .expect("Failed to run ckq --hidden --lex");
+        .expect("Failed to run rogo --hidden --lex");
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
         stdout.contains(".hidden-file.txt"),
@@ -964,7 +964,7 @@ fn test_hidden_flag_lexical_index() {
 // ---------------------------------------------------------------------------
 // Several directories in one session
 //
-// ckq keeps one index per directory, in a `.ckq` beside the corpus. That makes
+// rogo keeps one index per directory, in a `.rogo` beside the corpus. That makes
 // a session which searches corpus A and then corpus B the normal case rather
 // than an edge case, and these cover the ways it can break: an index written
 // to the wrong place, and a result from the wrong corpus.
@@ -991,10 +991,10 @@ fn write_two_corpora(a: &Path, b: &Path) {
 /// a caller proving absence must treat `None` as "not found", while a caller
 /// proving presence must panic on it: an empty hand proves nothing.
 fn search_stdout(mode: &str, query: &str, dir: &Path) -> Option<String> {
-    let output = common::ckq()
+    let output = common::rogo()
         .args([mode, query, dir.to_str().unwrap()])
         .output()
-        .expect("Failed to run ckq search");
+        .expect("Failed to run rogo search");
     if output.status.success() {
         Some(String::from_utf8(output.stdout).unwrap())
     } else {
@@ -1014,19 +1014,19 @@ fn test_each_directory_gets_its_own_index() {
 
     // Index both by path argument, from a directory that is neither of them.
     for corpus in [a.path(), b.path()] {
-        let output = common::ckq()
+        let output = common::rogo()
             .args(["--index", "-q", corpus.to_str().unwrap()])
             .current_dir(elsewhere.path())
             .output()
-            .expect("Failed to run ckq index");
+            .expect("Failed to run rogo index");
         assert!(output.status.success());
     }
 
     // The path argument decides where the index lands, not the current directory.
-    assert!(a.path().join(".ckq").is_dir());
-    assert!(b.path().join(".ckq").is_dir());
+    assert!(a.path().join(".rogo").is_dir());
+    assert!(b.path().join(".rogo").is_dir());
     assert!(
-        !elsewhere.path().join(".ckq").exists(),
+        !elsewhere.path().join(".rogo").exists(),
         "indexing by path argument must not index the current directory"
     );
 
@@ -1050,10 +1050,10 @@ fn test_lexical_search_does_not_leak_between_directories() {
     write_two_corpora(a.path(), b.path());
 
     for corpus in [a.path(), b.path()] {
-        let output = common::ckq()
+        let output = common::rogo()
             .args(["--index", "-q", corpus.to_str().unwrap()])
             .output()
-            .expect("Failed to run ckq index");
+            .expect("Failed to run rogo index");
         assert!(output.status.success());
     }
 
@@ -1084,10 +1084,10 @@ fn test_alternating_semantic_searches_stay_scoped() {
     write_two_corpora(a.path(), b.path());
 
     for corpus in [a.path(), b.path()] {
-        let output = common::ckq()
+        let output = common::rogo()
             .args(["--index", "-q", corpus.to_str().unwrap()])
             .output()
-            .expect("Failed to run ckq index");
+            .expect("Failed to run rogo index");
         assert!(output.status.success());
     }
 
@@ -1129,63 +1129,63 @@ fn test_alternating_semantic_searches_stay_scoped() {
 #[test]
 fn test_status_on_an_empty_index_reports_the_index() {
     let temp_dir = TempDir::new().unwrap();
-    let out = common::ckq()
+    let out = common::rogo()
         .args(["--index", "-q", temp_dir.path().to_str().unwrap()])
         .output()
-        .expect("Failed to run ckq index");
+        .expect("Failed to run rogo index");
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let out = common::ckq()
+    let out = common::rogo()
         .args(["--status", temp_dir.path().to_str().unwrap()])
         .output()
-        .expect("Failed to run ckq status");
+        .expect("Failed to run rogo status");
     assert!(out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("No index found"), "stderr: {stderr}");
     assert!(stderr.contains("Files indexed: 0"), "stderr: {stderr}");
 }
 
-/// `--index --no-ckqignore` must leave a corpus without a `.ckqignore`
-/// untouched: the flag exists to keep ckq's hands off that file, and a file
+/// `--index --no-rogoignore` must leave a corpus without a `.rogoignore`
+/// untouched: the flag exists to keep rogo's hands off that file, and a file
 /// written anyway would be read by every later flag-less run.
 #[test]
-fn test_no_ckqignore_does_not_write_one() {
+fn test_no_rogoignore_does_not_write_one() {
     let quiet = TempDir::new().unwrap();
-    let out = common::ckq()
+    let out = common::rogo()
         .args([
             "--index",
             "-q",
-            "--no-ckqignore",
+            "--no-rogoignore",
             quiet.path().to_str().unwrap(),
         ])
         .output()
-        .expect("Failed to run ckq index");
+        .expect("Failed to run rogo index");
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        !quiet.path().join(".ckqignore").exists(),
-        "--no-ckqignore wrote a default .ckqignore"
+        !quiet.path().join(".rogoignore").exists(),
+        "--no-rogoignore wrote a default .rogoignore"
     );
 
     // Without the flag the default file is still written, by design.
     let plain = TempDir::new().unwrap();
-    let out = common::ckq()
+    let out = common::rogo()
         .args(["--index", "-q", plain.path().to_str().unwrap()])
         .output()
-        .expect("Failed to run ckq index");
+        .expect("Failed to run rogo index");
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(plain.path().join(".ckqignore").exists());
+    assert!(plain.path().join(".rogoignore").exists());
 }
 
 /// Regex mode on a corpus with an unreadable file: the file is named on
@@ -1203,20 +1203,20 @@ fn test_regex_mode_reports_unreadable_files() {
 
     // The only file holding the pattern is unreadable: a silent miss would
     // be exit 1 pretending the corpus was searched.
-    let out = common::ckq()
+    let out = common::rogo()
         .args(["needle", temp_dir.path().to_str().unwrap()])
         .output()
-        .expect("Failed to run ckq");
+        .expect("Failed to run rogo");
     assert_eq!(out.status.code(), Some(2), "the only match was unreadable");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("cannot read"), "stderr: {stderr}");
     assert!(stderr.contains("locked.md"), "stderr: {stderr}");
 
     // Something matched elsewhere: exit stays 0, the warning still fires.
-    let out = common::ckq()
+    let out = common::rogo()
         .args(["relevant", temp_dir.path().to_str().unwrap()])
         .output()
-        .expect("Failed to run ckq");
+        .expect("Failed to run rogo");
     assert_eq!(out.status.code(), Some(0), "with a match elsewhere");
 
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).unwrap();

@@ -16,7 +16,13 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 /// Directory, under the corpus root, that holds the index.
-pub const INDEX_DIR: &str = ".ckq";
+pub const INDEX_DIR: &str = ".rogo";
+
+/// What ckq 2.0 called [`INDEX_DIR`]. Never read, never written: only
+/// named, so a leftover is skipped by the walker, left alone by `--clean`
+/// and explained by a command that finds it — one `mv` carries an index
+/// over, with no rebuild.
+pub const RENAMED_INDEX_DIR: &str = ".ckq";
 
 /// What the engine this one forked from called [`INDEX_DIR`]. Never read,
 /// never written: only named, so a leftover is skipped by the walker, left
@@ -112,9 +118,10 @@ pub struct Corpus {
 
 impl Corpus {
     /// The corpus a search of `arg` reads from: the nearest directory at or
-    /// above `arg` that holds `.ckq`, and the part of it `arg` names. An `arg`
-    /// with no index above it is an error that says to run `ckq --index`;
-    /// one with only a legacy `.ck` up the tree is told the index moved.
+    /// above `arg` that holds `.rogo`, and the part of it `arg` names. An `arg`
+    /// with no index above it is an error that says to run `rogo --index`; one
+    /// with only a `.ckq` or a legacy `.ck` up the tree is told what to do
+    /// with it.
     pub fn for_search(arg: &Path) -> Result<(Corpus, Scope)> {
         if !arg.exists() {
             bail!("Path does not exist: {}", arg.display());
@@ -122,17 +129,20 @@ impl Corpus {
         let abs = absolute(arg);
         let start = if abs.is_dir() { &abs } else { parent(&abs)? };
         let Some(root) = nearest_index_root(start) else {
+            if let Some(e) = renamed_index_error(start) {
+                return Err(e);
+            }
             if let Some(legacy) = nearest_dir(start, |d| {
                 d.join(LEGACY_INDEX_DIR).join("index.db").is_file()
             }) {
                 bail!(
-                    "the index moved from {} to .ckq; run `ckq --index {}` to build it again",
+                    "the index moved from {} to .rogo; run `rogo --index {}` to build it again",
                     legacy.join(LEGACY_INDEX_DIR).display(),
                     arg.display()
                 );
             }
             bail!(
-                "No ckq index found for {}; run `ckq --index {}` first",
+                "No rogo index found for {}; run `rogo --index {}` first",
                 arg.display(),
                 arg.display()
             );
@@ -189,15 +199,23 @@ impl Corpus {
     }
 
     /// The corpus a `--clean`/`--status`/`--add` argument names: the nearest
-    /// directory at or above `arg` that holds `.ckq`, else `arg` itself when
-    /// it is a directory.
+    /// directory at or above `arg` that holds `.rogo`, else `arg` itself when
+    /// it is a directory — unless the nearest index up the tree is a `.ckq`
+    /// one, which is an error saying how to carry it over rather than a
+    /// silent second index.
     pub fn for_command(arg: &Path) -> Result<Corpus> {
         if !arg.exists() {
             bail!("Path does not exist: {}", arg.display());
         }
         let abs = absolute(arg);
         let start = if abs.is_dir() { &abs } else { parent(&abs)? };
-        let root = nearest_index_root(start).unwrap_or_else(|| start.to_path_buf());
+        let root = match nearest_index_root(start) {
+            Some(root) => root,
+            None => {
+                return renamed_index_error(start)
+                    .map_or_else(|| Ok(Corpus::at(start, &display_prefix(arg, &abs))), Err);
+            }
+        };
         Ok(Corpus::at(&root, &display_prefix(arg, &abs)))
     }
 
@@ -278,9 +296,28 @@ fn parent(p: &Path) -> Result<&Path> {
         .ok_or_else(|| anyhow::anyhow!("{} has no parent", p.display()))
 }
 
-/// The nearest directory at or above `from` that holds a `.ckq` directory.
+/// The nearest directory at or above `from` that holds a `.rogo` directory.
 fn nearest_index_root(from: &Path) -> Option<PathBuf> {
     nearest_dir(from, |d| d.join(INDEX_DIR).is_dir())
+}
+
+/// The error for a tree whose only index is a `.ckq` one: rogo searches
+/// `.rogo`, an index renamed with one `mv` needs no rebuild, and the engine
+/// itself never moves or writes anything. `None` when there is no such
+/// index up the tree.
+fn renamed_index_error(from: &Path) -> Option<anyhow::Error> {
+    let root = nearest_dir(from, |d| {
+        d.join(RENAMED_INDEX_DIR).join("index.db").is_file()
+    })?;
+    let from = root.join(RENAMED_INDEX_DIR);
+    let to = root.join(INDEX_DIR);
+    Some(anyhow::anyhow!(
+        "found a ckq index at {}; this is rogo, which searches .rogo: \
+         run `mv {} {}` to rename it (no rebuild needed)",
+        from.display(),
+        from.display(),
+        to.display()
+    ))
 }
 
 /// The first directory at or above `from` for which `holds` is true.

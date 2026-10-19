@@ -2,8 +2,8 @@
 //!
 //! With the feature on, two environment variables drive the build:
 //!
-//! - `CKQ_EMBED_GGUF`: path of the GGUF file to embed,
-//! - `CKQ_EMBED_ALIAS`: its registry alias in `src/models.rs`.
+//! - `ROGO_EMBED_GGUF`: path of the GGUF file to embed,
+//! - `ROGO_EMBED_ALIAS`: its registry alias in `src/models.rs`.
 //!
 //! Both must be set and the alias must be one the registry knows; anything
 //! else fails the build with the message that says so. The alias list is read
@@ -23,12 +23,12 @@ fn main() {
         return;
     }
 
-    let gguf = require_var("CKQ_EMBED_GGUF");
-    let alias = require_var("CKQ_EMBED_ALIAS");
+    let gguf = require_var("ROGO_EMBED_GGUF");
+    let alias = require_var("ROGO_EMBED_ALIAS");
 
     let gguf_path = fs::canonicalize(&gguf).unwrap_or_else(|e| {
         fail(&format!(
-            "CKQ_EMBED_GGUF does not point at a readable file: {gguf} ({e})"
+            "ROGO_EMBED_GGUF does not point at a readable file: {gguf} ({e})"
         ))
     });
 
@@ -47,7 +47,7 @@ fn main() {
         .collect();
     if !known.contains(&alias.as_str()) {
         fail(&format!(
-            "CKQ_EMBED_ALIAS '{alias}' is not in the registry ({}). \
+            "ROGO_EMBED_ALIAS '{alias}' is not in the registry ({}). \
              Available models: {}",
             models_rs.display(),
             known.join(", ")
@@ -58,20 +58,20 @@ fn main() {
         .unwrap_or_else(|e| fail(&format!("cannot read {} ({e})", gguf_path.display())));
     let hex16 = &blake3::hash(&bytes).to_hex()[..16];
 
-    println!("cargo:rustc-env=CKQ_EMBED_GGUF={}", gguf_path.display());
-    println!("cargo:rustc-env=CKQ_EMBED_ALIAS={alias}");
-    println!("cargo:rustc-env=CKQ_EMBED_BLAKE3={hex16}");
+    println!("cargo:rustc-env=ROGO_EMBED_GGUF={}", gguf_path.display());
+    println!("cargo:rustc-env=ROGO_EMBED_ALIAS={alias}");
+    println!("cargo:rustc-env=ROGO_EMBED_BLAKE3={hex16}");
     println!("cargo:rerun-if-changed={}", gguf_path.display());
     println!("cargo:rerun-if-changed={}", models_rs.display());
-    println!("cargo:rerun-if-env-changed=CKQ_EMBED_GGUF");
-    println!("cargo:rerun-if-env-changed=CKQ_EMBED_ALIAS");
+    println!("cargo:rerun-if-env-changed=ROGO_EMBED_GGUF");
+    println!("cargo:rerun-if-env-changed=ROGO_EMBED_ALIAS");
 }
 
 fn require_var(name: &str) -> String {
     env::var(name).unwrap_or_else(|_| {
         fail(&format!(
             "{name} is not set. An embedded-model build needs \
-             CKQ_EMBED_GGUF (path of the GGUF) and CKQ_EMBED_ALIAS (its \
+             ROGO_EMBED_GGUF (path of the GGUF) and ROGO_EMBED_ALIAS (its \
              registry alias); scripts/build-onefile.sh sets both."
         ))
     })

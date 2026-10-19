@@ -2,7 +2,7 @@
 //!
 //! Every `--sem` and `--hybrid` search needs its query embedded, and loading
 //! the model costs about 0.4 s per process — the cost a wrapper that calls
-//! ckq dozens of times a day pays on every call. So the first search starts a
+//! rogo dozens of times a day pays on every call. So the first search starts a
 //! daemon (this same executable re-run with `--query-daemon`) and every later
 //! one connects to it.
 //!
@@ -20,7 +20,7 @@
 //! the winner loads.
 //!
 //! Lifetime: the daemon exits after [`idle_timeout`] with no request and
-//! removes its socket. `CKQ_IN_PROCESS=1` skips the daemon entirely; if it
+//! removes its socket. `ROGO_IN_PROCESS=1` skips the daemon entirely; if it
 //! cannot be reached the search embeds in its own process, with a warning.
 
 use crate::embed::{self, Embedder, LlamaEmbedder};
@@ -34,11 +34,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 /// How long the daemon waits with no request before it exits: 15 minutes, or
-/// `CKQ_DAEMON_IDLE_SECS`. The e2e tests set it low, because every test build
+/// `ROGO_DAEMON_IDLE_SECS`. The e2e tests set it low, because every test build
 /// is a new executable and so a new daemon, and each one would otherwise hold
 /// a model resident for a quarter of an hour after the run.
 pub fn idle_timeout() -> Duration {
-    std::env::var("CKQ_DAEMON_IDLE_SECS")
+    std::env::var("ROGO_DAEMON_IDLE_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
         .map(Duration::from_secs)
@@ -60,7 +60,7 @@ const LOG_KEEP: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// The embedder a search uses: the daemon's when one can be reached — started
 /// first if nothing answers — else this process's own model, with one warning
-/// so the slowdown is never silent. `CKQ_IN_PROCESS=1` skips the daemon.
+/// so the slowdown is never silent. `ROGO_IN_PROCESS=1` skips the daemon.
 pub fn embedder(spec: &'static ModelSpec) -> Result<Box<dyn Embedder>> {
     if in_process() {
         return load_in_process(spec);
@@ -72,7 +72,7 @@ pub fn embedder(spec: &'static ModelSpec) -> Result<Box<dyn Embedder>> {
             Ok(stream) => stream,
             Err(e) => {
                 eprintln!(
-                    "ckq: warning: no query daemon ({e:#}); \
+                    "rogo: warning: no query daemon ({e:#}); \
                      embedding the query in this process instead"
                 );
                 return load_in_process(spec);
@@ -83,7 +83,7 @@ pub fn embedder(spec: &'static ModelSpec) -> Result<Box<dyn Embedder>> {
 }
 
 fn in_process() -> bool {
-    std::env::var_os("CKQ_IN_PROCESS").is_some_and(|v| v == "1")
+    std::env::var_os("ROGO_IN_PROCESS").is_some_and(|v| v == "1")
 }
 
 fn load_in_process(spec: &'static ModelSpec) -> Result<Box<dyn Embedder>> {
@@ -119,7 +119,7 @@ impl Embedder for DaemonEmbedder {
             // later, so one sick daemon never fails or hangs a search.
             Err(e) => {
                 eprintln!(
-                    "ckq: warning: the query daemon failed ({e:#}); \
+                    "rogo: warning: the query daemon failed ({e:#}); \
                      embedding the query in this process instead"
                 );
                 load_in_process(self.spec)?.embed_query(text)
@@ -159,27 +159,27 @@ fn request(stream: &mut UnixStream, query: &str) -> Result<Vec<f32>> {
 }
 
 /// The client's wait for a reply: 120 s by default, or
-/// `CKQ_DAEMON_TIMEOUT_SECS` (the e2e tests set it low). Two minutes is
+/// `ROGO_DAEMON_TIMEOUT_SECS` (the e2e tests set it low). Two minutes is
 /// deliberately far above a cold model load on a slow machine — the load
 /// window is exactly why the daemon binds before loading.
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 fn request_timeout() -> Duration {
-    std::env::var("CKQ_DAEMON_TIMEOUT_SECS")
+    std::env::var("ROGO_DAEMON_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
         .map(Duration::from_secs)
         .unwrap_or(DEFAULT_REQUEST_TIMEOUT)
 }
 
-/// Where the sockets live: `~/.cache/ckq/sockets`, beside the model cache,
+/// Where the sockets live: `~/.cache/rogo/sockets`, beside the model cache,
 /// 0700 — a daemon answers anyone who can connect, so no other user may reach
 /// the directory.
 fn socket_dir() -> PathBuf {
     let dir = dirs::home_dir()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
         .join(".cache")
-        .join("ckq")
+        .join("rogo")
         .join("sockets");
     if std::fs::create_dir_all(&dir).is_ok() {
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
@@ -192,7 +192,7 @@ fn socket_dir() -> PathBuf {
 /// rebuild replaced — and a stale daemon never serves a new chunker or prompt
 /// it predates.
 /// Identity of this build and of the weights it would load: the executable's
-/// path, size and mtime, plus `CKQ_GGUF_FILE` — its path, size and mtime —
+/// path, size and mtime, plus `ROGO_GGUF_FILE` — its path, size and mtime —
 /// when set. The override has to be in the key: without it a daemon already
 /// holding the registry's GGUF would answer queries for a trial file, and the
 /// query and document vectors would come from different weights. The size and
@@ -202,7 +202,7 @@ fn socket_dir() -> PathBuf {
 /// index signature. The daemon inherits the variable from the client that
 /// spawns it, so both sides derive the same socket.
 fn exe_stamp() -> String {
-    exe_stamp_with(std::env::var_os("CKQ_GGUF_FILE").as_deref())
+    exe_stamp_with(std::env::var_os("ROGO_GGUF_FILE").as_deref())
 }
 
 fn exe_stamp_with(gguf: Option<&std::ffi::OsStr>) -> String {
@@ -238,9 +238,9 @@ fn exe_stamp_with(gguf: Option<&std::ffi::OsStr>) -> String {
     hasher.finalize().to_hex()[..16].to_string()
 }
 
-/// One socket per model and binary: `ckq-<alias>-<stamp>.sock`.
+/// One socket per model and binary: `rogo-<alias>-<stamp>.sock`.
 pub fn socket_path(alias: &str) -> PathBuf {
-    socket_dir().join(format!("ckq-{alias}-{}.sock", exe_stamp()))
+    socket_dir().join(format!("rogo-{alias}-{}.sock", exe_stamp()))
 }
 
 /// `Some(stream)` when a daemon answers on `path`.
@@ -290,7 +290,7 @@ fn last_log_lines(path: &Path) -> String {
 /// wait up to [`STARTUP_WAIT`] for it to listen.
 fn start(path: &Path, alias: &str) -> Result<UnixStream> {
     remove_dead_socket(path);
-    let exe = std::env::current_exe().context("locating the ckq binary")?;
+    let exe = std::env::current_exe().context("locating the rogo binary")?;
     let log = log_path(path);
     let log_file =
         std::fs::File::create(&log).with_context(|| format!("creating {}", log.display()))?;
@@ -332,7 +332,7 @@ fn start(path: &Path, alias: &str) -> Result<UnixStream> {
     }
 }
 
-/// Run as the daemon (`ckq --query-daemon <alias>`). Binds the socket before
+/// Run as the daemon (`rogo --query-daemon <alias>`). Binds the socket before
 /// the model is loaded — that is what decides the race between two starting
 /// daemons, and the loser exits here without loading anything — then serves
 /// one query per connection until [`idle_timeout`] passes with no request.
@@ -347,7 +347,7 @@ pub fn serve(alias: &str) -> Result<()> {
     };
     let mut listener = listener;
     eprintln!(
-        "ckq: query daemon {} pid {} on {}",
+        "rogo: query daemon {} pid {} on {}",
         spec.alias,
         std::process::id(),
         path.display()
@@ -494,9 +494,9 @@ fn serve_conn(stream: UnixStream, embedder: &mut LlamaEmbedder) -> std::io::Resu
 /// Clear what dead daemons left in the socket directory. The socket key
 /// carries the binary's stamp, so every rebuild leaves a new socket and log
 /// pair, and [`bind`] only ever clears a dead socket at its own key; without
-/// this the directory grows by a pair per build. A `ckq-*` socket goes when
+/// this the directory grows by a pair per build. A `rogo-*` socket goes when
 /// nothing answers on it, its log with it; a log alone goes once it is older
-/// than [`LOG_KEEP`]. Nothing outside `ckq-*` is ever touched.
+/// than [`LOG_KEEP`]. Nothing outside `rogo-*` is ever touched.
 fn reap_stale(own: &Path) {
     let Some(dir) = own.parent() else { return };
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -511,7 +511,7 @@ fn reap_stale(own: &Path) {
         let Some(name) = name.to_str() else {
             continue;
         };
-        if !name.starts_with("ckq-") {
+        if !name.starts_with("rogo-") {
             continue;
         }
         if name.ends_with(".sock") {

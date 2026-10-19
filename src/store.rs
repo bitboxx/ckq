@@ -1,4 +1,4 @@
-//! The index: one SQLite file, `.ckq/index.db`, in WAL mode.
+//! The index: one SQLite file, `.rogo/index.db`, in WAL mode.
 //!
 //! It replaces the old manifest, per-file sidecars, `vectors.cache` and tantivy
 //! directory. Each file is written in one transaction, so a crash or a second
@@ -182,7 +182,7 @@ impl Store {
         {
             bail!(
                 "the index at {} was built with a different embedding signature \
-                 ({old} != {}); run `ckq --clean` and index again",
+                 ({old} != {}); run `rogo --clean` and index again",
                 corpus.index_dir().display(),
                 meta.signature
             );
@@ -224,7 +224,7 @@ impl Store {
             if raced != *signature {
                 bail!(
                     "the index at {} was built with a different embedding signature \
-                     ({raced} != {signature}); run `ckq --clean` and index again",
+                     ({raced} != {signature}); run `rogo --clean` and index again",
                     corpus.index_dir().display()
                 );
             }
@@ -540,13 +540,13 @@ fn check_schema(conn: &Connection, corpus: &Corpus) -> Result<()> {
     }
     match stored {
         Some(v) => bail!(
-            "the index at {} uses schema version {v}, this ckq uses {SCHEMA_VERSION}; \
-             run `ckq --clean` and `ckq --index` to rebuild it",
+            "the index at {} uses schema version {v}, this rogo uses {SCHEMA_VERSION}; \
+             run `rogo --clean` and `rogo --index` to rebuild it",
             corpus.index_dir().display()
         ),
         None => bail!(
             "the index at {} carries no readable schema version; \
-             run `ckq --clean` and `ckq --index` to rebuild it",
+             run `rogo --clean` and `rogo --index` to rebuild it",
             corpus.index_dir().display()
         ),
     }
@@ -565,7 +565,7 @@ fn schema_with_retry(conn: &Connection) -> Result<()> {
         }
     }
     Err(anyhow!(
-        "the index stayed locked by another ckq for 30 s: {}",
+        "the index stayed locked by another rogo for 30 s: {}",
         last.expect("a busy error")
     ))
 }
@@ -791,7 +791,7 @@ mod tests {
     fn a_future_schema_version_is_refused_by_name() {
         let (_dir, c) = corpus();
         drop(Store::open_write(&c, &meta()).unwrap());
-        // What an index written by a later ckq looks like to this one.
+        // What an index written by a later rogo looks like to this one.
         let conn = Connection::open(c.index_dir().join(DB_FILE)).unwrap();
         conn.execute(
             "UPDATE meta SET value = '99' WHERE key = 'schema_version'",

@@ -23,7 +23,7 @@ fn needled() -> Corpus {
 
 /// The `--jsonl` hits of a search whose last argument is `arg`, not `.`.
 fn hits_in(corpus: &Corpus, args: &[&str], arg: &str) -> Vec<common::Hit> {
-    let out = run_ok(corpus.ckq().args(args).args(["--jsonl", "-q", arg]));
+    let out = run_ok(corpus.rogo().args(args).args(["--jsonl", "-q", arg]));
     parse_jsonl(&out.stdout)
 }
 
@@ -126,13 +126,13 @@ fn regex_topk_with_a_file_argument_returns_that_files_matches() {
 
     // The limit used to stop the walk at a.md, whose matches the scope then
     // dropped: "No matches found", exit 1.
-    let out = run_ok(corpus.ckq().args(["-F", "--topk", "1", "match", "b.md"]));
+    let out = run_ok(corpus.rogo().args(["-F", "--topk", "1", "match", "b.md"]));
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines, vec!["match three"]);
 
     // The limit still applies within the scope.
-    let out = run_ok(corpus.ckq().args(["-F", "--topk", "1", "match", "."]));
+    let out = run_ok(corpus.rogo().args(["-F", "--topk", "1", "match", "."]));
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines, vec!["./a.md:", "match one"]);
@@ -148,12 +148,12 @@ fn regex_topk_with_a_file_argument_returns_that_files_matches() {
 fn add_refuses_a_file_the_walk_excludes() {
     let corpus = Corpus::new();
     corpus.write("keep.md", "plain text\n");
-    corpus.index(); // writes the default .ckqignore, which ignores *.json
+    corpus.index(); // writes the default .rogoignore, which ignores *.json
     corpus.write("data.json", "{\"a\": 1}\n");
 
     // Used to succeed ("1 added") and then warn stale on every search,
     // until the next --index silently removed the file again.
-    let (code, _, stderr) = run_exit(corpus.ckq().args(["--add", "data.json"]));
+    let (code, _, stderr) = run_exit(corpus.rogo().args(["--add", "data.json"]));
     assert_eq!(code, Some(1), "{stderr}");
     assert!(stderr.contains("excluded from the index"), "{stderr}");
     assert_eq!(
@@ -161,7 +161,11 @@ fn add_refuses_a_file_the_walk_excludes() {
         serde_json::json!(1),
         "nothing may be added"
     );
-    run_ok(corpus.ckq().args(["--no-ckqignore", "--add", "data.json"]));
+    run_ok(
+        corpus
+            .rogo()
+            .args(["--no-rogoignore", "--add", "data.json"]),
+    );
     assert_eq!(
         status_json(corpus.path())["total_files"],
         serde_json::json!(2)
@@ -179,7 +183,7 @@ fn threshold_nan_and_out_of_range_are_rejected_at_parse_time() {
     // silently disabled the filter instead.
     for bad in ["nan", "NaN", "5", "-1.5"] {
         let corpus = Corpus::new();
-        let mut cmd = corpus.ckq();
+        let mut cmd = corpus.rogo();
         cmd.args(["--lex"])
             .arg(format!("--threshold={bad}"))
             .args(["query", "."]);
@@ -192,10 +196,10 @@ fn threshold_nan_and_out_of_range_are_rejected_at_parse_time() {
     let (_code, _, stderr) =
         run_exit(
             Corpus::new()
-                .ckq()
+                .rogo()
                 .args(["--lex", "--threshold=-1.0", "query", "."]),
         );
-    assert!(stderr.contains("No ckq index found"), "{stderr}");
+    assert!(stderr.contains("No rogo index found"), "{stderr}");
 }
 
 // ---------------------------------------------------------------------------
@@ -210,9 +214,9 @@ fn stderr_of(out: &std::process::Output) -> String {
 fn regex_mode_names_an_inert_term_on_stderr() {
     let corpus = Corpus::new();
     corpus.write("a.md", "needle here\n");
-    let out = run_ok(corpus.ckq().args(["--term", "zzzz", "needle", "."]));
+    let out = run_ok(corpus.rogo().args(["--term", "zzzz", "needle", "."]));
     assert!(
-        stderr_of(&out).contains("ckq: warning: --term has no effect in regex mode"),
+        stderr_of(&out).contains("rogo: warning: --term has no effect in regex mode"),
         "{}",
         stderr_of(&out)
     );
@@ -226,7 +230,7 @@ fn ranked_modes_name_the_grep_flags_they_ignore() {
     corpus.index();
     let out = run_ok(
         corpus
-            .ckq()
+            .rogo()
             .args(["--lex", "-i", "-w", "-F", "-C", "2", "needle", "."]),
     );
     let err = stderr_of(&out);
@@ -240,11 +244,11 @@ fn ranked_modes_name_the_grep_flags_they_ignore() {
     // --term has no lexical side under --sem.
     let out = run_ok(
         corpus
-            .ckq()
+            .rogo()
             .args(["--sem", "--term", "zzzz", "needle", "."]),
     );
     assert!(
-        stderr_of(&out).contains("ckq: warning: --term has no effect in --sem mode"),
+        stderr_of(&out).contains("rogo: warning: --term has no effect in --sem mode"),
         "{}",
         stderr_of(&out)
     );
@@ -285,15 +289,15 @@ fn the_flags_vq_passes_never_warn() {
         ],
         vec!["--sem", "--jsonl", "--no-snippet", "needle", "."],
     ] {
-        let out = run_ok(corpus.ckq().args(&args));
+        let out = run_ok(corpus.rogo().args(&args));
         assert!(
-            !stderr_of(&out).contains("ckq: warning:"),
+            !stderr_of(&out).contains("rogo: warning:"),
             "{:?}: {}",
             args,
             stderr_of(&out)
         );
     }
 
-    let out = run_ok(corpus.ckq().args(["-n", "needle", "."]));
-    assert!(!stderr_of(&out).contains("ckq: warning:"));
+    let out = run_ok(corpus.rogo().args(["-n", "needle", "."]));
+    assert!(!stderr_of(&out).contains("rogo: warning:"));
 }

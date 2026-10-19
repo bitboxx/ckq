@@ -2,6 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2.1.0 - 2026-10-19
+
+ckq is now **rogo** (Latin "I ask"). Same engine, same index format, new
+name everywhere: the package and binary, the on-disk names, the environment
+variables, the URLs (`bitboxx/rogo`; the old ones redirect).
+
+### Renamed
+
+- The package and binary `ckq` → `rogo`, the helper crate `ckq-gpu` → `rogo-gpu`.
+- The index directory `.ckq` → `.rogo`, the ignore file `.ckqignore` →
+  `.rogoignore` (flag `--no-rogoignore`), the cache `~/.cache/ckq` →
+  `~/.cache/rogo` (models and daemon sockets, `rogo-<alias>-…`), the model
+  check marker `<file>.ckq-verified` → `<file>.rogo-verified`.
+- Every environment variable `CKQ_*` → `ROGO_*` (including the build-time
+  `ROGO_EMBED_GGUF`, `ROGO_EMBED_ALIAS`).
+- Release archives are `rogo-<version>-<target>`.
+
+### Migration
+
+1. `mv .ckq .rogo` in every directory you indexed.
+2. `mv .ckqignore .rogoignore` wherever you have one.
+3. `mv ~/.cache/ckq ~/.cache/rogo`.
+4. Rename any `CKQ_*` variable you set to `ROGO_*` (`ROGO_IN_PROCESS`,
+   `ROGO_DAEMON_IDLE_SECS`, `ROGO_DAEMON_TIMEOUT_SECS`,
+   `ROGO_QUERY_DEVICE`, `ROGO_GGUF_FILE`, `ROGO_TIMING`).
+
+An index moved this way needs no rebuild: the index signature does not
+contain the name, and nothing else in the store ever did.
+
+### Legacy handling
+
+A command that finds no `.rogo` index but a `.ckq/index.db` fails with one
+message naming the `mv` above; it never moves or writes anything itself.
+Until `.ckqignore` is renamed, rogo keeps reading it — so results do not
+change silently — and warns once on stderr; `--index` writes a default
+`.rogoignore` only when neither file exists. A leftover `.ckq` directory is
+skipped by the walker and left alone by `--clean`, exactly like a legacy
+`.ck`. A model download that starts while `~/.cache/ckq/models` still
+exists says once which `mv` would have skipped it.
+
 ## 2.0.0 - 2026-10-18
 
 The rewrite, as one crate: a single `ckq` crate at the repository root replaces

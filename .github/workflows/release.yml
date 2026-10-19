@@ -30,7 +30,7 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # A tag push matches no branch filter in ckq.yaml, so nothing verified the
+  # A tag push matches no branch filter in rogo.yaml, so nothing verified the
   # tagged commit before this workflow built and uploaded it. Gate the
   # upload on the same checks a push to main faces. Runs on a dry run too.
   verify:
@@ -138,7 +138,7 @@ jobs:
           cache: true
           stripdown: true
       # The Visual Studio generator breaks vulkan-shaders-gen's install
-      # step (see ckq.yaml); Ninja in an MSVC developer environment instead.
+      # step (see rogo.yaml); Ninja in an MSVC developer environment instead.
       - name: Set up MSVC environment (Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
@@ -164,7 +164,7 @@ jobs:
             v=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
           fi
           echo "VERSION=$v" >> "$GITHUB_ENV"
-          echo "ARCHIVE_NAME=ckq-$v-${{ matrix.target }}" >> "$GITHUB_ENV"
+          echo "ARCHIVE_NAME=rogo-$v-${{ matrix.target }}" >> "$GITHUB_ENV"
           if [ "${{ runner.os }}" = "Windows" ]; then
             echo "BIN_DIR=target/release" >> "$GITHUB_ENV"
           else
@@ -184,13 +184,13 @@ jobs:
 
       - name: Sign macOS binary (ad-hoc)
         if: startsWith(matrix.target, 'x86_64-apple-darwin') || startsWith(matrix.target, 'aarch64-apple-darwin')
-        run: codesign --force --sign - target/${{ matrix.target }}/release/ckq
+        run: codesign --force --sign - target/${{ matrix.target }}/release/rogo
 
       - name: Create archive (Windows)
         if: runner.os == 'Windows'
         run: |
           mkdir dist
-          cp ${{ env.BIN_DIR }}/ckq.exe dist/
+          cp ${{ env.BIN_DIR }}/rogo.exe dist/
           cp README.md LICENSE-MIT LICENSE-APACHE dist/ 2>/dev/null || true
           cd dist
           7z a ../${{ env.ARCHIVE_NAME }}.zip *
@@ -200,7 +200,7 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           mkdir dist
-          cp target/${{ matrix.target }}/release/ckq dist/
+          cp target/${{ matrix.target }}/release/rogo dist/
           cp README.md LICENSE-MIT LICENSE-APACHE dist/ 2>/dev/null || true
           tar czf ${{ env.ARCHIVE_NAME }}.tar.gz -C dist .
 
@@ -216,7 +216,7 @@ jobs:
         shell: bash
 
       # The binary links vulkan-1.dll; recent SDKs install it straight into
-      # System32, older layouts keep it in the SDK (same step as ckq.yaml).
+      # System32, older layouts keep it in the SDK (same step as rogo.yaml).
       - name: Locate vulkan-1.dll (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -245,16 +245,16 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ runner.os }}" = "Windows" ]; then
-            BIN=dist/ckq.exe
+            BIN=dist/rogo.exe
           else
-            BIN=dist/ckq
+            BIN=dist/rogo
           fi
           if [ "${{ matrix.target }}" = "x86_64-apple-darwin" ] && ! arch -x86_64 /usr/bin/true 2>/dev/null; then
             echo "smoke test skipped: this arm64 runner has no Rosetta 2 and cannot execute the x86_64-apple-darwin binary"
             exit 0
           fi
           "$BIN" --version
-          "$BIN" --version | grep -qx "ckq $VERSION"
+          "$BIN" --version | grep -qx "rogo $VERSION"
           mkdir smoke
           printf 'the moka pot needs a coarse grind\n' > smoke/coffee.md
           printf 'pack a spare inner tube and a pump\n' > smoke/bike.md

@@ -9,7 +9,7 @@
 # runners get no Vulkan device (no ICD is installed), which llama.cpp handles
 # by falling back to the CPU at runtime; the Windows runners get the Vulkan
 # loader (vulkan-1.dll) so the binary, which links it, can start.
-name: ckq
+name: rogo
 
 permissions:
   contents: read
@@ -119,7 +119,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           cargo tree -e features -i llama-cpp-2 | grep 'feature "vulkan"'
-          ldd target/release/ckq | grep libvulkan
+          ldd target/release/rogo | grep libvulkan
           find target -path '*llama-cpp-sys-2*' -name '*.spv' | head -3
       - name: Prove the Vulkan backend was built (Windows)
         if: runner.os == 'Windows'
@@ -207,14 +207,14 @@ jobs:
       - name: Restore embedding models
         uses: actions/cache@v6
         with:
-          path: ~/.cache/ckq/models
+          path: ~/.cache/rogo/models
           # Keyed on the registry itself: any change to a repo, file or
           # blake3 rotates the key, so the gate can never keep scoring
           # weights the registry no longer names (the blake3 of every
           # download is verified in models.rs). restore-keys let a
           # rotation reuse every model that did not change.
-          key: ckq-models-${{ hashFiles('src/models.rs') }}
-          restore-keys: ckq-models-
+          key: rogo-models-${{ hashFiles('src/models.rs') }}
+          restore-keys: rogo-models-
 
       - name: Build the binary
         run: cargo build --release --locked
@@ -234,7 +234,7 @@ jobs:
             d=$(mktemp -d)
             echo "a line to embed" > "$d/warm.md"
             for attempt in 1 2 3; do
-              if target/release/ckq --index -q --model "$1" "$d" >/dev/null 2>&1; then
+              if target/release/rogo --index -q --model "$1" "$d" >/dev/null 2>&1; then
                 echo "$1: in the cache"
                 rm -rf "$d"
                 return 0
@@ -243,7 +243,7 @@ jobs:
               sleep 10
             done
             echo "$1: still failing after 3 attempts, last error:"
-            target/release/ckq --index -q --model "$1" "$d"
+            target/release/rogo --index -q --model "$1" "$d"
           }
           warm gemma-q4
           warm gemma-gguf
@@ -253,7 +253,7 @@ jobs:
       - run: cargo test --release --locked -- --include-ignored --skip known_bug_
       # The embedded-model feature (the one-file build) has no other
       # coverage: its unit tests are cfg-gated on the feature and build.rs
-      # needs CKQ_EMBED_GGUF/CKQ_EMBED_ALIAS, so a break ships invisible.
+      # needs ROGO_EMBED_GGUF/ROGO_EMBED_ALIAS, so a break ships invisible.
       # The model is already in the cache here; one platform is enough.
       # (--bin: the crate is a lone binary, there is no lib target.)
       - name: Build and test the embedded-model feature (Linux)
@@ -261,6 +261,6 @@ jobs:
         run: |
           scripts/build-onefile.sh gemma-q4
           gguf=$(scripts/resolve-gguf.sh gemma-q4)
-          CKQ_EMBED_GGUF=$gguf CKQ_EMBED_ALIAS=gemma-q4 \
-            cargo test --release --locked --features embedded-model --bin ckq
+          ROGO_EMBED_GGUF=$gguf ROGO_EMBED_ALIAS=gemma-q4 \
+            cargo test --release --locked --features embedded-model --bin rogo
 

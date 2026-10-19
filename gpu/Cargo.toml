@@ -10,7 +10,9 @@ name = "rogo-gpu"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88.0"
-publish = false
+license = "MIT OR Apache-2.0"
+description = "Feature forwarder for rogo: turns on llama-cpp-2's Vulkan or CUDA backend away from macOS"
+repository = "https://github.com/bitboxx/rogo"
 
 [dependencies]
 # Same version as rogo's own dependency: one resolved copy, one build.

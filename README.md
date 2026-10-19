@@ -9,7 +9,19 @@ with a query in another.
 
 ## Install
 
-Download an archive from the [releases page](https://github.com/bitboxx/rogo/releases)
+With Homebrew, on macOS or Linux:
+
+```bash
+brew install bitboxx/tap/rogo
+```
+
+With a Rust toolchain:
+
+```bash
+cargo install --locked rogo
+```
+
+Or download an archive from the [releases page](https://github.com/bitboxx/rogo/releases)
 and put the `rogo` binary on your `PATH`:
 
 | Platform | Archive |
@@ -30,6 +42,14 @@ shasum -a 256 -c rogo-2.1.0-aarch64-apple-darwin.tar.gz.sha256
 On Windows, `CertUtil -hashfile rogo-2.1.0-x86_64-pc-windows-msvc.zip SHA256`
 prints the same hash.
 
+Each archive from 2.1.0 on also carries signed build provenance. With the
+GitHub CLI, this checks that the archive came from the release workflow of
+this repository:
+
+```bash
+gh attestation verify rogo-2.1.0-aarch64-apple-darwin.tar.gz --repo bitboxx/rogo
+```
+
 Runtime needs: the Linux and Windows binaries are built with Vulkan and need a
 Vulkan loader to start, `libvulkan.so.1` on Linux and `vulkan-1.dll` on
 Windows. Any GPU driver installs one. A machine with a loader but no usable
@@ -37,15 +57,9 @@ GPU falls back to the CPU on its own. A machine with no Vulkan loader at all
 cannot run these binaries; build from source with `--no-default-features` for
 a CPU-only binary. macOS needs nothing beyond the system, but a binary
 downloaded with a browser is quarantined: run `xattr -d com.apple.quarantine rogo`
-once before the first start.
+once before the first start. Homebrew and cargo installs need no such step.
 
-With a Rust toolchain:
-
-```bash
-cargo install --git https://github.com/bitboxx/rogo
-```
-
-or build from source. The cargo features:
+To build from source, the cargo features:
 
 - `vulkan`: GPU through Vulkan, the default on Linux and Windows. Building it
   needs the Vulkan headers and loader, `glslc` and SPIRV-Headers

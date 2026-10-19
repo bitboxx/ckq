@@ -68,8 +68,14 @@ and aarch64 Linux, x86_64 and aarch64 macOS, and x86_64 Windows, smoke-tests
 each binary in its own job, and attaches the archives, their `.sha256` files
 and one combined `SHA256SUMS` to a GitHub release whose notes are the
 `CHANGELOG.md` section for that version. A `workflow_dispatch` run builds the
-same matrix as a dry run: artifacts only, no release created. Nothing is
-published to crates.io or npm: `Cargo.toml` has `publish = false`.
+same matrix as a dry run: artifacts only, no release created. A tag run also
+attests build provenance for every archive.
+
+crates.io is by hand, after the release is out: `cargo publish` in `gpu/` first
+when `rogo-gpu` changed (its version is pinned in the root `Cargo.toml`), then
+`cargo publish` at the root. The Homebrew formula lives in `bitboxx/homebrew-tap`
+(`Formula/rogo.rb`): bump its version and the four sha256 values (macOS and Linux) from the
+release's `SHA256SUMS`.
 
 Before tagging: `cargo clippy --release --all-targets -- -D warnings`,
 `cargo fmt`, `cargo test`, `cargo e2e`, all green, and update `CHANGELOG.md`.

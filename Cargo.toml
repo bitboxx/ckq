@@ -10,8 +10,9 @@ homepage = "https://github.com/bitboxx/rogo"
 readme = "README.md"
 keywords = ["search", "bm25", "embeddings", "sqlite", "llm"]
 categories = ["command-line-utilities", "search", "text-processing"]
+# Agent instructions and CI stay in the repo, out of the published crate.
+exclude = [".github/", "CLAUDE.md"]
 rust-version = "1.88.0"
-publish = false
 
 [features]
 # Build one GGUF into the binary itself: build.rs then requires ROGO_EMBED_GGUF
@@ -53,7 +54,7 @@ llama-cpp-2 = { version = "0.1.159", features = ["metal"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 llama-cpp-2 = { version = "0.1.159" }
-rogo-gpu = { path = "gpu", optional = true }
+rogo-gpu = { path = "gpu", version = "0.1.0", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

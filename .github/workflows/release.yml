@@ -1,5 +1,6 @@
 # A release is a tag X.Y.Z (no v prefix) that matches the version in
-# Cargo.toml. Binaries only: no crates.io, no npm.
+# Cargo.toml. Binaries with signed build provenance; crates.io is a manual
+# `cargo publish` after the release (CLAUDE.md, Releases).
 #
 # workflow_dispatch runs the same matrix as a dry run: every archive is
 # built, smoke-tested and uploaded as a workflow artifact, and no release is
@@ -295,6 +296,12 @@ jobs:
     if: always() && needs.build.result == 'success'
     needs: build
     runs-on: ubuntu-latest
+    # A job-level block replaces the workflow's, so contents: write again.
+    # id-token and attestations are for the provenance step.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v7
 
@@ -341,6 +348,17 @@ jobs:
           name: SHA256SUMS
           path: SHA256SUMS
           if-no-files-found: error
+
+      # Signed build provenance for every archive, tag runs only: a dry run
+      # must not create anything. `gh attestation verify <archive> --repo
+      # bitboxx/rogo` checks that a download came from this workflow.
+      - name: Attest build provenance
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
 
       - name: Publish GitHub Release
         if: github.event_name == 'push'

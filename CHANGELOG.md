@@ -2,11 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
-## 2.1.0 - 2026-10-19
+## 2.1.0 - 2026-10-20
 
 ckq is now **rogo** (Latin "I ask"). Same engine, same index format, new
 name everywhere: the package and binary, the on-disk names, the environment
 variables, the URLs (`bitboxx/rogo`; the old ones redirect).
+
+### Distribution
+
+- On crates.io as `rogo` (with the helper crate `rogo-gpu`):
+  `cargo install --locked rogo`.
+- A Homebrew tap over the release binaries: `brew install bitboxx/tap/rogo`.
+- Every release archive carries signed build provenance;
+  `gh attestation verify <archive> --repo bitboxx/rogo` checks it.
 
 ### Renamed
 

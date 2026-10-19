@@ -105,6 +105,15 @@ static BACKEND: LazyLock<Result<llama_cpp_2::llama_backend::LlamaBackend, String
         llama_cpp_2::llama_backend::LlamaBackend::init().map_err(|e| e.to_string())
     });
 
+/// The llama.cpp backend for another in-process model (the reranker): one
+/// `LlamaBackend::init()` per process is allowed, so every model borrows
+/// this one.
+pub fn backend() -> Result<&'static llama_cpp_2::llama_backend::LlamaBackend> {
+    BACKEND
+        .as_ref()
+        .map_err(|e| anyhow!("llama backend: {e}"))
+}
+
 /// Offload every layer; llama.cpp silently keeps on CPU whatever will not fit.
 const GPU_LAYERS: u32 = 1000;
 /// Sequences per decode in the indexing context. Measured against sixteen on
@@ -281,7 +290,8 @@ fn context_params(
         .with_pooling_type(pooling)
 }
 
-fn threads() -> i32 {
+/// Thread count for a llama.cpp context: every core, as the embedder does.
+pub(crate) fn threads() -> i32 {
     std::thread::available_parallelism()
         .map(|n| n.get() as i32)
         .unwrap_or(1)

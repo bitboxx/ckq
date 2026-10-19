@@ -219,6 +219,22 @@ impl Hit {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default()
     }
+
+    /// The cross-encoder's score for this hit's passage, under `--rerank`.
+    pub fn rerank_score(&self) -> Option<f64> {
+        self.raw
+            .get("signals")
+            .and_then(|s| s.get("rerank_score"))
+            .and_then(Value::as_f64)
+    }
+
+    /// The hit's rank among the reranked candidates, under `--rerank`.
+    pub fn rerank_rank(&self) -> Option<u64> {
+        self.raw
+            .get("signals")
+            .and_then(|s| s.get("rerank_rank"))
+            .and_then(Value::as_u64)
+    }
 }
 
 /// Parse `--jsonl` output. Lines that are not JSON objects fail the test,

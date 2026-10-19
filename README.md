@@ -112,6 +112,20 @@ Flags for the ranked modes:
 - `--scores`: show scores in text output.
 - `--jsonl`, `--json`, `--no-snippet`: output format, see below.
 
+`--rerank` (experimental, `--hybrid` only) re-orders the top of the fused
+list with a cross-encoder model that reads the query together with each
+candidate's passage, so the model judges the pair instead of matching
+words. The top `CKQ_RERANK_TOPN` fused files (default 30) are scored and
+then sorted by that score (`CKQ_RERANK_MODE=pure`, the default) or re-fused
+with the reranker's rank as a third list next to the lexical and semantic
+ones (`CKQ_RERANK_MODE=fuse`, weight `CKQ_RERANK_WEIGHT`, default 1.0). In
+`--jsonl`, reranked hits carry `rerank_score` and `rerank_rank` inside
+`signals`. The reranker model is `CKQ_RERANKER` (default `bge-reranker`,
+BAAI's bge-reranker-v2-m3), downloaded into the model cache on first use;
+it loads in the searching process, so the first reranked search of a batch
+pays the load (about half a second) and every later one only the scoring.
+With `CKQ_TIMING=1` both times are printed on stderr.
+
 Regex mode takes the grep flags:
 
 ```bash
@@ -188,16 +202,8 @@ binary, so a rebuild never talks to a stale one. Sockets live in
 `~/.cache/ckq/sockets`. The daemon embeds queries only; indexing always loads
 the model in the process that runs it.
 
-The daemon exits after 15 minutes without a query
-(`CKQ_DAEMON_IDLE_SECS`). `CKQ_IN_PROCESS=1` skips it and embeds in the
-searching process. A client waits 120 s for a reply
-(`CKQ_DAEMON_TIMEOUT_SECS`); on a timeout or any daemon failure it falls back
-to embedding in its own process, with one warning on stderr.
-
-## Models
-
 All models are GGUF, downloaded from Hugging Face on first use and cached in
-`~/.cache/ckq/models`. Where the registry pins a blake3, the download is
+~/.cache/ckq/models. Where the registry pins a blake3, the download is
 verified against it.
 
 | Alias | Dims | Context | Size | Licence |
@@ -208,6 +214,10 @@ verified against it.
 | `bge-m3-gguf` | 1024 | 8192 | 634 MB | MIT |
 | `qwen3-gguf` | 1024 | 8192 | 640 MB | Apache-2.0 |
 
+The reranker (`--rerank`) has its own small registry, downloaded into the
+same cache: `bge-reranker` (BAAI's bge-reranker-v2-m3, 568M, 607 MB,
+Apache-2.0), the default `CKQ_RERANKER`.
+
 ## Environment variables
 
 | Variable | Effect |
@@ -217,8 +227,11 @@ verified against it.
 | `CKQ_DAEMON_TIMEOUT_SECS` | Client wait for a daemon reply in seconds. Default 120; past it the client falls back to its own process. |
 | `CKQ_QUERY_DEVICE` | `cpu` or `gpu` for query embedding. Default `gpu`. |
 | `CKQ_GGUF_FILE` | Load the GGUF from this file instead of the registry download, for trying another build of the same model. The file's path, size and mtime enter the index signature. |
-| `CKQ_TIMING=1` | Print one stderr line of index timings (walk, read and chunk, embed). |
-| `CKQ_EMBED_GGUF`, `CKQ_EMBED_ALIAS` | Build-time only, with the `embedded-model` feature: the GGUF to embed in the binary and its alias. |
+| `CKQ_TIMING=1` | Print one stderr line of index timings (walk, read and chunk, embed), and, under `--rerank`, the reranker's load and scoring times. |
+| `CKQ_RERANKER` | Reranker alias for `--rerank`. Default `bge-reranker`. |
+| `CKQ_RERANK_TOPN` | How many of the fused files `--rerank` scores. Default 30. |
+| `CKQ_RERANK_MODE` | `pure` (sort by the reranker's score, default) or `fuse` (re-fuse with its rank as a third list). |
+| `CKQ_RERANK_WEIGHT` | The rerank list's weight in `fuse` mode. Default 1.0. |
 
 ## Exit codes
 

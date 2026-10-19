@@ -38,6 +38,7 @@ mod grep;
 mod index;
 mod models;
 mod output;
+mod rerank;
 mod search;
 mod store;
 mod walk;
@@ -86,6 +87,9 @@ struct Cli {
     /// Show scores in text output.
     #[arg(long)]
     scores: bool,
+    /// Rerank --hybrid's top results with a cross-encoder model (experimental).
+    #[arg(long)]
+    rerank: bool,
 
     // Regex mode
     /// Print line numbers with regex matches.
@@ -389,6 +393,19 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 let mut embedder = query_embedder(spec)?;
                 if cli.sem {
                     search::semantic(&store, &mut *embedder, &query, spec.threshold)?
+                } else if cli.rerank {
+                    let cfg = rerank::Config::from_env()?;
+                    let spec_rr = rerank::spec_from_env()?;
+                    let mut reranker = rerank::Reranker::load(spec_rr)?;
+                    search::hybrid_reranked(
+                        &store,
+                        &corpus,
+                        &mut *embedder,
+                        &query,
+                        spec.threshold,
+                        &mut reranker,
+                        &cfg,
+                    )?
                 } else {
                     search::hybrid(&store, &corpus, &mut *embedder, &query, spec.threshold)?
                 }
@@ -462,6 +479,10 @@ fn warn_inert_flags(cli: &Cli) {
     // --sem and regex mode do not.
     if !cli.terms.is_empty() && (cli.sem || !ranked) {
         inert.push("--term");
+    }
+    // The reranker re-orders the fused list; only --hybrid has one.
+    if cli.rerank && !cli.hybrid {
+        inert.push("--rerank");
     }
     for flag in inert {
         eprintln!("ckq: warning: {flag} has no effect in {mode} mode");

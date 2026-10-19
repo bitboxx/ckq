@@ -159,15 +159,33 @@ pub fn gguf_path(spec: &ModelSpec) -> Result<PathBuf> {
 /// serves a cached snapshot without touching the network, so this one pass
 /// gates both a fresh download and whatever the cache already holds.
 fn gguf_from_cache(dir: PathBuf, spec: &ModelSpec) -> Result<PathBuf> {
+    fetch_gguf_at(dir, spec.repo, spec.file, spec.blake3)
+}
+
+/// A Hugging Face GGUF out of the same cache the embedders use, downloaded
+/// on first use and verified where a blake3 is pinned. Also the rerankers'
+/// download path.
+pub(crate) fn fetch_gguf(repo: &str, file: &str, blake3: Option<&str>) -> Result<PathBuf> {
+    fetch_gguf_at(models_cache_dir(), repo, file, blake3)
+}
+
+fn fetch_gguf_at(
+    dir: PathBuf,
+    repo: &str,
+    file: &str,
+    blake3: Option<&str>,
+) -> Result<PathBuf> {
     let cache = hf_hub::api::sync::ApiBuilder::new()
         .with_cache_dir(dir)
         .build()
         .map_err(|e| anyhow::anyhow!("hf-hub: {e}"))?;
-    let repo = cache.model(spec.repo.to_string());
-    let path = repo
-        .get(spec.file)
-        .map_err(|e| anyhow::anyhow!("downloading {} ({e})", spec.repo))?;
-    verify_blake3(&path, spec)?;
+    let repo_api = cache.model(repo.to_string());
+    let path = repo_api
+        .get(file)
+        .map_err(|e| anyhow::anyhow!("downloading {repo}/{file} ({e})"))?;
+    if let Some(expect) = blake3 {
+        verify_blake3(&path, file, expect)?;
+    }
     Ok(path)
 }
 
@@ -181,10 +199,7 @@ fn gguf_from_cache(dir: PathBuf, spec: &ModelSpec) -> Result<PathBuf> {
 /// size and mtime skips the pass: hashing 278 MB costs 0.2 s, paid on every
 /// daemon start, index run and in-process search otherwise. Writing the
 /// file changes its mtime, so a rewrite is hashed again.
-fn verify_blake3(path: &std::path::Path, spec: &ModelSpec) -> Result<()> {
-    let Some(expect) = spec.blake3 else {
-        return Ok(());
-    };
+fn verify_blake3(path: &std::path::Path, file: &str, expect: &str) -> Result<()> {
     let meta = std::fs::metadata(path).with_context(|| format!("verifying {}", path.display()))?;
     let mtime = meta
         .modified()
@@ -196,18 +211,17 @@ fn verify_blake3(path: &std::path::Path, spec: &ModelSpec) -> Result<()> {
     if std::fs::read_to_string(&marker).is_ok_and(|s| s == stamp) {
         return Ok(());
     }
-    let mut file =
+    let mut file_handle =
         std::fs::File::open(path).with_context(|| format!("verifying {}", path.display()))?;
     let mut hasher = blake3::Hasher::new();
-    std::io::copy(&mut file, &mut hasher)
+    std::io::copy(&mut file_handle, &mut hasher)
         .with_context(|| format!("verifying {}", path.display()))?;
     let got = &hasher.finalize().to_hex()[..16];
     if got != expect {
         bail!(
-            "{} is not the {} the registry pins (blake3 {got}, expected {expect}); \
+            "{} is not the {file} the registry pins (blake3 {got}, expected {expect}); \
              remove the file and let ckq download it again",
             path.display(),
-            spec.file
         );
     }
     // Best effort: a cache directory we cannot write only costs the pass again.

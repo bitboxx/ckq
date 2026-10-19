@@ -27,6 +27,7 @@
 use crate::chunk::Chunk;
 use crate::corpus::{Corpus, RelPath, Scope};
 use crate::embed::Embedder;
+use crate::rerank;
 use crate::store::Store;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -52,8 +53,11 @@ pub struct Signals {
     pub lex_rank: Option<usize>,
     pub vec_rank: Option<usize>,
     pub rrf_score: f32,
+    /// Set only by `--rerank`: the cross-encoder's score for the file's
+    /// passage, and its rank among the reranked candidates.
+    pub rerank_score: Option<f32>,
+    pub rerank_rank: Option<usize>,
 }
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hit {
     pub rel: RelPath,
@@ -240,7 +244,51 @@ pub fn hybrid(
 ) -> Result<Vec<Hit>> {
     // Fusion can only promote what it sees, so each method supplies more
     // candidates than the final cut.
-    let depth = (q.topk * 3).max(30);
+    let mut fused = fuse(store, embedder, q, default_threshold, (q.topk * 3).max(30))?;
+    fused.truncate(q.topk);
+    locate_missing_spans(corpus, &mut fused, span_terms(q));
+    Ok(fused)
+}
+
+/// Hybrid plus `--rerank`: the fused list cut at N files (`cfg.topn`, or
+/// `topk` when that is larger), each candidate scored by the cross-encoder
+/// over the passage ckq already located for it, and the cut re-ordered by
+/// `cfg.mode`. Files beyond N never enter the cut; the output is truncated
+/// to `topk` as always.
+pub fn hybrid_reranked(
+    store: &Store,
+    corpus: &Corpus,
+    embedder: &mut dyn Embedder,
+    q: &Query,
+    default_threshold: f32,
+    reranker: &mut rerank::Reranker,
+    cfg: &rerank::Config,
+) -> Result<Vec<Hit>> {
+    let n = cfg.topn.max(q.topk);
+    let mut fused = fuse(store, embedder, q, default_threshold, (n * 3).max(30))?;
+    fused.truncate(n);
+    locate_missing_spans(corpus, &mut fused, span_terms(q));
+    let passages: Vec<String> = fused.iter().map(|h| passage(corpus, h)).collect();
+    let scores = reranker.score(&q.text, &passages)?;
+    let lex_weight = if q.terms.is_empty() {
+        LEX_WEIGHT_QUERY_ONLY
+    } else {
+        LEX_WEIGHT_WITH_TERMS
+    };
+    order_by_rerank(&mut fused, &scores, cfg, lex_weight);
+    fused.truncate(q.topk);
+    Ok(fused)
+}
+
+/// Both hybrid paths' shared core: the two rankings and their fusion, down
+/// to `depth` files, spans not yet located.
+fn fuse(
+    store: &Store,
+    embedder: &mut dyn Embedder,
+    q: &Query,
+    default_threshold: f32,
+    depth: usize,
+) -> Result<Vec<Hit>> {
     let lex_query = Query {
         topk: depth,
         threshold: None,
@@ -288,16 +336,102 @@ pub fn hybrid(
     } else {
         LEX_WEIGHT_WITH_TERMS
     };
-    let mut fused = fuse_by_file(&lexical, &semantic, lex_weight);
-    fused.truncate(q.topk);
-    let terms = span_terms(q);
-    for hit in &mut fused {
+    Ok(fuse_by_file(&lexical, &semantic, lex_weight))
+}
+
+/// Give every hit that the semantic method did not find a lexical span, in
+/// place.
+fn locate_missing_spans(corpus: &Corpus, hits: &mut [Hit], terms: Vec<String>) {
+    for hit in hits {
         if hit.signals.is_some_and(|s| s.vec_rank.is_none()) {
             let (chunk, _) = locate_span(corpus, &hit.rel, &terms);
             hit.chunk = chunk;
         }
     }
-    Ok(fused)
+}
+
+/// The text of a hit's span, read through `corpus.abs` and clamped to the
+/// file's real length, so a stale span degrades instead of panicking. This
+/// is the passage the reranker scores.
+fn passage(corpus: &Corpus, hit: &Hit) -> String {
+    match std::fs::read(corpus.abs(&hit.rel)) {
+        Ok(bytes) => {
+            let start = hit.chunk.byte_start.min(bytes.len());
+            let end = hit.chunk.byte_end.clamp(start, bytes.len());
+            String::from_utf8_lossy(&bytes[start..end]).into_owned()
+        }
+        Err(_) => String::new(),
+    }
+}
+
+/// Re-order the reranked candidates by the cross-encoder's scores and stamp
+/// `rerank_score`/`rerank_rank` into their signals. `pure` sorts by the
+/// score; `fuse` recomputes CombMAX over three lists — the lexical and
+/// semantic ranks as before, plus the reranker's rank at `weight`, same
+/// k = 3, same shape `max + 0.01 × rest` with the sum now over the other
+/// two lists (with two lists it degenerates to the existing formula) — and
+/// sorts by that. Ties keep the fused order.
+pub fn order_by_rerank(
+    fused: &mut [Hit],
+    scores: &[f32],
+    cfg: &rerank::Config,
+    lex_weight: f32,
+) {
+    debug_assert_eq!(fused.len(), scores.len());
+    // The reranker's rank: scores descending, ties to the earlier file.
+    let mut by_score: Vec<usize> = (0..fused.len()).collect();
+    by_score.sort_by(|&a, &b| {
+        scores[b]
+            .partial_cmp(&scores[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.cmp(&b))
+    });
+    let mut rank_of = vec![0usize; fused.len()];
+    for (rank, &i) in by_score.iter().enumerate() {
+        rank_of[i] = rank + 1;
+    }
+
+    // Stamp first: the score and rank travel with their hits through the
+    // re-ordering below, whatever the mode.
+    for (i, hit) in fused.iter_mut().enumerate() {
+        if let Some(signals) = hit.signals {
+            hit.signals = Some(Signals {
+                rerank_score: Some(scores[i]),
+                rerank_rank: Some(rank_of[i]),
+                ..signals
+            });
+        }
+    }
+
+    match cfg.mode {
+        rerank::Mode::Pure => {
+            let ordered: Vec<Hit> = by_score.iter().map(|&i| fused[i].clone()).collect();
+            fused.clone_from_slice(&ordered);
+        }
+        rerank::Mode::Fuse => {
+            for (i, hit) in fused.iter_mut().enumerate() {
+                let Some(signals) = hit.signals else { continue };
+                let rank_score =
+                    |rank: Option<usize>| rank.map_or(0.0, |r| 1.0 / (RRF_K + r as f32));
+                let lex = lex_weight * rank_score(signals.lex_rank);
+                let vec = rank_score(signals.vec_rank);
+                let rer = cfg.weight * rank_score(Some(rank_of[i]));
+                let best = lex.max(vec).max(rer);
+                let score = best + AGREEMENT_WEIGHT * (lex + vec + rer - best);
+                hit.score = score;
+                hit.signals = Some(Signals {
+                    rrf_score: score,
+                    ..signals
+                });
+            }
+            fused.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.rel.cmp(&b.rel))
+            });
+        }
+    }
 }
 
 /// Reciprocal rank fusion of two rankings at file level, the lexical one
@@ -355,6 +489,8 @@ fn fuse_by_file(lexical: &[Hit], semantic: &[Hit], lexical_weight: f32) -> Vec<H
                 lex_rank: entry.lex_rank,
                 vec_rank: entry.vec_rank,
                 rrf_score: score,
+                rerank_score: None,
+                rerank_rank: None,
             });
             entry.hit
         })
@@ -487,6 +623,95 @@ mod tests {
             LEX_WEIGHT_WITH_TERMS,
         );
         assert_eq!(full[0].rel.as_str(), "wrong.md");
+    }
+
+    /// Fused hits carrying both ranks, as `fuse_by_file` produces them.
+    fn rerank_candidates(lex: &[&str], sem: &[&str]) -> Vec<Hit> {
+        fuse_by_file(&hits(lex), &hits(sem), LEX_WEIGHT_QUERY_ONLY)
+    }
+
+    fn cfg(mode: rerank::Mode, weight: f32) -> rerank::Config {
+        rerank::Config { topn: 30, mode, weight }
+    }
+
+    #[test]
+    fn pure_orders_by_the_rerankers_score_and_stamps_its_signals() {
+        // Fused order first: b.md carries the semantic first place, so the
+        // list arrives as [b.md, a.md, c.md].
+        let mut fused = rerank_candidates(&["a.md", "b.md", "c.md"], &["b.md"]);
+        assert_eq!(
+            fused.iter().map(|h| h.rel.as_str()).collect::<Vec<_>>(),
+            ["b.md", "a.md", "c.md"]
+        );
+        // Scores by that order: b.md 0.9, a.md 0.1, c.md 0.5.
+        let scores = [0.9_f32, 0.1, 0.5];
+        order_by_rerank(
+            &mut fused,
+            &scores,
+            &cfg(rerank::Mode::Pure, 1.0),
+            LEX_WEIGHT_QUERY_ONLY,
+        );
+        let names: Vec<&str> = fused.iter().map(|h| h.rel.as_str()).collect();
+        assert_eq!(names, ["b.md", "c.md", "a.md"]);
+        for (i, hit) in fused.iter().enumerate() {
+            assert_eq!(hit.signals.unwrap().rerank_rank, Some(i + 1));
+        }
+        assert_eq!(fused[0].signals.unwrap().rerank_score, Some(0.9));
+        assert_eq!(fused[1].signals.unwrap().rerank_score, Some(0.5));
+        assert_eq!(fused[2].signals.unwrap().rerank_score, Some(0.1));
+    }
+
+    #[test]
+    fn pure_ties_keep_the_fused_order() {
+        let mut fused = rerank_candidates(&["a.md", "b.md", "c.md"], &[]);
+        order_by_rerank(
+            &mut fused,
+            &[0.5_f32; 3],
+            &cfg(rerank::Mode::Pure, 1.0),
+            LEX_WEIGHT_QUERY_ONLY,
+        );
+        let names: Vec<&str> = fused.iter().map(|h| h.rel.as_str()).collect();
+        assert_eq!(names, ["a.md", "b.md", "c.md"]);
+        assert_eq!(fused[0].signals.unwrap().rerank_rank, Some(1));
+    }
+
+    fn fuse_recomputes_combmax_over_three_lists() {
+        // The fused list arrives as [sem.md, rerank.md]: sem.md owns the
+        // semantic first place (0.25), rerank.md only lex 1 (0.0375). The
+        // reranker reverses them, and at weight 2.0 its first place leads:
+        // rerank.md scores 2·(1/4) = 0.5 with rest 0.0375, so
+        // 0.5 + 0.01·0.0375; sem.md maxes at 2·(1/5) = 0.4 with rest 0.25,
+        // so 0.4 + 0.01·0.25 — and the fused order flips.
+        let mut fused = rerank_candidates(&["rerank.md", "sem.md"], &["sem.md"]);
+        let scores = [0.1_f32, 0.9];
+        order_by_rerank(
+            &mut fused,
+            &scores,
+            &cfg(rerank::Mode::Fuse, 2.0),
+            LEX_WEIGHT_QUERY_ONLY,
+        );
+        assert_eq!(fused[0].rel.as_str(), "rerank.md");
+        let expected = 0.5 + 0.01 * 0.037_5;
+        assert!((fused[0].score - expected).abs() < 1e-6, "{}", fused[0].score);
+        assert_eq!(fused[0].signals.unwrap().rrf_score, fused[0].score);
+        // The reranker's own verdict is stamped however the fusion ordered.
+        assert_eq!(fused[0].signals.unwrap().rerank_score, Some(0.9));
+        assert_eq!(fused[1].signals.unwrap().rerank_rank, Some(2));
+    }
+
+    #[test]
+    fn a_vanishing_rerank_weight_leaves_the_two_list_scores_alone() {
+        let mut fused = rerank_candidates(&["a.md", "b.md"], &["b.md"]);
+        let before: Vec<f32> = fused.iter().map(|h| h.score).collect();
+        order_by_rerank(
+            &mut fused,
+            &[0.0_f32; 2],
+            &cfg(rerank::Mode::Fuse, 1e-9),
+            LEX_WEIGHT_QUERY_ONLY,
+        );
+        for (hit, was) in fused.iter().zip(before) {
+            assert!((hit.score - was).abs() < 1e-6, "{} vs {}", hit.score, was);
+        }
     }
 
     /// An embedder whose query vector is fixed: enough to drive `semantic`

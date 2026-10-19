@@ -110,6 +110,11 @@ struct SignalsJson {
     lex_rank: Option<usize>,
     vec_rank: Option<usize>,
     rrf_score: f32,
+    /// Present only under `--rerank`: the cross-encoder's verdict.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rerank_score: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rerank_rank: Option<usize>,
 }
 
 /// Read the hit's snippet out of its file through `corpus.abs`, clamped to the
@@ -147,6 +152,8 @@ pub fn print_hits(corpus: &Corpus, hits: &[Hit], opts: &OutputOptions) -> Result
                         lex_rank: s.lex_rank,
                         vec_rank: s.vec_rank,
                         rrf_score: s.rrf_score,
+                        rerank_score: s.rerank_score,
+                        rerank_rank: s.rerank_rank,
                     }),
                 };
                 println!("{}", serde_json::to_string(&line)?);
@@ -162,6 +169,8 @@ pub fn print_hits(corpus: &Corpus, hits: &[Hit], opts: &OutputOptions) -> Result
                         lex_rank: hit.signals.and_then(|s| s.lex_rank),
                         vec_rank: hit.signals.and_then(|s| s.vec_rank),
                         rrf_score: hit.signals.map_or(hit.score, |s| s.rrf_score),
+                        rerank_score: hit.signals.and_then(|s| s.rerank_score),
+                        rerank_rank: hit.signals.and_then(|s| s.rerank_rank),
                     },
                     preview: text.clone(),
                     // The old engine always wrote the literal "none" here and
@@ -244,6 +253,8 @@ pub fn print_matches(corpus: &Corpus, matches: &[Match], opts: &OutputOptions) -
                         lex_rank: None,
                         vec_rank: None,
                         rrf_score: 1.0,
+                        rerank_score: None,
+                        rerank_rank: None,
                     },
                     preview: m.text.clone(),
                     model: "none",

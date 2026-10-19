@@ -169,12 +169,7 @@ pub(crate) fn fetch_gguf(repo: &str, file: &str, blake3: Option<&str>) -> Result
     fetch_gguf_at(models_cache_dir(), repo, file, blake3)
 }
 
-fn fetch_gguf_at(
-    dir: PathBuf,
-    repo: &str,
-    file: &str,
-    blake3: Option<&str>,
-) -> Result<PathBuf> {
+fn fetch_gguf_at(dir: PathBuf, repo: &str, file: &str, blake3: Option<&str>) -> Result<PathBuf> {
     let cache = hf_hub::api::sync::ApiBuilder::new()
         .with_cache_dir(dir)
         .build()

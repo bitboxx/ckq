@@ -215,7 +215,7 @@ verified against it.
 | `qwen3-gguf` | 1024 | 8192 | 640 MB | Apache-2.0 |
 
 The reranker (`--rerank`) has its own small registry, downloaded into the
-same cache: `bge-reranker` (BAAI's bge-reranker-v2-m3, 568M, 607 MB,
+same cache: `bge-reranker` (BAAI's bge-reranker-v2-m3, 568M, 606 MB,
 Apache-2.0), the default `CKQ_RERANKER`.
 
 ## Environment variables

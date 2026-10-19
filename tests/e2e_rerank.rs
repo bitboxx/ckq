@@ -75,7 +75,11 @@ fn the_reranker_ranks_the_relevant_toy_passage_first_in_two_languages() {
         ("咖啡豆怎么保存", "coffee_zh", "solar_panel"),
         // A third language the corpus does not even contain: the
         // cross-encoder reads the passage, not the query's words.
-        ("cómo conservar los granos de café", "coffee_zh", "python_gcd"),
+        (
+            "cómo conservar los granos de café",
+            "coffee_zh",
+            "python_gcd",
+        ),
     ] {
         let hits = rerank_hits(&corpus, query);
         assert!(!hits.is_empty(), "{query}: no results");

@@ -69,13 +69,13 @@ pub fn default_spec() -> &'static RerankerSpec {
 
 /// An alias to its spec.
 pub fn resolve(name: &str) -> Result<&'static RerankerSpec> {
-    rerankers()
-        .iter()
-        .find(|r| r.alias == name)
-        .ok_or_else(|| {
-            let aliases: Vec<&str> = rerankers().iter().map(|r| r.alias).collect();
-            anyhow!("Unknown reranker '{name}'. Available rerankers: {}", aliases.join(", "))
-        })
+    rerankers().iter().find(|r| r.alias == name).ok_or_else(|| {
+        let aliases: Vec<&str> = rerankers().iter().map(|r| r.alias).collect();
+        anyhow!(
+            "Unknown reranker '{name}'. Available rerankers: {}",
+            aliases.join(", ")
+        )
+    })
 }
 
 /// `CKQ_RERANKER`'s spec, else the default.
@@ -109,10 +109,9 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Result<Self> {
         let topn = match std::env::var("CKQ_RERANK_TOPN") {
-            Ok(v) => v
-                .trim()
-                .parse::<usize>()
-                .map_err(|e| anyhow!("CKQ_RERANK_TOPN must be a positive integer (got '{v}'): {e}"))?,
+            Ok(v) => v.trim().parse::<usize>().map_err(|e| {
+                anyhow!("CKQ_RERANK_TOPN must be a positive integer (got '{v}'): {e}")
+            })?,
             Err(_) => 30,
         };
         if topn == 0 {
@@ -176,12 +175,11 @@ impl Reranker {
         let loader = move || {
             let run_all = (|| -> Result<()> {
                 let backend = crate::embed::backend()?;
-                let params = llama_cpp_2::model::params::LlamaModelParams::default().with_n_gpu_layers(
-                    match device {
+                let params = llama_cpp_2::model::params::LlamaModelParams::default()
+                    .with_n_gpu_layers(match device {
                         crate::embed::Device::Gpu => 1000,
                         crate::embed::Device::Cpu => 0,
-                    },
-                );
+                    });
                 let model = llama_cpp_2::model::LlamaModel::load_from_file(backend, &path, &params)
                     .map_err(|e| anyhow!("loading reranker GGUF {}: {e}", path.display()))?;
                 let per_seq = (PASSAGE_TOKENS + PAIR_SLACK).min(spec.context) as u32;
@@ -197,14 +195,22 @@ impl Reranker {
                             .with_n_seq_max(MAX_SEQ as u32)
                             .with_n_batch(budget)
                             .with_n_ubatch(budget)
-                            .with_pooling_type(llama_cpp_2::context::params::LlamaPoolingType::Rank),
+                            .with_pooling_type(
+                                llama_cpp_2::context::params::LlamaPoolingType::Rank,
+                            ),
                     )
                     .map_err(|e| anyhow!("reranker context: {e}"))?;
                 ready_tx
                     .send(Ok(()))
                     .map_err(|_| anyhow!("caller left before the reranker loaded"))?;
                 while let Ok(job) = rx.recv() {
-                    let _ = job.reply.send(run(&model, &mut ctx, &job.query, &job.passages, per_seq as usize));
+                    let _ = job.reply.send(run(
+                        &model,
+                        &mut ctx,
+                        &job.query,
+                        &job.passages,
+                        per_seq as usize,
+                    ));
                 }
                 Ok(())
             })();
@@ -230,9 +236,17 @@ impl Reranker {
             }
         }
         if timing {
-            eprintln!("ckq: rerank: loaded {} in {:.2} s", spec.alias, t0.elapsed().as_secs_f32());
+            eprintln!(
+                "ckq: rerank: loaded {} in {:.2} s",
+                spec.alias,
+                t0.elapsed().as_secs_f32()
+            );
         }
-        Ok(Self { alias: spec.alias, tx: Some(tx), handle: Some(handle) })
+        Ok(Self {
+            alias: spec.alias,
+            tx: Some(tx),
+            handle: Some(handle),
+        })
     }
 
     /// One score per passage: higher means more relevant to the query.
@@ -331,7 +345,8 @@ fn run(
                 .map_err(|e| anyhow!("rerank batch: {e}"))?;
         }
         ctx.clear_kv_cache();
-        ctx.decode(&mut batch).map_err(|e| anyhow!("rerank decode: {e}"))?;
+        ctx.decode(&mut batch)
+            .map_err(|e| anyhow!("rerank decode: {e}"))?;
         for (slot, tokens) in encoded[start..end].iter().enumerate() {
             if tokens.is_empty() {
                 out.push(f32::NAN);
@@ -358,15 +373,19 @@ fn pair_tokens(
     query: &str,
     doc: &str,
 ) -> Vec<llama_cpp_2::token::LlamaToken> {
-    if let Ok(template) = model.chat_template(Some("rerank")) {
-        if let Ok(text) = template.to_str() {
-            let prompt = text.replace("{query}", query).replace("{document}", doc);
-            // Special tokens parsed (the template is full of them), nothing
-            // added: the template is the whole input.
-            return vocab.tokenize(prompt.as_bytes(), false, true);
-        }
+    if let Ok(template) = model.chat_template(Some("rerank"))
+        && let Ok(text) = template.to_str()
+    {
+        let prompt = text.replace("{query}", query).replace("{document}", doc);
+        // Special tokens parsed (the template is full of them), nothing
+        // added: the template is the whole input.
+        return vocab.tokenize(prompt.as_bytes(), false, true);
     }
-    let eos = if vocab.eos().0 >= 0 { vocab.eos() } else { vocab.sep() };
+    let eos = if vocab.eos().0 >= 0 {
+        vocab.eos()
+    } else {
+        vocab.sep()
+    };
     let mut tokens = Vec::new();
     if vocab.should_add_bos() {
         tokens.push(vocab.bos());

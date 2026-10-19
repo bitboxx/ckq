@@ -371,12 +371,7 @@ fn passage(corpus: &Corpus, hit: &Hit) -> String {
 /// k = 3, same shape `max + 0.01 × rest` with the sum now over the other
 /// two lists (with two lists it degenerates to the existing formula) — and
 /// sorts by that. Ties keep the fused order.
-pub fn order_by_rerank(
-    fused: &mut [Hit],
-    scores: &[f32],
-    cfg: &rerank::Config,
-    lex_weight: f32,
-) {
+pub fn order_by_rerank(fused: &mut [Hit], scores: &[f32], cfg: &rerank::Config, lex_weight: f32) {
     debug_assert_eq!(fused.len(), scores.len());
     // The reranker's rank: scores descending, ties to the earlier file.
     let mut by_score: Vec<usize> = (0..fused.len()).collect();
@@ -631,7 +626,11 @@ mod tests {
     }
 
     fn cfg(mode: rerank::Mode, weight: f32) -> rerank::Config {
-        rerank::Config { topn: 30, mode, weight }
+        rerank::Config {
+            topn: 30,
+            mode,
+            weight,
+        }
     }
 
     #[test]
@@ -675,6 +674,7 @@ mod tests {
         assert_eq!(fused[0].signals.unwrap().rerank_rank, Some(1));
     }
 
+    #[test]
     fn fuse_recomputes_combmax_over_three_lists() {
         // The fused list arrives as [sem.md, rerank.md]: sem.md owns the
         // semantic first place (0.25), rerank.md only lex 1 (0.0375). The
@@ -692,7 +692,11 @@ mod tests {
         );
         assert_eq!(fused[0].rel.as_str(), "rerank.md");
         let expected = 0.5 + 0.01 * 0.037_5;
-        assert!((fused[0].score - expected).abs() < 1e-6, "{}", fused[0].score);
+        assert!(
+            (fused[0].score - expected).abs() < 1e-6,
+            "{}",
+            fused[0].score
+        );
         assert_eq!(fused[0].signals.unwrap().rrf_score, fused[0].score);
         // The reranker's own verdict is stamped however the fusion ordered.
         assert_eq!(fused[0].signals.unwrap().rerank_score, Some(0.9));

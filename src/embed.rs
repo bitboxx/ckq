@@ -109,9 +109,7 @@ static BACKEND: LazyLock<Result<llama_cpp_2::llama_backend::LlamaBackend, String
 /// `LlamaBackend::init()` per process is allowed, so every model borrows
 /// this one.
 pub fn backend() -> Result<&'static llama_cpp_2::llama_backend::LlamaBackend> {
-    BACKEND
-        .as_ref()
-        .map_err(|e| anyhow!("llama backend: {e}"))
+    BACKEND.as_ref().map_err(|e| anyhow!("llama backend: {e}"))
 }
 
 /// Offload every layer; llama.cpp silently keeps on CPU whatever will not fit.

@@ -1,7 +1,7 @@
 //! Regex mode: plain grep over the files, no index needed.
 //!
 //! The flags the contract tests pin: `-n`, `-i`, `-w`, `-F`, `-l`, `-C N`,
-//! `--topk`, plus `--hidden` and `--no-ckqignore`. Walks with `walk::walk`, so
+//! `--topk`, plus `--hidden` and `--no-rogoignore`. Walks with `walk::walk`, so
 //! it skips what indexing skips. Output goes through `output`, like the ranked
 //! methods: JSONL hits carry the span of the matching line and score 1.0.
 
@@ -37,7 +37,7 @@ pub struct Match {
 
 /// The result of one regex search: the matches, and how many files in the
 /// scope could not be read. grep exits 2 when an error occurred and nothing
-/// matched; ckq does the same, and keeps exit 0 when something was found,
+/// matched; rogo does the same, and keeps exit 0 when something was found,
 /// so a wrapper that reads nonzero as "no hits" still sees its hits.
 #[derive(Debug, Clone, Default)]
 pub struct GrepOutcome {
@@ -63,7 +63,7 @@ pub fn grep(corpus: &Corpus, opts: &GrepOptions, scope: &Scope) -> Result<GrepOu
         if file.unreadable {
             read_errors += 1;
             eprintln!(
-                "ckq: warning: cannot read {}",
+                "rogo: warning: cannot read {}",
                 corpus.abs(&file.rel).display()
             );
             continue;
@@ -76,7 +76,7 @@ pub fn grep(corpus: &Corpus, opts: &GrepOptions, scope: &Scope) -> Result<GrepOu
             Err(e) => {
                 read_errors += 1;
                 eprintln!(
-                    "ckq: warning: cannot read {}: {e}",
+                    "rogo: warning: cannot read {}: {e}",
                     corpus.abs(&file.rel).display()
                 );
                 continue;
@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn lone_cr_endings_count_lines_like_the_chunker() {
-        let dir = std::env::temp_dir().join(format!("ckq-grep-cr-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rogo-grep-cr-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("cr.txt"),

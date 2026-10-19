@@ -1,9 +1,9 @@
 //! End-to-end tests for the index lifecycle: build, incremental update,
-//! deletion, `--add`, `.ckqignore`, hidden files, robustness against odd
+//! deletion, `--add`, `.rogoignore`, hidden files, robustness against odd
 //! inputs, and the safety rails around the store's embedding signature.
 //! Everything runs the real binary on real files, and almost everything needs
 //! the real default model because indexing embeds — hence the `e2e:` ignores.
-//! The index is one SQLite file, `.ckq/index.db`; what a test can observe of it
+//! The index is one SQLite file, `.rogo/index.db`; what a test can observe of it
 //! is `--status-json`, the `--index` summary line, and what search returns.
 
 mod common;
@@ -30,22 +30,22 @@ fn run_bounded(cmd: &mut Command, secs: u64) -> Output {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("ckq should start");
+    let mut child = cmd.spawn().expect("rogo should start");
     let deadline = Instant::now() + Duration::from_secs(secs);
     loop {
-        match child.try_wait().expect("ckq should be waitable") {
+        match child.try_wait().expect("rogo should be waitable") {
             Some(_) => break,
             None if Instant::now() >= deadline => {
                 let _ = child.kill();
                 panic!(
-                    "ckq {:?} did not finish within {secs}s",
+                    "rogo {:?} did not finish within {secs}s",
                     cmd.get_args().collect::<Vec<_>>()
                 );
             }
             None => std::thread::sleep(Duration::from_millis(100)),
         }
     }
-    child.wait_with_output().expect("reap ckq")
+    child.wait_with_output().expect("reap rogo")
 }
 
 /// The first integer that follows `label` in a status report line.
@@ -64,23 +64,23 @@ fn number_after(report: &str, label: &str) -> usize {
 
 /// `--status-json` of the corpus, parsed.
 fn status_json(corpus: &Corpus) -> Value {
-    let out = run_ok(corpus.ckq().arg("--status-json"));
+    let out = run_ok(corpus.rogo().arg("--status-json"));
     serde_json::from_slice(&out.stdout).expect("--status-json should print one JSON object")
 }
 
-/// Run a search that must find nothing. `ckq` exits 1 with "No matches
+/// Run a search that must find nothing. `rogo` exits 1 with "No matches
 /// found" like grep, so `run_ok` cannot express this; require exactly that
 /// outcome so a real error (bad flag, crash) still fails the test.
 fn expect_no_hits(corpus: &Corpus, args: &[&str]) {
     let out = corpus
-        .ckq()
+        .rogo()
         .args(args)
         .args(["--jsonl", "-q", "."])
         .output()
-        .expect("ckq should start");
+        .expect("rogo should start");
     assert!(
         !out.status.success(),
-        "ckq {args:?} should have found nothing\n--- stdout\n{}",
+        "rogo {args:?} should have found nothing\n--- stdout\n{}",
         String::from_utf8_lossy(&out.stdout),
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -118,7 +118,7 @@ fn index_builds_the_ck_layout_and_status_reports_the_corpus() {
 
     // One store file holds the whole index: files, chunks, vectors and the
     // BM25 index alike, so a lexical search needs no build step of its own.
-    let index_dir = corpus.path().join(".ckq");
+    let index_dir = corpus.path().join(".rogo");
     assert!(index_dir.join("index.db").is_file(), "index.db missing");
     corpus.search(&["--lex", "lighthouse"]);
     assert!(
@@ -128,7 +128,7 @@ fn index_builds_the_ck_layout_and_status_reports_the_corpus() {
 
     // --status with no path argument reads the current directory; the counts
     // it reports must be the counts the corpus actually has.
-    let out = run_ok(corpus.ckq().arg("--status"));
+    let out = run_ok(corpus.rogo().arg("--status"));
     let report = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(
         report.contains("Index location"),
@@ -147,7 +147,7 @@ fn index_builds_the_ck_layout_and_status_reports_the_corpus() {
     assert_eq!(json["embedded_chunks"].as_u64(), Some(chunks as u64));
     assert_eq!(json["index_exists"].as_bool(), Some(true));
 
-    let out = run_ok(corpus.ckq().arg("--status-verbose"));
+    let out = run_ok(corpus.rogo().arg("--status-verbose"));
     let verbose = String::from_utf8_lossy(&out.stderr).into_owned();
     for label in ["Source size:", "Index size:", "Compression:", "Model:"] {
         assert!(
@@ -184,7 +184,7 @@ fn incremental_reindex_reembeds_only_the_edited_file() {
         "The bakery opens before sunrise and the street smells of warm bread.\n\
          By nine the shelves hold cardamom buns and the queue reaches the corner.\n",
     );
-    let out = run_ok(corpus.ckq().args(["--index", "."]));
+    let out = run_ok(corpus.rogo().args(["--index", "."]));
     let summary = common::parse_index_summary(&String::from_utf8_lossy(&out.stderr));
     assert_eq!(summary.added, 0, "nothing new: {summary:?}");
     assert_eq!(summary.updated, 1, "only the edited file: {summary:?}");
@@ -237,7 +237,7 @@ fn deleted_file_disappears_from_search_and_the_index_drops_it() {
     }
 
     corpus.remove("mushroom.md");
-    let out = run_ok(corpus.ckq().args(["--index", "."]));
+    let out = run_ok(corpus.rogo().args(["--index", "."]));
     let summary = common::parse_index_summary(&String::from_utf8_lossy(&out.stderr));
     assert_eq!(
         summary.removed, 1,
@@ -253,26 +253,26 @@ fn deleted_file_disappears_from_search_and_the_index_drops_it() {
     // One store means no orphans can exist: the dead file's rows went with
     // the same run that noticed the deletion. --clean-orphans stays accepted
     // and keeps its promise trivially.
-    run_ok(corpus.ckq().args(["--clean-orphans", "."]));
+    run_ok(corpus.rogo().args(["--clean-orphans", "."]));
     expect_no_hits(&corpus, &["--lex", "mushrooms"]);
     assert_eq!(total_files(&corpus), 1);
     // --clean ends the lifecycle: the whole index directory goes away. v2
     // never rebuilds an index from a search (search is read-only), so the
     // next lexical search must refuse and say how to start over.
-    run_ok(corpus.ckq().args(["--clean", "."]));
+    run_ok(corpus.rogo().args(["--clean", "."]));
     assert!(
-        !corpus.path().join(".ckq").exists(),
-        "--clean left .ckq behind"
+        !corpus.path().join(".rogo").exists(),
+        "--clean left .rogo behind"
     );
-    let stderr = run_err(corpus.ckq().args(["--lex", "tide", "--jsonl", "-q", "."]));
+    let stderr = run_err(corpus.rogo().args(["--lex", "tide", "--jsonl", "-q", "."]));
     assert!(
         stderr.contains("--index"),
         "a search after --clean must point at --index, got:\n{stderr}"
     );
 }
 
-/// A legacy `.ck` left by the old engine is content-free to ckq: the walker
-/// skips it as it skips `.ckq` and `.git`, however the other flags are set,
+/// A legacy `.ck` left by the old engine is content-free to rogo: the walker
+/// skips it as it skips `.rogo` and `.git`, however the other flags are set,
 /// so its files are neither indexed nor found by the regex mode, which walks
 /// the same tree. `--hidden` is on so the dot alone cannot be what excludes
 /// it.
@@ -289,8 +289,8 @@ fn a_legacy_ck_directory_is_never_indexed_or_searched() {
         ".ck/manifest.json",
         "{\"old engine leftover mentions saxifrage\"}\n",
     );
-    run_ok(corpus.ckq().args(["--index", "--hidden", "-q", "."]));
-    // Two files: tide.md and the .ckqignore the index run wrote (a hidden
+    run_ok(corpus.rogo().args(["--index", "--hidden", "-q", "."]));
+    // Two files: tide.md and the .rogoignore the index run wrote (a hidden
     // text file like any other). The legacy .ck would make it three.
     assert_eq!(
         total_files(&corpus),
@@ -302,7 +302,7 @@ fn a_legacy_ck_directory_is_never_indexed_or_searched() {
 }
 
 /// A corpus with only a legacy `.ck/index.db` refuses a ranked search and
-/// says the index moved to `.ckq` and how to build it again, rather than
+/// says the index moved to `.rogo` and how to build it again, rather than
 /// reporting a bare missing index.
 #[test]
 #[serial]
@@ -314,19 +314,19 @@ fn a_search_over_only_a_legacy_ck_index_is_told_it_moved() {
         "The tide clock counts the hours to the next high water.\n",
     );
     corpus.write(".ck/index.db", b"old engine bytes");
-    let stderr = run_err(corpus.ckq().args(["--lex", "tide", "--jsonl", "-q", "."]));
+    let stderr = run_err(corpus.rogo().args(["--lex", "tide", "--jsonl", "-q", "."]));
     assert!(
-        stderr.contains("moved") && stderr.contains(".ckq") && stderr.contains("--index"),
-        "the error must say the index moved to .ckq and name --index, got:\n{stderr}"
+        stderr.contains("moved") && stderr.contains(".rogo") && stderr.contains("--index"),
+        "the error must say the index moved to .rogo and name --index, got:\n{stderr}"
     );
 }
 
-/// `--clean` removes `.ckq` only. A legacy `.ck` stays exactly as it was,
+/// `--clean` removes `.rogo` only. A legacy `.ck` stays exactly as it was,
 /// and the run says so on stderr.
 #[test]
 #[serial]
 #[ignore = "e2e: needs the default model; run with --include-ignored"]
-fn clean_removes_ckq_and_leaves_a_legacy_ck_in_place() {
+fn clean_removes_rogo_and_leaves_a_legacy_ck_in_place() {
     let corpus = Corpus::new();
     corpus.write(
         "tide.md",
@@ -334,11 +334,11 @@ fn clean_removes_ckq_and_leaves_a_legacy_ck_in_place() {
     );
     corpus.write(".ck/manifest.json", "{\"old\": \"engine\"}\n");
     corpus.index();
-    let out = run_ok(corpus.ckq().args(["--clean", "."]));
+    let out = run_ok(corpus.rogo().args(["--clean", "."]));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        !corpus.path().join(".ckq").exists(),
-        "--clean left .ckq behind"
+        !corpus.path().join(".rogo").exists(),
+        "--clean left .rogo behind"
     );
     assert!(
         corpus.path().join(".ck").is_dir(),
@@ -347,6 +347,174 @@ fn clean_removes_ckq_and_leaves_a_legacy_ck_in_place() {
     assert!(
         stderr.contains("left in place"),
         "--clean must say the legacy .ck stayed, got:\n{stderr}"
+    );
+}
+
+/// A tree whose only index is the `.ckq` one ckq 2.0 wrote: a ranked search
+/// fails with one message that names the directory and says which `mv`
+/// carries it over — and nothing is moved or written on the way. `--status`
+/// and `--add` take the same path, so it is covered through the search.
+#[test]
+#[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn a_renamed_ckq_index_is_named_with_its_mv_and_never_touched() {
+    let corpus = Corpus::new();
+    corpus.write(
+        "tide.md",
+        "The tide clock counts the hours to the next high water.\n",
+    );
+    corpus.index();
+    // The migration the message prescribes, run backwards: the index a
+    // ckq 2.0 user has is an index this build just wrote, under its old name.
+    fs::rename(corpus.path().join(".rogo"), corpus.path().join(".ckq")).unwrap();
+    // Joined, not formatted with '/': Windows prints its own separator.
+    let old = corpus.path().join(".ckq").display().to_string();
+    let new = corpus.path().join(".rogo").display().to_string();
+    let stderr = run_err(corpus.rogo().args(["--lex", "tide", "--jsonl", "-q", "."]));
+    assert!(
+        stderr.contains("mv")
+            && stderr.contains(&old)
+            && stderr.contains(&new)
+            && stderr.contains("no rebuild"),
+        "the error must name the .ckq index, the .rogo target and the mv, got:\n{stderr}"
+    );
+    let stderr = run_err(corpus.rogo().args(["--status", "."]));
+    assert!(
+        stderr.contains("mv") && stderr.contains(".ckq"),
+        "--status over only a .ckq index must say the same thing, got:\n{stderr}"
+    );
+    assert!(
+        corpus.path().join(".ckq/index.db").is_file() && !corpus.path().join(".rogo").exists(),
+        "the failing command must leave both the .ckq index and the absent .rogo as they were"
+    );
+    // The mv the message prescribes is the whole migration: the index
+    // searches again, no rebuild.
+    fs::rename(corpus.path().join(".ckq"), corpus.path().join(".rogo")).unwrap();
+    let out = run_ok(corpus.rogo().args(["--lex", "tide", "--jsonl", "-q", "."]));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("tide.md"),
+        "a moved index must search as it is"
+    );
+}
+
+/// A `.ckq` left beside a live `.rogo` is content-free to rogo, exactly like
+/// a legacy `.ck`: the walker never enters it, however the flags are set,
+/// and `--clean` removes `.rogo` only, saying the `.ckq` stayed.
+#[test]
+#[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn a_ckq_directory_is_skipped_by_the_walker_and_left_alone_by_clean() {
+    let corpus = Corpus::new();
+    corpus.write(
+        "tide.md",
+        "The tide clock counts the hours to the next high water.\n",
+    );
+    corpus.write(".ckq/index.db", b"ckq 2.0 bytes mentioning saxifrage");
+    run_ok(corpus.rogo().args(["--index", "--hidden", "-q", "."]));
+    // Two files: tide.md and the .rogoignore the index run wrote. The .ckq
+    // would make it three, and its bytes would be searchable.
+    assert_eq!(
+        total_files(&corpus),
+        2,
+        "the .ckq directory must not be indexed"
+    );
+    expect_no_hits(&corpus, &["--lex", "saxifrage"]);
+    expect_no_hits(&corpus, &["--hidden", "saxifrage"]);
+    let out = run_ok(corpus.rogo().args(["--clean", "."]));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !corpus.path().join(".rogo").exists(),
+        "--clean left .rogo behind"
+    );
+    assert!(
+        corpus.path().join(".ckq/index.db").is_file(),
+        "--clean must not touch a .ckq"
+    );
+    assert!(
+        stderr.contains("left in place") && stderr.contains(".ckq"),
+        "--clean must say the .ckq stayed, got:\n{stderr}"
+    );
+}
+
+/// A corpus ckq indexed has its patterns in `.ckqignore`. While that is all
+/// it has, rogo reads them — the same files stay excluded, never silently
+/// included — and warns once on stderr to rename the file; `--index` does
+/// not write a default `.rogoignore` beside it. After the rename the
+/// patterns hold and the warning is gone.
+#[test]
+#[serial]
+#[ignore = "e2e: needs the default model; run with --include-ignored"]
+fn a_legacy_ckqignore_is_read_with_one_warning_and_not_duplicated() {
+    let corpus = Corpus::new();
+    corpus.write("tide.md", "The tide clock counts the hours.\n");
+    corpus.write("secret_draft.md", "saxifrage grows in the cliff.\n");
+    corpus.write(".ckqignore", "secret_*.md\n");
+    let out = run_ok(corpus.rogo().args(["--index", "-q", "."]));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(total_files(&corpus), 1, "the .ckqignore patterns must hold");
+    assert!(
+        stderr.matches("rogo: warning: reading the legacy").count() == 1
+            && stderr.contains(".ckqignore")
+            && stderr.contains(".rogoignore"),
+        "one warning must name the rename, got:\n{stderr}"
+    );
+    assert!(
+        !corpus.path().join(".rogoignore").exists(),
+        "--index must not write a default .rogoignore beside a .ckqignore"
+    );
+    expect_no_hits(&corpus, &["--lex", "saxifrage"]);
+    // The prescribed rename: same patterns, new name, no warning, and now
+    // --index does write nothing either (the file exists).
+    fs::rename(
+        corpus.path().join(".ckqignore"),
+        corpus.path().join(".rogoignore"),
+    )
+    .unwrap();
+    let out = run_ok(corpus.rogo().args(["--index", "-q", "."]));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("legacy"),
+        "a renamed .rogoignore must not warn, got:\n{stderr}"
+    );
+    expect_no_hits(&corpus, &["--lex", "saxifrage"]);
+}
+
+/// A download that starts while ckq's cache is still in place says so first:
+/// one stderr line naming the `mv` that would have skipped it. The endpoint
+/// is dead so the download cannot succeed or linger; the line is printed
+/// before any bytes move. Unix only: on Windows the home directory comes
+/// from the user profile, which no environment variable redirects, so the
+/// test would find the runner's real model cache.
+#[cfg(unix)]
+#[test]
+#[serial]
+#[ignore = "e2e: needs no model, only the real binary and a scratch HOME"]
+fn a_model_download_with_ckq_cache_in_place_says_which_mv_skips_it() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let home = dir.path().join("home");
+    fs::create_dir_all(home.join(".cache/ckq/models")).unwrap();
+    fs::write(
+        dir.path().join("tide.md"),
+        "The tide clock counts the hours.\n",
+    )
+    .unwrap();
+    let out = common::rogo()
+        .env("HOME", &home)
+        .env("HF_ENDPOINT", "http://127.0.0.1:9")
+        .current_dir(&dir)
+        .args(["--index", "-q", "."])
+        .output()
+        .expect("rogo should start");
+    assert!(
+        !out.status.success(),
+        "the download must fail against the dead endpoint"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("rogo: note: a ckq model cache exists")
+            && stderr.contains("mv ~/.cache/ckq ~/.cache/rogo"),
+        "the download must say which mv skips it, got:\n{stderr}"
     );
 }
 
@@ -370,7 +538,7 @@ fn add_indexes_one_new_file_without_a_full_run() {
         "The lighthouse lantern attracts a colony of gannets after dark.\n\
          Keepers log every seabird that strikes the glass.\n",
     );
-    run_ok(corpus.ckq().args(["--add", "lantern.md"]));
+    run_ok(corpus.rogo().args(["--add", "lantern.md"]));
 
     assert_eq!(status_json(&corpus)["total_files"].as_u64(), Some(3));
     let lex = corpus.search(&["--lex", "gannets"]);
@@ -393,9 +561,9 @@ fn add_indexes_one_new_file_without_a_full_run() {
 #[test]
 #[serial]
 #[ignore = "e2e: needs the default model; run with --include-ignored"]
-fn ckqignore_excludes_files_from_the_start_and_when_added_later() {
+fn rogoignore_excludes_files_from_the_start_and_when_added_later() {
     let corpus = Corpus::new();
-    corpus.write(".ckqignore", "# test ignore list\nprivate_*.md\n");
+    corpus.write(".rogoignore", "# test ignore list\nprivate_*.md\n");
     corpus.write(
         "private_journal.md",
         "My parrot learned to whistle the whole anthem in secret.\n",
@@ -419,9 +587,9 @@ fn ckqignore_excludes_files_from_the_start_and_when_added_later() {
     );
 
     // The same file, ignored only after the fact, must drop out of results.
-    let mut ignore = fs::read_to_string(corpus.path().join(".ckqignore")).unwrap();
+    let mut ignore = fs::read_to_string(corpus.path().join(".rogoignore")).unwrap();
     ignore.push_str("draft_letter.md\n");
-    fs::write(corpus.path().join(".ckqignore"), ignore).unwrap();
+    fs::write(corpus.path().join(".rogoignore"), ignore).unwrap();
     corpus.index();
 
     expect_no_hits(&corpus, &["--lex", "parsnip"]);
@@ -454,14 +622,14 @@ fn hidden_files_are_indexed_only_with_the_hidden_flag() {
     assert_eq!(total_files(&corpus), 1, "only the visible file");
     expect_no_hits(&corpus, &["--lex", "quilts"]);
 
-    run_ok(corpus.ckq().args(["--index", "--hidden", "-q", "."]));
+    run_ok(corpus.rogo().args(["--index", "--hidden", "-q", "."]));
     // The walker sees four text files now: the visible one, the dot-file, the
-    // dot-dir's file, and the .ckqignore the first run wrote (a hidden text
+    // dot-dir's file, and the .rogoignore the first run wrote (a hidden text
     // file like any other, exactly as the old engine treated it).
     assert_eq!(
         total_files(&corpus),
         4,
-        "the dot-file, dot-dir and .ckqignore join"
+        "the dot-file, dot-dir and .rogoignore join"
     );
     let hits = corpus.search(&["--lex", "quilts", "--hidden"]);
     assert_eq!(
@@ -619,7 +787,7 @@ fn symlink_loop_does_not_hang_indexing() {
     symlink("../loopdir", root.join("loopdir/self")).unwrap();
     symlink("..", root.join("loopdir/up")).unwrap();
 
-    let out = run_bounded(corpus.ckq().args(["--index", "-q", "."]), 120);
+    let out = run_bounded(corpus.rogo().args(["--index", "-q", "."]), 120);
     assert!(
         out.status.success(),
         "index over a symlink loop failed\n{}",
@@ -652,7 +820,9 @@ fn lexical_search_survives_a_symlink_loop() {
     corpus.index();
 
     let out = run_bounded(
-        corpus.ckq().args(["--lex", "anchor", "--jsonl", "-q", "."]),
+        corpus
+            .rogo()
+            .args(["--lex", "anchor", "--jsonl", "-q", "."]),
         60,
     );
     assert!(
@@ -717,7 +887,11 @@ fn switching_models_rebuilds_the_whole_index() {
 
     // gemma-gguf is the same architecture at another quantisation: the
     // switch must re-embed, and the store must end up wholly the new model's.
-    let out = run_ok(corpus.ckq().args(["--index", "--model", "gemma-gguf", "."]));
+    let out = run_ok(
+        corpus
+            .rogo()
+            .args(["--index", "--model", "gemma-gguf", "."]),
+    );
     let summary = common::parse_index_summary(&String::from_utf8_lossy(&out.stderr));
     assert_eq!(summary.added, 1, "a rebuild starts over: {summary:?}");
     assert_eq!(
@@ -764,11 +938,11 @@ fn a_corrupt_store_errors_loudly_instead_of_lying() {
     let hits = corpus.search(&["--sem", "an expensive spice at the market"]);
     assert_eq!(common::rank_of(&hits, "saffron"), Some(1));
 
-    let db = corpus.path().join(".ckq/index.db");
+    let db = corpus.path().join(".rogo/index.db");
     fs::write(&db, b"NOT A DATABASE, JUST GARBAGE BYTES 0123456789").unwrap();
     let sem_err = run_err(
         corpus
-            .ckq()
+            .rogo()
             .args(["--sem", "expensive spice", "--jsonl", "-q", "."]),
     );
     assert!(
@@ -777,13 +951,13 @@ fn a_corrupt_store_errors_loudly_instead_of_lying() {
     );
     let lex_err = run_err(
         corpus
-            .ckq()
+            .rogo()
             .args(["--lex", "saffron", "--jsonl", "-q", "."]),
     );
     assert!(lex_err.contains("Error"), "got:\n{lex_err}");
 
     // And the recovery path is exactly the one the message names.
-    run_ok(corpus.ckq().args(["--clean", "."]));
+    run_ok(corpus.rogo().args(["--clean", "."]));
     corpus.index();
     let hits = corpus.search(&["--sem", "a tree giving shade by a fountain"]);
     assert_eq!(

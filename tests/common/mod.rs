@@ -1,6 +1,6 @@
 //! Shared helpers for the end-to-end tests.
 //!
-//! The e2e tests run the real `ckq` binary on real files and, where a test says
+//! The e2e tests run the real `rogo` binary on real files and, where a test says
 //! so, on the real default model. Those tests are `#[ignore]`d with a reason
 //! that starts `e2e:`, so a plain `cargo test` stays offline and quick. Run
 //! everything with
@@ -21,26 +21,26 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use tempfile::TempDir;
 
-pub fn ckq_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_ckq"))
+pub fn rogo_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_rogo"))
 }
 
-/// `ckq` with every setting that changes its behaviour cleared, so a test sees
+/// `rogo` with every setting that changes its behaviour cleared, so a test sees
 /// the defaults whatever the developer's shell exports.
-pub fn ckq() -> Command {
-    let mut cmd = Command::new(ckq_bin());
+pub fn rogo() -> Command {
+    let mut cmd = Command::new(rogo_bin());
     for var in [
-        "CKQ_GGUF_FILE",
-        "CKQ_TIMING",
-        "CKQ_QUERY_DEVICE",
-        "CKQ_IN_PROCESS",
+        "ROGO_GGUF_FILE",
+        "ROGO_TIMING",
+        "ROGO_QUERY_DEVICE",
+        "ROGO_IN_PROCESS",
     ] {
         cmd.env_remove(var);
     }
     // A short query-daemon idle: every test build is a new executable and so
     // a new daemon, and none of them should hold the model for a quarter of
     // an hour after the run.
-    cmd.env("CKQ_DAEMON_IDLE_SECS", "60");
+    cmd.env("ROGO_DAEMON_IDLE_SECS", "60");
     cmd
 }
 
@@ -49,7 +49,7 @@ pub fn ckq() -> Command {
 /// what it actually uses.
 #[cfg(unix)]
 pub fn daemon_socket(alias: &str) -> PathBuf {
-    let out = run_ok(ckq().args(["--daemon-socket", alias]));
+    let out = run_ok(rogo().args(["--daemon-socket", alias]));
     let path = String::from_utf8(out.stdout).expect("the socket path is utf-8");
     PathBuf::from(path.trim())
 }
@@ -62,7 +62,7 @@ pub fn daemon_socket_count(alias: &str) -> usize {
         .parent()
         .expect("a socket path has a directory")
         .to_path_buf();
-    let prefix = format!("ckq-{alias}-");
+    let prefix = format!("rogo-{alias}-");
     fs::read_dir(&dir)
         .map(|entries| {
             entries
@@ -114,10 +114,10 @@ pub fn kill_daemon(socket: &Path) {
 
 /// Run a command and require success, with both streams in the failure message.
 pub fn run_ok(cmd: &mut Command) -> Output {
-    let out = cmd.output().expect("ckq should start");
+    let out = cmd.output().expect("rogo should start");
     assert!(
         out.status.success(),
-        "ckq {:?} exited {}\n--- stdout\n{}\n--- stderr\n{}",
+        "rogo {:?} exited {}\n--- stdout\n{}\n--- stderr\n{}",
         cmd.get_args().collect::<Vec<_>>(),
         out.status,
         String::from_utf8_lossy(&out.stdout),
@@ -128,10 +128,10 @@ pub fn run_ok(cmd: &mut Command) -> Output {
 
 /// Run a command and require failure; returns stderr.
 pub fn run_err(cmd: &mut Command) -> String {
-    let out = cmd.output().expect("ckq should start");
+    let out = cmd.output().expect("rogo should start");
     assert!(
         !out.status.success(),
-        "ckq {:?} should have failed\n--- stdout\n{}",
+        "rogo {:?} should have failed\n--- stdout\n{}",
         cmd.get_args().collect::<Vec<_>>(),
         String::from_utf8_lossy(&out.stdout),
     );
@@ -168,22 +168,22 @@ impl Corpus {
         fs::remove_file(self.path().join(rel)).expect("remove file");
     }
 
-    /// `ckq` run from the corpus root.
-    pub fn ckq(&self) -> Command {
-        let mut cmd = ckq();
+    /// `rogo` run from the corpus root.
+    pub fn rogo(&self) -> Command {
+        let mut cmd = rogo();
         cmd.current_dir(self.path());
         cmd
     }
 
     /// Build or update the index, and require success.
     pub fn index(&self) -> Output {
-        run_ok(self.ckq().args(["--index", "-q", "."]))
+        run_ok(self.rogo().args(["--index", "-q", "."]))
     }
 
     /// Run a search with `--jsonl` appended and parse every result line.
     /// `args` holds the mode, the query and any flags; the path is added.
     pub fn search(&self, args: &[&str]) -> Vec<Hit> {
-        let out = run_ok(self.ckq().args(args).args(["--jsonl", "-q", "."]));
+        let out = run_ok(self.rogo().args(args).args(["--jsonl", "-q", "."]));
         parse_jsonl(&out.stdout)
     }
 }
@@ -371,7 +371,7 @@ pub fn uniq_hits(hits: &[Hit]) -> Vec<Hit> {
 /// `--status-json` of the index rooted at `root`, for tests that assert on
 /// what the index believes it holds.
 pub fn status_json(root: &Path) -> Value {
-    let out = run_ok(ckq().current_dir(root).arg("--status-json"));
+    let out = run_ok(rogo().current_dir(root).arg("--status-json"));
     serde_json::from_slice(&out.stdout).expect("--status-json prints one JSON object")
 }
 
@@ -415,10 +415,10 @@ pub fn parse_index_summary(stderr: &str) -> IndexSummary {
 /// for tests that pin an exact exit status and message rather than just
 /// failure.
 pub fn run_exit(cmd: &mut Command) -> (Option<i32>, String, String) {
-    let out = cmd.output().expect("ckq should start");
+    let out = cmd.output().expect("rogo should start");
     assert!(
         !out.status.success(),
-        "ckq {:?} should have failed\n--- stdout\n{}",
+        "rogo {:?} should have failed\n--- stdout\n{}",
         cmd.get_args().collect::<Vec<_>>(),
         String::from_utf8_lossy(&out.stdout),
     );

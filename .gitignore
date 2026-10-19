@@ -1,4 +1,4 @@
 target/
-.ckq/
-.ckqignore
+.rogo/
+.rogoignore
 .DS_Store

@@ -1,4 +1,4 @@
-//! ckq: multilingual search over a folder of text.
+//! rogo: multilingual search over a folder of text.
 //!
 //! Three ranked methods over one index (`--lex` BM25, `--sem` embeddings,
 //! `--hybrid` both fused) and a plain regex mode that needs no index.
@@ -9,18 +9,18 @@
 //!    `Corpus::display`. The working directory never matters.
 //! 2. The model's prompts are applied in `embed` and nowhere else.
 //! 3. Search never writes the index. `--index`, `--add` and `--clean` do.
-//! 4. One store: `.ckq/index.db`.
+//! 4. One store: `.rogo/index.db`.
 //! 5. stdout carries results only.
 //!
 //! `--sem` and `--hybrid` embed their query through a resident daemon (unix):
-//! the first search starts it, later ones connect, `CKQ_IN_PROCESS=1` embeds
+//! the first search starts it, later ones connect, `ROGO_IN_PROCESS=1` embeds
 //! in the process instead. Indexing never uses it — it embeds documents in
 //! the process that runs `--index`.
 //!
 //! A build with the `embedded-model` feature carries one GGUF inside the
-//! binary (build.rs reads `CKQ_EMBED_GGUF` and `CKQ_EMBED_ALIAS`) and that
+//! binary (build.rs reads `ROGO_EMBED_GGUF` and `ROGO_EMBED_ALIAS`) and that
 //! alias becomes the build's default model. `models::gguf_path` then writes
-//! the bytes once to `~/.cache/ckq/models/embedded/<blake3>.gguf` — temp
+//! the bytes once to `~/.cache/rogo/models/embedded/<blake3>.gguf` — temp
 //! file, fsync, atomic rename — and trusts a right-size file thereafter, so
 //! the one binary works offline on a fresh machine. A normal build has none
 //! of this.
@@ -49,7 +49,7 @@ use std::process::ExitCode;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "ckq",
+    name = "rogo",
     version = version_line(),
     about = "Multilingual search over a folder of text: BM25 and embeddings, fused"
 )]
@@ -131,9 +131,9 @@ struct Cli {
     /// Do not read .gitignore files.
     #[arg(long = "no-ignore")]
     no_ignore: bool,
-    /// Do not read .ckqignore files.
-    #[arg(long = "no-ckqignore")]
-    no_ckqignore: bool,
+    /// Do not read .rogoignore files.
+    #[arg(long = "no-rogoignore")]
+    no_rogoignore: bool,
 
     // Index
     /// Build or update the index of the given directory.
@@ -161,8 +161,8 @@ struct Cli {
     #[arg(long, value_name = "ALIAS")]
     model: Option<String>,
 
-    // Daemon (unix); hidden: started by ckq itself, not by users
-    /// Run as the query daemon for `--sem`/`--hybrid` (started by ckq itself).
+    // Daemon (unix); hidden: started by rogo itself, not by users
+    /// Run as the query daemon for `--sem`/`--hybrid` (started by rogo itself).
     #[cfg(unix)]
     #[arg(long, hide = true, value_name = "ALIAS", group = "command")]
     query_daemon: Option<String>,
@@ -194,7 +194,7 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let walk_opts = walk::WalkOptions {
         hidden: cli.hidden,
-        no_ckqignore: cli.no_ckqignore,
+        no_rogoignore: cli.no_rogoignore,
         no_ignore: cli.no_ignore,
     };
 
@@ -266,10 +266,11 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let legacy_left = index::clean(&corpus)?;
             if !cli.quiet {
                 eprintln!("Index cleaned: {}", corpus.index_dir().display());
-                if legacy_left {
+                for dir in legacy_left {
                     eprintln!(
-                        "ckq: note: a legacy .ck index was left in place at {}",
-                        corpus.root.join(corpus::LEGACY_INDEX_DIR).display()
+                        "rogo: note: a legacy {} index was left in place at {}",
+                        dir.file_name().unwrap_or_default().to_string_lossy(),
+                        dir.display()
                     );
                 }
             }
@@ -306,7 +307,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
 
     // ---- Search ----------------------------------------------------------
     let Some(pattern) = cli.pattern.clone() else {
-        anyhow::bail!("a query is required; see ckq --help");
+        anyhow::bail!("a query is required; see rogo --help");
     };
     let paths: Vec<PathBuf> = if cli.paths.is_empty() {
         vec![PathBuf::from(".")]
@@ -344,7 +345,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let (corpus, scope) = corpus::Corpus::for_search(path)?;
             let Some(store) = store::Store::open_read(&corpus)? else {
                 anyhow::bail!(
-                    "No ckq index found at {}; run `ckq --index` first",
+                    "No rogo index found at {}; run `rogo --index` first",
                     corpus.root.display()
                 );
             };
@@ -352,8 +353,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 let stale = index::stale_count(&corpus, &walk_opts)?;
                 if stale > 0 {
                     eprintln!(
-                        "ckq: warning: index is stale ({stale} files added, changed or gone); \
-                         run `ckq --index`"
+                        "rogo: warning: index is stale ({stale} files added, changed or gone); \
+                         run `rogo --index`"
                     );
                 }
             }
@@ -361,7 +362,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let spec = models::resolve(&meta.model_repo)?;
             // The stored signature says what the index's vectors are; the
             // one this build computes now says what it would embed a query
-            // with. They differ when CKQ_GGUF_FILE was repointed (or the
+            // with. They differ when ROGO_GGUF_FILE was repointed (or the
             // file replaced) since indexing, or when the prompts, pooling or
             // chunker changed under the alias: querying across that mixes
             // two models' spaces, so refuse and name the rebuild. --index
@@ -370,7 +371,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             if now != meta.signature {
                 anyhow::bail!(
                     "the index at {} was built with different weights or settings \
-                     (signature {} != {}); run `ckq --index` to rebuild it",
+                     (signature {} != {}); run `rogo --index` to rebuild it",
                     corpus.index_dir().display(),
                     meta.signature,
                     now
@@ -464,7 +465,7 @@ fn warn_inert_flags(cli: &Cli) {
         inert.push("--term");
     }
     for flag in inert {
-        eprintln!("ckq: warning: {flag} has no effect in {mode} mode");
+        eprintln!("rogo: warning: {flag} has no effect in {mode} mode");
     }
 }
 
@@ -488,7 +489,7 @@ fn version_line() -> &'static str {
     concat!(
         env!("CARGO_PKG_VERSION"),
         " (embedded model: ",
-        env!("CKQ_EMBED_ALIAS"),
+        env!("ROGO_EMBED_ALIAS"),
         ")"
     )
 }
@@ -537,7 +538,7 @@ fn status(cli: &Cli) -> anyhow::Result<ExitCode> {
         // one (0 files) rather than claiming there is none.
         if store.is_none() {
             eprintln!("No index found at {}", corpus.root.display());
-            eprintln!("Run `ckq --index .` to create an index");
+            eprintln!("Run `rogo --index .` to create an index");
             continue;
         }
         eprintln!("Index location: {}", corpus.index_dir().display());
@@ -567,7 +568,7 @@ fn status(cli: &Cli) -> anyhow::Result<ExitCode> {
 /// The embedder a `--sem`/`--hybrid` search embeds its query with: the query
 /// daemon's (unix), which applies the query prompt on its side in `embed`, or
 /// the model loaded in this process when there is no daemon to reach or
-/// `CKQ_IN_PROCESS=1` asks for none.
+/// `ROGO_IN_PROCESS=1` asks for none.
 #[cfg(unix)]
 fn query_embedder(spec: &'static models::ModelSpec) -> anyhow::Result<Box<dyn embed::Embedder>> {
     daemon::embedder(spec)

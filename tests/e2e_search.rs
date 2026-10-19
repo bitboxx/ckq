@@ -527,7 +527,7 @@ fn the_same_search_twice_is_identical() {
 }
 
 /// The same `--sem` search through the query daemon and with
-/// `CKQ_IN_PROCESS=1` must return the same files in the same order, scores
+/// `ROGO_IN_PROCESS=1` must return the same files in the same order, scores
 /// within 1e-4: the daemon embeds the query with the same `embed_query` the
 /// process would, so the ranking cannot move. Catches a daemon that applies
 /// the query prompt itself (the old engine's double-prefix bug) or returns
@@ -541,10 +541,10 @@ fn daemon_and_in_process_agree() {
     let (corpus, query) = fusion_corpus();
     corpus.index();
 
-    let mut in_process = corpus.ckq();
+    let mut in_process = corpus.rogo();
     in_process
         .args(["--sem", query, "--jsonl", "--no-snippet", "-q", "."])
-        .env("CKQ_IN_PROCESS", "1");
+        .env("ROGO_IN_PROCESS", "1");
     let out = common::run_ok(&mut in_process);
     let theirs = common::parse_jsonl(&out.stdout);
 
@@ -644,7 +644,7 @@ fn six_concurrent_searches_all_succeed_and_agree() {
 
     let mut children = Vec::new();
     for _ in 0..6 {
-        let mut cmd = corpus.ckq();
+        let mut cmd = corpus.rogo();
         cmd.args(["--sem", query, "--jsonl", "--no-snippet", "-q", "."])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -844,7 +844,7 @@ the crema turn hazelnut brown as the shot lands in the cup.\n",
     );
     // The CLI reports no matches like grep does: exit 1 and a message on
     // stderr. The deleted word must be gone from the lexical index.
-    let mut cmd = corpus.ckq();
+    let mut cmd = corpus.rogo();
     cmd.args(["--lex", "refractor", "--jsonl", "-q", "."]);
     let stderr = common::run_err(&mut cmd);
     assert!(
@@ -905,11 +905,11 @@ fractures and the volcano erupts.\n",
         "-q",
     ];
 
-    let inside = common::parse_jsonl(&common::run_ok(corpus.ckq().args(args).arg(&root)).stdout);
+    let inside = common::parse_jsonl(&common::run_ok(corpus.rogo().args(args).arg(&root)).stdout);
     let elsewhere = tempfile::TempDir::new().unwrap();
     let outside = common::parse_jsonl(
         &common::run_ok(
-            common::ckq()
+            common::rogo()
                 .current_dir(elsewhere.path())
                 .args(args)
                 .arg(&root),
@@ -930,7 +930,7 @@ fractures and the volcano erupts.\n",
     );
 }
 
-/// A `CKQ_GGUF_FILE` override must get its own daemon. With the override left
+/// A `ROGO_GGUF_FILE` override must get its own daemon. With the override left
 /// out of the key, a daemon already holding the registry's weights answered
 /// queries for the trial file, so the query and the document vectors came from
 /// different weights. Offline: it only compares the two socket paths.
@@ -939,8 +939,8 @@ fractures and the volcano erupts.\n",
 fn a_gguf_override_gets_its_own_daemon_socket() {
     let plain = common::daemon_socket("gemma-q4");
     let out = common::run_ok(
-        common::ckq()
-            .env("CKQ_GGUF_FILE", "/nonexistent/trial.gguf")
+        common::rogo()
+            .env("ROGO_GGUF_FILE", "/nonexistent/trial.gguf")
             .args(["--daemon-socket", "gemma-q4"]),
     );
     let overridden = std::path::PathBuf::from(String::from_utf8(out.stdout).unwrap().trim());

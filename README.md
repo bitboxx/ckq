@@ -1,6 +1,6 @@
-# ckq
+# rogo
 
-ckq is a command-line search engine for a folder of text notes. It builds one
+rogo is a command-line search engine for a folder of text notes. It builds one
 local index of a directory tree and answers three kinds of query over it:
 plain regex (grep-style, no index needed), lexical ranking (BM25 over file
 text and path), and semantic ranking (embedding similarity), plus a hybrid
@@ -9,26 +9,46 @@ with a query in another.
 
 ## Install
 
-Download an archive from the [releases page](https://github.com/bitboxx/ckq/releases)
-and put the `ckq` binary on your `PATH`:
+With Homebrew, on macOS or Linux:
+
+```bash
+brew install bitboxx/tap/rogo
+```
+
+With a Rust toolchain:
+
+```bash
+cargo install --locked rogo
+```
+
+Or download an archive from the [releases page](https://github.com/bitboxx/rogo/releases)
+and put the `rogo` binary on your `PATH`:
 
 | Platform | Archive |
 |---|---|
-| Linux x86_64 | `ckq-2.0.0-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux aarch64 | `ckq-2.0.0-aarch64-unknown-linux-gnu.tar.gz` |
-| macOS x86_64 | `ckq-2.0.0-x86_64-apple-darwin.tar.gz` |
-| macOS aarch64 | `ckq-2.0.0-aarch64-apple-darwin.tar.gz` |
-| Windows x86_64 | `ckq-2.0.0-x86_64-pc-windows-msvc.zip` |
+| Linux x86_64 | `rogo-2.1.0-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux aarch64 | `rogo-2.1.0-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS x86_64 | `rogo-2.1.0-x86_64-apple-darwin.tar.gz` |
+| macOS aarch64 | `rogo-2.1.0-aarch64-apple-darwin.tar.gz` |
+| Windows x86_64 | `rogo-2.1.0-x86_64-pc-windows-msvc.zip` |
 
 Check the download against the `.sha256` file beside it (or the combined
 `SHA256SUMS` file):
 
 ```bash
-shasum -a 256 -c ckq-2.0.0-aarch64-apple-darwin.tar.gz.sha256
+shasum -a 256 -c rogo-2.1.0-aarch64-apple-darwin.tar.gz.sha256
 ```
 
-On Windows, `CertUtil -hashfile ckq-2.0.0-x86_64-pc-windows-msvc.zip SHA256`
+On Windows, `CertUtil -hashfile rogo-2.1.0-x86_64-pc-windows-msvc.zip SHA256`
 prints the same hash.
+
+Each archive from 2.1.0 on also carries signed build provenance. With the
+GitHub CLI, this checks that the archive came from the release workflow of
+this repository:
+
+```bash
+gh attestation verify rogo-2.1.0-aarch64-apple-darwin.tar.gz --repo bitboxx/rogo
+```
 
 Runtime needs: the Linux and Windows binaries are built with Vulkan and need a
 Vulkan loader to start, `libvulkan.so.1` on Linux and `vulkan-1.dll` on
@@ -36,16 +56,10 @@ Windows. Any GPU driver installs one. A machine with a loader but no usable
 GPU falls back to the CPU on its own. A machine with no Vulkan loader at all
 cannot run these binaries; build from source with `--no-default-features` for
 a CPU-only binary. macOS needs nothing beyond the system, but a binary
-downloaded with a browser is quarantined: run `xattr -d com.apple.quarantine ckq`
-once before the first start.
+downloaded with a browser is quarantined: run `xattr -d com.apple.quarantine rogo`
+once before the first start. Homebrew and cargo installs need no such step.
 
-With a Rust toolchain:
-
-```bash
-cargo install --git https://github.com/bitboxx/ckq
-```
-
-or build from source. The cargo features:
+To build from source, the cargo features:
 
 - `vulkan`: GPU through Vulkan, the default on Linux and Windows. Building it
   needs the Vulkan headers and loader, `glslc` and SPIRV-Headers
@@ -61,42 +75,42 @@ or build from source. The cargo features:
   model must already be in the cache.
 
 ```bash
-git clone https://github.com/bitboxx/ckq
-cd ckq
+git clone https://github.com/bitboxx/rogo
+cd rogo
 cargo build --release --locked
 ```
 
-The binary is `target/release/ckq`.
+The binary is `target/release/rogo`.
 
 ## First use
 
-Run `ckq --index` in the directory you want to search:
+Run `rogo --index` in the directory you want to search:
 
 ```bash
 cd ~/notes
-ckq --index
+rogo --index
 ```
 
 The first run downloads the default embedding model (gemma-q4, about 280 MB)
-into `~/.cache/ckq/models` and then embeds every text file. Later runs only
+into `~/.cache/rogo/models` and then embeds every text file. Later runs only
 read files whose size or modification time changed. Regex search needs no
 model and no index.
 
-The first `--index` also writes a `.ckqignore` file with default patterns
+The first `--index` also writes a `.rogoignore` file with default patterns
 (images, video, archives, databases) when the directory has none. It uses
 gitignore syntax, and `.gitignore` and `.ignore` apply too. A leftover `.ck`
 directory from the old ck engine is never read or written; `--clean` removes
-`.ckq` only.
+`.rogo` only.
 
 ## Search modes
 
 One mode flag picks the method:
 
 ```bash
-ckq 'coarse grind'                  # regex mode (the default), like grep
-ckq --lex how to store coffee       # BM25 over file text and path
-ckq --sem 咖啡豆怎么保存            # embedding similarity
-ckq --hybrid --term 'coffee beans' 'how to keep beans fresh'   # both, fused
+rogo 'coarse grind'                  # regex mode (the default), like grep
+rogo --lex how to store coffee       # BM25 over file text and path
+rogo --sem 咖啡豆怎么保存            # embedding similarity
+rogo --hybrid --term 'coffee beans' 'how to keep beans fresh'   # both, fused
 ```
 
 `--hybrid` fuses the lexical and semantic rankings into one list, one result
@@ -115,7 +129,7 @@ Flags for the ranked modes:
 Regex mode takes the grep flags:
 
 ```bash
-ckq -n -i -w -F -l -C 2 'grind size'
+rogo -n -i -w -F -l -C 2 'grind size'
 ```
 
 `-n` line numbers, `-i` ignore case, `-w` whole words, `-F` fixed strings
@@ -125,7 +139,7 @@ accepted and does nothing (directories are always searched recursively).
 Flags that do nothing in the chosen mode draw one warning on stderr.
 
 Both modes take `--hidden` (include dot-files), `--no-ignore` (do not read
-`.gitignore`), `--no-ckqignore` (do not read `.ckqignore`) and `-q` (no
+`.gitignore`), `--no-rogoignore` (do not read `.rogoignore`) and `-q` (no
 progress or banners on stderr). A search takes the paths to search as
 arguments after the query; the default is the current directory, and a
 subdirectory or single file searches within the index of the tree above it.
@@ -160,22 +174,22 @@ and prints one warning when files were added, changed or deleted since the
 last index:
 
 ```text
-ckq: warning: index is stale (3 files added, changed or gone); run `ckq --index`
+rogo: warning: index is stale (3 files added, changed or gone); run `rogo --index`
 ```
 
-- `ckq --index [DIR]`: bring the index in line with the files on disk.
-- `ckq --add FILE`: index or re-index one file.
-- `ckq --status [DIR]`: what is indexed and with which model. `--status-verbose`
+- `rogo --index [DIR]`: bring the index in line with the files on disk.
+- `rogo --add FILE`: index or re-index one file.
+- `rogo --status [DIR]`: what is indexed and with which model. `--status-verbose`
   adds sizes, `--status-json` prints JSON to stdout.
-- `ckq --clean [DIR]`: remove the index.
-- `ckq --clean-orphans [DIR]`: accepted for compatibility; the store cannot
+- `rogo --clean [DIR]`: remove the index.
+- `rogo --clean-orphans [DIR]`: accepted for compatibility; the store cannot
   hold orphans, so this just runs an index update.
 
 Each model's vectors live in their own space, so the index records a
 signature of the model, its prompts, its pooling and the chunker version.
-`ckq --index --model ALIAS` switches models and rebuilds the whole index; a
+`rogo --index --model ALIAS` switches models and rebuilds the whole index; a
 search against an index whose signature does not match the binary's current
-settings refuses and names `ckq --index`. The default model is `gemma-q4`,
+settings refuses and names `rogo --index`. The default model is `gemma-q4`,
 or the index's own model when one exists.
 
 ## The query daemon
@@ -185,19 +199,19 @@ daemon instead of loading the model in every search process. The first search
 starts it; later searches connect to it, so a day of searching loads the model
 once (a load costs about 0.4 s). One daemon per model, keyed to the exact
 binary, so a rebuild never talks to a stale one. Sockets live in
-`~/.cache/ckq/sockets`. The daemon embeds queries only; indexing always loads
+`~/.cache/rogo/sockets`. The daemon embeds queries only; indexing always loads
 the model in the process that runs it.
 
 The daemon exits after 15 minutes without a query
-(`CKQ_DAEMON_IDLE_SECS`). `CKQ_IN_PROCESS=1` skips it and embeds in the
+(`ROGO_DAEMON_IDLE_SECS`). `ROGO_IN_PROCESS=1` skips it and embeds in the
 searching process. A client waits 120 s for a reply
-(`CKQ_DAEMON_TIMEOUT_SECS`); on a timeout or any daemon failure it falls back
+(`ROGO_DAEMON_TIMEOUT_SECS`); on a timeout or any daemon failure it falls back
 to embedding in its own process, with one warning on stderr.
 
 ## Models
 
 All models are GGUF, downloaded from Hugging Face on first use and cached in
-`~/.cache/ckq/models`. Where the registry pins a blake3, the download is
+`~/.cache/rogo/models`. Where the registry pins a blake3, the download is
 verified against it.
 
 | Alias | Dims | Context | Size | Licence |
@@ -212,13 +226,13 @@ verified against it.
 
 | Variable | Effect |
 |---|---|
-| `CKQ_IN_PROCESS=1` | Embed queries in the searching process; no daemon. |
-| `CKQ_DAEMON_IDLE_SECS` | Daemon idle exit time in seconds. Default 900. |
-| `CKQ_DAEMON_TIMEOUT_SECS` | Client wait for a daemon reply in seconds. Default 120; past it the client falls back to its own process. |
-| `CKQ_QUERY_DEVICE` | `cpu` or `gpu` for query embedding. Default `gpu`. |
-| `CKQ_GGUF_FILE` | Load the GGUF from this file instead of the registry download, for trying another build of the same model. The file's path, size and mtime enter the index signature. |
-| `CKQ_TIMING=1` | Print one stderr line of index timings (walk, read and chunk, embed). |
-| `CKQ_EMBED_GGUF`, `CKQ_EMBED_ALIAS` | Build-time only, with the `embedded-model` feature: the GGUF to embed in the binary and its alias. |
+| `ROGO_IN_PROCESS=1` | Embed queries in the searching process; no daemon. |
+| `ROGO_DAEMON_IDLE_SECS` | Daemon idle exit time in seconds. Default 900. |
+| `ROGO_DAEMON_TIMEOUT_SECS` | Client wait for a daemon reply in seconds. Default 120; past it the client falls back to its own process. |
+| `ROGO_QUERY_DEVICE` | `cpu` or `gpu` for query embedding. Default `gpu`. |
+| `ROGO_GGUF_FILE` | Load the GGUF from this file instead of the registry download, for trying another build of the same model. The file's path, size and mtime enter the index signature. |
+| `ROGO_TIMING=1` | Print one stderr line of index timings (walk, read and chunk, embed). |
+| `ROGO_EMBED_GGUF`, `ROGO_EMBED_ALIAS` | Build-time only, with the `embedded-model` feature: the GGUF to embed in the binary and its alias. |
 
 ## Exit codes
 

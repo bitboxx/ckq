@@ -180,35 +180,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
-name = "ckq"
-version = "2.0.0"
-dependencies = [
- "anyhow",
- "blake3",
- "ckq-gpu",
- "clap",
- "dirs 7.0.0",
- "half",
- "hf-hub",
- "ignore",
- "libc",
- "llama-cpp-2",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "serial_test",
- "tempfile",
-]
-
-[[package]]
-name = "ckq-gpu"
-version = "0.1.0"
-dependencies = [
- "llama-cpp-2",
-]
-
-[[package]]
 name = "clang-sys"
 version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1276,6 +1247,35 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "rogo"
+version = "2.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "clap",
+ "dirs 7.0.0",
+ "half",
+ "hf-hub",
+ "ignore",
+ "libc",
+ "llama-cpp-2",
+ "regex",
+ "rogo-gpu",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tempfile",
+]
+
+[[package]]
+name = "rogo-gpu"
+version = "0.1.0"
+dependencies = [
+ "llama-cpp-2",
 ]
 
 [[package]]

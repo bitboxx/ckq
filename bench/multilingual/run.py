@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cross-lingual retrieval benchmark for ckq.
+"""Cross-lingual retrieval benchmark for rogo.
 
 Every query is asked in a language other than the one its answer is written in,
 against a corpus where several documents cover neighbouring aspects of the same
@@ -42,7 +42,7 @@ def materialise(root: Path) -> None:
 def search(root: Path, query: str) -> list[str]:
     """Document ids in rank order, one entry per document."""
     out = subprocess.run(
-        ["ckq", "--jsonl", "--no-snippet", MODE, "-q", query,
+        ["rogo", "--jsonl", "--no-snippet", MODE, "-q", query,
          "--topk", str(TOPK * 3), "--threshold", "0.0", str(root)],
         capture_output=True, text=True,
     ).stdout
@@ -62,7 +62,7 @@ def evaluate(model: str) -> dict:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         materialise(root)
-        subprocess.run(["ckq", "--index", "--model", model, "-q", str(root)], check=True)
+        subprocess.run(["rogo", "--index", "--model", model, "-q", str(root)], check=True)
 
         first, reciprocal, scores, misses = 0, 0.0, [], []
         for q in CORPUS["queries"]:

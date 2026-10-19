@@ -367,12 +367,14 @@ fn a_renamed_ckq_index_is_named_with_its_mv_and_never_touched() {
     // The migration the message prescribes, run backwards: the index a
     // ckq 2.0 user has is an index this build just wrote, under its old name.
     fs::rename(corpus.path().join(".rogo"), corpus.path().join(".ckq")).unwrap();
-    let root = corpus.path().display().to_string();
+    // Joined, not formatted with '/': Windows prints its own separator.
+    let old = corpus.path().join(".ckq").display().to_string();
+    let new = corpus.path().join(".rogo").display().to_string();
     let stderr = run_err(corpus.rogo().args(["--lex", "tide", "--jsonl", "-q", "."]));
     assert!(
         stderr.contains("mv")
-            && stderr.contains(&format!("{root}/.ckq"))
-            && stderr.contains(&format!("{root}/.rogo"))
+            && stderr.contains(&old)
+            && stderr.contains(&new)
             && stderr.contains("no rebuild"),
         "the error must name the .ckq index, the .rogo target and the mv, got:\n{stderr}"
     );
@@ -481,7 +483,10 @@ fn a_legacy_ckqignore_is_read_with_one_warning_and_not_duplicated() {
 /// A download that starts while ckq's cache is still in place says so first:
 /// one stderr line naming the `mv` that would have skipped it. The endpoint
 /// is dead so the download cannot succeed or linger; the line is printed
-/// before any bytes move.
+/// before any bytes move. Unix only: on Windows the home directory comes
+/// from the user profile, which no environment variable redirects, so the
+/// test would find the runner's real model cache.
+#[cfg(unix)]
 #[test]
 #[serial]
 #[ignore = "e2e: needs no model, only the real binary and a scratch HOME"]

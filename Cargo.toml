@@ -9,7 +9,7 @@ repository = "https://github.com/bitboxx/rogo"
 homepage = "https://github.com/bitboxx/rogo"
 readme = "README.md"
 keywords = ["search", "bm25", "embeddings", "sqlite", "llm"]
-categories = ["command-line-utilities", "search", "text-processing"]
+categories = ["command-line-utilities", "text-processing"]
 # Agent instructions and CI stay in the repo, out of the published crate.
 exclude = [".github/", "CLAUDE.md"]
 rust-version = "1.88.0"
